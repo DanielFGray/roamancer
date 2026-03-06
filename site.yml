@@ -1,0 +1,59 @@
+---
+- name: Base setup for all VMs
+  hosts: all
+  become: true
+  roles:
+    - common
+    - docker
+    - consul
+    - nomad
+
+- name: Vault on web node
+  hosts: web
+  become: true
+  roles:
+    - vault
+
+- name: Caddy on web node
+  hosts: web
+  become: true
+  roles:
+    - caddy
+
+- name: Deploy scripts and config
+  hosts: web
+  become: true
+  tasks:
+    - name: Copy site config
+      copy:
+        src: scripts/sites.json
+        dest: /opt/nomad/sites.json
+        mode: "0644"
+
+    - name: Copy deploy script
+      copy:
+        src: scripts/deploy-site.sh
+        dest: /opt/nomad/scripts/deploy-site.sh
+        mode: "0755"
+
+- name: Deploy Nomad jobs
+  hosts: web
+  tasks:
+    - name: Copy Nomad job specs
+      copy:
+        src: "{{ item }}"
+        dest: /opt/nomad/jobs/
+        mode: "0644"
+      with_fileglob:
+        - nomad-jobs/*.nomad
+
+    - name: Run Nomad jobs
+      command: "nomad job run /opt/nomad/jobs/{{ item }}"
+      loop:
+        - infra.nomad
+        - registry.nomad
+        - postgres-garden.nomad
+        - signoz.nomad
+        - deploy-site.nomad
+        - backups.nomad
+      changed_when: true

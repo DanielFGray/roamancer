@@ -1,0 +1,42 @@
+---
+- name: Download Vault
+  get_url:
+    url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
+    dest: /tmp/vault.zip
+
+- name: Install Vault
+  unarchive:
+    src: /tmp/vault.zip
+    dest: /usr/local/bin/
+    remote_src: true
+    mode: "0755"
+
+- name: Create Vault directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/vault.d
+    - /opt/vault/data
+
+- name: Write Vault config
+  template:
+    src: vault.hcl.j2
+    dest: /etc/vault.d/vault.hcl
+    mode: "0640"
+  notify: restart vault
+
+- name: Write Vault systemd unit
+  template:
+    src: vault.service.j2
+    dest: /etc/systemd/system/vault.service
+    mode: "0644"
+  notify: restart vault
+
+- name: Start Vault
+  systemd:
+    name: vault
+    state: started
+    enabled: true
+    daemon_reload: true
