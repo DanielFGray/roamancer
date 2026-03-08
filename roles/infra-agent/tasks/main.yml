@@ -1,0 +1,50 @@
+---
+- name: Create infra agent directory
+  file:
+    path: /opt/infra
+    state: directory
+    owner: prod
+    group: web
+    mode: "0775"
+
+- name: Rsync infra agent bundle
+  synchronize:
+    src: "{{ playbook_dir }}/tools/infra/"
+    dest: /opt/infra/
+    rsync_opts:
+      - "--exclude=node_modules"
+      - "--exclude=.git"
+      - "--exclude=docs"
+    delete: true
+  notify: restart infra-agent
+
+- name: Install bun dependencies
+  command: /home/prod/.bun/bin/bun install --frozen-lockfile
+  args:
+    chdir: /opt/infra
+  become_user: prod
+  register: bun_install
+  changed_when: "'Saved lockfile' not in bun_install.stderr"
+
+- name: Deploy infra agent env file
+  template:
+    src: infra-agent.env.j2
+    dest: /opt/infra/.env
+    owner: prod
+    group: web
+    mode: "0600"
+  notify: restart infra-agent
+
+- name: Deploy infra agent systemd unit
+  template:
+    src: infra-agent.service.j2
+    dest: /etc/systemd/system/infra-agent.service
+    mode: "0644"
+  notify: restart infra-agent
+
+- name: Start infra agent
+  systemd:
+    name: infra-agent
+    state: started
+    enabled: true
+    daemon_reload: true

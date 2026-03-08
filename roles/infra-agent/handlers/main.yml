@@ -1,0 +1,6 @@
+---
+- name: restart infra-agent
+  systemd:
+    name: infra-agent
+    state: restarted
+    daemon_reload: true

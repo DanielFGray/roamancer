@@ -1,42 +1,34 @@
 ---
-- name: Download Vault
+- name: Download OpenBao .deb package
   get_url:
-    url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
-    dest: /tmp/vault.zip
+    url: "https://github.com/openbao/openbao/releases/download/v{{ vault_version }}/openbao_{{ vault_version }}_linux_amd64.deb"
+    dest: /tmp/openbao.deb
+    mode: "0644"
 
-- name: Install Vault
-  unarchive:
-    src: /tmp/vault.zip
-    dest: /usr/local/bin/
-    remote_src: true
-    mode: "0755"
+- name: Install OpenBao
+  apt:
+    deb: /tmp/openbao.deb
 
-- name: Create Vault directories
+- name: Create OpenBao data directory
   file:
-    path: "{{ item }}"
+    path: /opt/openbao/data
     state: directory
-    mode: "0755"
-  loop:
-    - /etc/vault.d
-    - /opt/vault/data
+    owner: openbao
+    group: openbao
+    mode: "0750"
 
-- name: Write Vault config
+- name: Write OpenBao config
   template:
     src: vault.hcl.j2
-    dest: /etc/vault.d/vault.hcl
+    dest: /etc/openbao/openbao.hcl
+    owner: openbao
+    group: openbao
     mode: "0640"
-  notify: restart vault
+  notify: restart openbao
 
-- name: Write Vault systemd unit
-  template:
-    src: vault.service.j2
-    dest: /etc/systemd/system/vault.service
-    mode: "0644"
-  notify: restart vault
-
-- name: Start Vault
+- name: Start OpenBao
   systemd:
-    name: vault
+    name: openbao
     state: started
     enabled: true
     daemon_reload: true

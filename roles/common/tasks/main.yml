@@ -15,56 +15,65 @@
       - htop
     state: present
 
-- name: Install bun
+- name: Create web group
+  group:
+    name: web
+    state: present
+
+- name: Ensure dan user exists with sudo
+  user:
+    name: dan
+    groups: sudo,web
+    append: true
+    shell: /bin/bash
+
+- name: Ensure prod user exists without sudo
+  user:
+    name: prod
+    groups: web
+    append: true
+    shell: /bin/bash
+
+- name: Install bun for prod user
   shell: curl -fsSL https://bun.sh/install | bash
   args:
-    creates: /home/dan/.bun/bin/bun
-  become_user: dan
+    creates: /home/prod/.bun/bin/bun
+  become_user: prod
 
-- name: Create shared directories
+- name: Create service directories
   file:
     path: "{{ item }}"
     state: directory
-    owner: dan
-    group: dan
-    mode: "0755"
+    owner: prod
+    group: web
+    mode: "0775"
   loop:
-    - /opt/nomad/jobs
-    - /opt/nomad/scripts
+    - /srv/projects
+    - /opt/services
 
-- name: Create volume directories (web node)
+- name: Create webroot base directory (web node)
   file:
-    path: "{{ item }}"
+    path: /srv/www
     state: directory
-    mode: "0755"
-  loop:
-    - /opt/nomad/volumes/postgres
-    - /opt/nomad/volumes/valkey
-    - /opt/nomad/volumes/registry
-  when: nomad_node_class == "web"
+    owner: prod
+    group: web
+    mode: "0775"
+  when: inventory_hostname in groups['web']
 
-- name: Create volume directories (obs node)
+- name: Create backup directories (web node)
   file:
-    path: "{{ item }}"
+    path: /opt/backups/postgres
     state: directory
-    mode: "0755"
-  loop:
-    - /opt/nomad/volumes/clickhouse
-    - /opt/nomad/volumes/signoz
-    - /opt/nomad/volumes/zookeeper
-  when: nomad_node_class == "obs"
+    owner: prod
+    group: web
+    mode: "0775"
+  when: inventory_hostname in groups['web']
 
-- name: Create webroot directories (web node)
+- name: Create backup directories (obs node)
   file:
-    path: "/srv/www/{{ item }}"
+    path: /opt/backups/vault
     state: directory
-    owner: dan
-    group: dan
-    mode: "0755"
-  loop:
-    - danielfgray.com
-    - dfg.rocks
-    - dfg.codes
-    - eddie.dfg.rocks
-    - pg-sourcerer.dfg.codes
-  when: nomad_node_class == "web"
+    owner: prod
+    group: web
+    mode: "0775"
+  when: inventory_hostname in groups['obs']

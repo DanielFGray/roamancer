@@ -1,3 +1,7 @@
+{
+	admin localhost:2019
+}
+
 # Reusable snippets
 
 (static) {
@@ -7,78 +11,26 @@
 }
 
 (otel_cors) {
+	@allowed_origin expression `{http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.codes" || {http.request.header.Origin} == "https://signoz.dfg.codes"`
 	@preflight method OPTIONS
-	handle @preflight {
+	handle @preflight @allowed_origin {
 		header Access-Control-Allow-Origin "{http.request.header.Origin}"
 		header Access-Control-Allow-Methods "GET, POST, OPTIONS"
 		header Access-Control-Allow-Headers "content-type, x-requested-with"
 		header Access-Control-Max-Age "3600"
 		respond 204
 	}
-	header Access-Control-Allow-Origin "{http.request.header.Origin}"
-	header Access-Control-Allow-Methods "GET, POST, OPTIONS"
-	header Access-Control-Allow-Headers "content-type, x-requested-with"
-	header Access-Control-Max-Age "3600"
-}
-
-# ─── Static sites ───────────────────────────────────────────
-
-danielfgray.com {
-	import static /srv/www/danielfgray.com
-}
-
-www.danielfgray.com {
-	redir https://danielfgray.com{uri} permanent
-}
-
-dfg.rocks {
-	handle /drumdrive {
-		redir https://drive.google.com/folderview?id=1zz_6dYuiLLK2Lxo7nULuiVcY9a_nWck4 temporary
+	handle @preflight {
+		respond 403
 	}
-	handle {
-		import static /srv/www/dfg.rocks
-	}
+
+	header @allowed_origin Access-Control-Allow-Origin "{http.request.header.Origin}"
+	header @allowed_origin Access-Control-Allow-Methods "GET, POST, OPTIONS"
+	header @allowed_origin Access-Control-Allow-Headers "content-type, x-requested-with"
+	header @allowed_origin Access-Control-Max-Age "3600"
 }
 
-dfg.codes {
-	header Cross-Origin-Opener-Policy "same-origin"
-
-	handle /node-preview* {
-		header Cross-Origin-Embedder-Policy "require-corp"
-		import static /srv/www/dfg.codes
-	}
-	handle {
-		header Cross-Origin-Embedder-Policy "credentialless"
-		import static /srv/www/dfg.codes
-	}
-}
-
-eddie.dfg.rocks {
-	import static /srv/www/eddie.dfg.rocks
-}
-
-# ─── Doc subdomains on dfg.codes ────────────────────────────
-
-pg-sourcerer.dfg.codes {
-	import static /srv/www/pg-sourcerer.dfg.codes
-}
-
-# Uncomment as doc sites are ready:
-# pg-introspection.dfg.codes {
-# 	import static /srv/www/pg-introspection.dfg.codes
-# }
-
-# ─── Proxied services ──────────────────────────────────────
-
-postgres.garden {
-	header Cross-Origin-Embedder-Policy "credentialless"
-	header Cross-Origin-Opener-Policy "same-origin"
-	header Cross-Origin-Resource-Policy "cross-origin"
-
-	# NOTE: rate limiting on /api /auth /webhooks requires caddy-ratelimit plugin
-	# https://github.com/mholt/caddy-ratelimit
-	reverse_proxy localhost:3000
-}
+# ─── Infrastructure services ─────────────────────────────────
 
 signoz.dfg.codes {
 	handle /v1/* {
@@ -104,9 +56,3 @@ git.dfg.codes {
 git.danielfgray.com {
 	redir https://github.com/DanielFGray{uri} permanent
 }
-
-# deploy.dfg.codes — webhook for triggering nomad job dispatch
-# re-enable when you have a lightweight webhook listener
-# deploy.dfg.codes {
-# 	reverse_proxy localhost:9000
-# }

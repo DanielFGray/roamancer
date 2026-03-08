@@ -1,0 +1,56 @@
+---
+- name: Ensure compose stack directory exists
+  file:
+    path: "{{ item.dest | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ compose_stacks }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Copy compose files to host
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ compose_stacks }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Copy supporting files
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ compose_extra_files | default([]) }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  when: compose_extra_files is defined
+
+- name: Template .env files
+  template:
+    src: "{{ item.env_template }}"
+    dest: "{{ item.dest | dirname }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ compose_stacks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.env_template is defined
+
+- name: Start compose stacks
+  command: podman-compose up -d
+  args:
+    chdir: "{{ item.dest | dirname }}"
+  loop: "{{ compose_stacks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: compose_result
+  changed_when: "'Creating' in compose_result.stdout or 'Recreating' in compose_result.stdout"

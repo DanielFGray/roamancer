@@ -5,16 +5,24 @@
       - debian-keyring
       - debian-archive-keyring
       - apt-transport-https
+      - python3-apt
     state: present
 
-- name: Add Caddy GPG key
-  apt_key:
+- name: Create Caddy apt keyring directory
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Download Caddy apt GPG key
+  get_url:
     url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
-    state: present
+    dest: /etc/apt/keyrings/caddy-stable.asc
+    mode: "0644"
 
 - name: Add Caddy repo
   apt_repository:
-    repo: "deb https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main"
+    repo: "deb [signed-by=/etc/apt/keyrings/caddy-stable.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main"
     state: present
 
 - name: Install Caddy

@@ -1,12 +1,12 @@
 ui = true
 
-storage "file" {
-  path = "/opt/vault/data"
+storage "raft" {
+  path = "/opt/openbao/data"
 }
 
 listener "tcp" {
   address     = "0.0.0.0:8200"
-  tls_disable = true  # fine for single-node behind Caddy; enable TLS if multi-VM
+  tls_disable = true
 }
 
 api_addr = "{{ vault_addr }}"

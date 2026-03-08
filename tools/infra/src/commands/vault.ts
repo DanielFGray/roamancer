@@ -1,0 +1,211 @@
+import { Command, Args } from "@effect/cli"
+import { Console, Effect, Schema as S } from "effect"
+import * as FileSystem from "@effect/platform/FileSystem"
+import * as Path from "@effect/platform/Path"
+import { OpenBaoClient } from "../services/OpenBaoClient.ts"
+import { SecretResolver } from "../services/SecretResolver.ts"
+import { parseEnvExample } from "../lib/env-parser.ts"
+import { PROJECTS_DIR, REPO_ROOT } from "../lib/config.ts"
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+class EnvExampleNotFoundError extends S.TaggedError<EnvExampleNotFoundError>()(
+  "EnvExampleNotFoundError",
+  { name: S.String },
+) {
+  override get message() {
+    return `No .env.example found for: ${this.name}`
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const CONFIG_DIR = ".config/infra"
+const INIT_FILE = "vault-init.json"
+
+const configPath = Effect.gen(function* () {
+  const path = yield* Path.Path
+  const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? "/root"
+  return path.join(home, CONFIG_DIR, INIT_FILE)
+})
+
+const BACKUPS_POLICY = `
+path "secret/data/*" { capabilities = ["read"] }
+path "sys/storage/raft/snapshot" { capabilities = ["read"] }
+`.trim()
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const findEnvExampleContent = (name: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const pathSvc = yield* Path.Path
+
+    const candidates = [
+      pathSvc.join(PROJECTS_DIR, name, ".env.example"),
+      pathSvc.join(REPO_ROOT, "services", name, ".env.example"),
+    ]
+
+    const found = yield* Effect.reduce(
+      candidates,
+      null as string | null,
+      (acc, candidate) =>
+        acc !== null
+          ? Effect.succeed(acc)
+          : fs.exists(candidate).pipe(
+              Effect.flatMap((exists) =>
+                exists ? fs.readFileString(candidate) : Effect.succeed(null),
+              ),
+            ),
+    )
+
+    if (found === null) {
+      return yield* new EnvExampleNotFoundError({ name })
+    }
+    return found
+  })
+
+/** Scan a directory for subdirectories that contain .env.example */
+const scanForEnvExamples = (dir: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const pathSvc = yield* Path.Path
+
+    const exists = yield* fs.exists(dir)
+    if (!exists) return [] as ReadonlyArray<string>
+
+    const entries = yield* fs.readDirectory(dir)
+    return yield* Effect.filter(entries, (entry) =>
+      fs.exists(pathSvc.join(dir, entry, ".env.example")),
+    )
+  })
+
+// ---------------------------------------------------------------------------
+// Subcommands
+// ---------------------------------------------------------------------------
+
+const vaultInit = Command.make("init").pipe(
+  Command.withHandler(() =>
+    Effect.gen(function* () {
+      const bao = yield* OpenBaoClient
+      const fs = yield* FileSystem.FileSystem
+      const initPath = yield* configPath
+
+      yield* Console.log("Initializing OpenBao...")
+      const result = yield* bao.init()
+
+      yield* Console.log("Unsealing...")
+      yield* bao.unseal(result.unsealKeys[0]!)
+
+      const dir = initPath.replace(/\/[^/]+$/, "")
+      yield* fs.makeDirectory(dir, { recursive: true })
+      yield* fs.writeFileString(
+        initPath,
+        JSON.stringify(
+          { unseal_key: result.unsealKeys[0], root_token: result.rootToken },
+          null,
+          2,
+        ),
+        { mode: 0o600 },
+      )
+
+      yield* Console.log("Enabling KV-v2 secrets engine...")
+      yield* bao.enableSecretsEngine("secret", "kv-v2")
+
+      yield* Console.log("Enabling KV-v2 meta engine...")
+      yield* bao.enableSecretsEngine("meta", "kv-v2")
+
+      yield* Console.log("Creating backups policy...")
+      yield* bao.createPolicy("backups", BACKUPS_POLICY)
+
+      yield* Console.log("")
+      yield* Console.log(`Vault initialized. Credentials saved to: ${initPath}`)
+      yield* Console.log("IMPORTANT: Back up this file securely.")
+    }),
+  ),
+  Command.withDescription("Initialize OpenBao, unseal, and enable secrets engine"),
+)
+
+const rotateNameArg = Args.text({ name: "name" }).pipe(
+  Args.withDescription("Project or service name to rotate secrets for"),
+)
+
+const vaultRotate = Command.make("rotate", { name: rotateNameArg }).pipe(
+  Command.withHandler(({ name }) =>
+    Effect.gen(function* () {
+      const bao = yield* OpenBaoClient
+      const resolver = yield* SecretResolver
+
+      const content = yield* findEnvExampleContent(name)
+      const fields = parseEnvExample(content)
+
+      if (fields.length === 0) {
+        yield* Console.log(`No fields found in .env.example for: ${name}`)
+        return
+      }
+
+      yield* Console.log(`Fetching current values for ${name}...`)
+      const current = yield* bao.kvGet(name)
+
+      const resolved = yield* resolver.resolve(fields, current)
+      yield* bao.kvPut(name, resolved)
+
+      const rotated = fields
+        .filter((f) => f.kind === "generated" || f.kind === "composed")
+        .map((f) => f.key)
+
+      yield* Console.log(`Rotated fields in ${name}:`)
+      yield* Effect.forEach(rotated, (key) => Console.log(`  - ${key}`))
+    }),
+  ),
+  Command.withDescription("Rotate generated secrets for a project or service"),
+)
+
+const vaultStatus = Command.make("status").pipe(
+  Command.withHandler(() =>
+    Effect.gen(function* () {
+      const bao = yield* OpenBaoClient
+      const pathSvc = yield* Path.Path
+
+      yield* Console.log("Checking vault status...")
+      const status = yield* bao.sealStatus()
+      yield* Console.log(`  initialized: ${String(status.initialized)}`)
+      yield* Console.log(`  sealed:      ${String(status.sealed)}`)
+
+      if (status.sealed || !status.initialized) return
+
+      const projectNames = yield* scanForEnvExamples(PROJECTS_DIR)
+      const serviceNames = yield* scanForEnvExamples(pathSvc.join(REPO_ROOT, "services"))
+      const names = [...projectNames, ...serviceNames]
+
+      yield* Console.log("")
+      yield* Console.log("Secret paths:")
+      yield* Effect.forEach(names, (name) =>
+        bao.kvGet(name).pipe(
+          Effect.map(() => true),
+          Effect.catchAll(() => Effect.succeed(false)),
+          Effect.flatMap((exists) =>
+            Console.log(`  ${exists ? "[ok]" : "[empty]"} ${name}`),
+          ),
+        ),
+      )
+    }),
+  ),
+  Command.withDescription("Show vault seal status and secret paths"),
+)
+
+// ---------------------------------------------------------------------------
+// Group command
+// ---------------------------------------------------------------------------
+
+export const vaultCommand = Command.make("vault").pipe(
+  Command.withHandler(() => Effect.void),
+  Command.withSubcommands([vaultInit, vaultRotate, vaultStatus]),
+  Command.withDescription("Manage OpenBao vault (init, rotate, status)"),
+)

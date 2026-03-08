@@ -1,6 +1,6 @@
 ---
-- name: restart vault
+- name: restart openbao
   systemd:
-    name: vault
+    name: openbao
     state: restarted
     daemon_reload: true

@@ -4,12 +4,10 @@
   become: true
   roles:
     - common
-    - docker
-    - consul
-    - nomad
+    - podman
 
-- name: Vault on web node
-  hosts: web
+- name: OpenBao on obs node
+  hosts: obs
   become: true
   roles:
     - vault
@@ -20,40 +18,34 @@
   roles:
     - caddy
 
-- name: Deploy scripts and config
+- name: Compose services on web node
   hosts: web
   become: true
-  tasks:
-    - name: Copy site config
-      copy:
-        src: scripts/sites.json
-        dest: /opt/nomad/sites.json
-        mode: "0644"
+  roles:
+    - role: compose
+      vars:
+        compose_stacks:
+          - name: infra
+            src: services/infra/compose.yml
+            dest: /opt/services/infra/compose.yml
+            env_template: ../../roles/compose/templates/infra-env.j2
 
-    - name: Copy deploy script
-      copy:
-        src: scripts/deploy-site.sh
-        dest: /opt/nomad/scripts/deploy-site.sh
-        mode: "0755"
+- name: SigNoz on obs node
+  hosts: obs
+  become: true
+  roles:
+    - role: compose
+      vars:
+        compose_stacks:
+          - name: signoz
+            src: services/signoz/compose.yml
+            dest: /opt/services/signoz/compose.yml
+        compose_extra_files:
+          - src: services/signoz/otel-collector-config.yaml
+            dest: /opt/services/signoz/otel-collector-config.yaml
 
-- name: Deploy Nomad jobs
+- name: Infra agent on web node
   hosts: web
-  tasks:
-    - name: Copy Nomad job specs
-      copy:
-        src: "{{ item }}"
-        dest: /opt/nomad/jobs/
-        mode: "0644"
-      with_fileglob:
-        - nomad-jobs/*.nomad
-
-    - name: Run Nomad jobs
-      command: "nomad job run /opt/nomad/jobs/{{ item }}"
-      loop:
-        - infra.nomad
-        - registry.nomad
-        - postgres-garden.nomad
-        - signoz.nomad
-        - deploy-site.nomad
-        - backups.nomad
-      changed_when: true
+  become: true
+  roles:
+    - infra-agent
