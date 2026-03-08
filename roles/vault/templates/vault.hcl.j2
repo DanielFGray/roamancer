@@ -9,4 +9,5 @@ listener "tcp" {
   tls_disable = true
 }
 
-api_addr = "{{ vault_addr }}"
+api_addr     = "{{ vault_addr }}"
+cluster_addr = "http://{{ obs_addr }}:8201"

@@ -8,15 +8,23 @@
     mode: "0775"
 
 - name: Rsync infra agent bundle
-  synchronize:
-    src: "{{ playbook_dir }}/tools/infra/"
-    dest: /opt/infra/
-    rsync_opts:
-      - "--exclude=node_modules"
-      - "--exclude=.git"
-      - "--exclude=docs"
-    delete: true
+  command: >
+    rsync -rlD --delete
+    --exclude=node_modules --exclude=.git --exclude=docs
+    -e 'ssh -o StrictHostKeyChecking=no'
+    {{ playbook_dir }}/tools/infra/
+    {{ ansible_user }}@{{ ansible_host }}:/opt/infra/
+  delegate_to: localhost
+  become: false
   notify: restart infra-agent
+
+- name: Fix infra agent ownership
+  file:
+    path: /opt/infra
+    state: directory
+    owner: prod
+    group: web
+    recurse: true
 
 - name: Install bun dependencies
   command: /home/prod/.bun/bin/bun install --frozen-lockfile

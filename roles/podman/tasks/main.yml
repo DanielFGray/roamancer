@@ -26,18 +26,18 @@
     purge: true
   ignore_errors: true
 
-- name: Remove Docker apt repository
-  file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /etc/apt/sources.list.d/docker.list
-    - /etc/apt/keyrings/docker.asc
-    - /etc/apt/keyrings/docker.gpg
+- name: Remove Docker apt repository files
+  shell: rm -f /etc/apt/sources.list.d/docker.* /etc/apt/keyrings/docker.*
+  register: docker_repo_removed
+  changed_when: docker_repo_removed.rc == 0
 
 - name: Update apt cache after repo removal
   apt:
     update_cache: true
+  register: apt_update
+  retries: 3
+  delay: 5
+  until: apt_update is success
 
 - name: Install Podman
   apt:
@@ -45,3 +45,10 @@
       - podman
       - podman-compose
     state: present
+
+- name: Configure default registries for short image names
+  copy:
+    dest: /etc/containers/registries.conf.d/shortnames.conf
+    content: |
+      unqualified-search-registries = ["docker.io"]
+    mode: "0644"

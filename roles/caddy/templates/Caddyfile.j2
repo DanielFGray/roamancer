@@ -11,23 +11,24 @@
 }
 
 (otel_cors) {
-	@allowed_origin expression `{http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.codes" || {http.request.header.Origin} == "https://signoz.dfg.codes"`
-	@preflight method OPTIONS
-	handle @preflight @allowed_origin {
+	@cors_preflight expression `{method} == "OPTIONS" && ({http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.codes" || {http.request.header.Origin} == "https://signoz.dfg.codes")`
+	@cors_origin expression `{http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.codes" || {http.request.header.Origin} == "https://signoz.dfg.codes"`
+	@preflight_denied method OPTIONS
+	handle @cors_preflight {
 		header Access-Control-Allow-Origin "{http.request.header.Origin}"
 		header Access-Control-Allow-Methods "GET, POST, OPTIONS"
 		header Access-Control-Allow-Headers "content-type, x-requested-with"
 		header Access-Control-Max-Age "3600"
 		respond 204
 	}
-	handle @preflight {
+	handle @preflight_denied {
 		respond 403
 	}
 
-	header @allowed_origin Access-Control-Allow-Origin "{http.request.header.Origin}"
-	header @allowed_origin Access-Control-Allow-Methods "GET, POST, OPTIONS"
-	header @allowed_origin Access-Control-Allow-Headers "content-type, x-requested-with"
-	header @allowed_origin Access-Control-Max-Age "3600"
+	header @cors_origin Access-Control-Allow-Origin "{http.request.header.Origin}"
+	header @cors_origin Access-Control-Allow-Methods "GET, POST, OPTIONS"
+	header @cors_origin Access-Control-Allow-Headers "content-type, x-requested-with"
+	header @cors_origin Access-Control-Max-Age "3600"
 }
 
 # ─── Infrastructure services ─────────────────────────────────
