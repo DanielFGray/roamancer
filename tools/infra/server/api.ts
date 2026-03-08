@@ -54,11 +54,21 @@ export const StubResponse = Schema.Struct({
   message: Schema.String,
 })
 
+/** Git ref: branches, tags, SHAs. Allows alphanumeric, dots, slashes, hyphens, underscores, tildes. */
+const SafeRef = Schema.String.pipe(
+  Schema.pattern(/^[a-zA-Z0-9][a-zA-Z0-9._\/-]{0,127}$/),
+)
+
+/** Git remote URL: git@host:path, https://host/path, or ssh://host/path */
+const SafeRepoUrl = Schema.String.pipe(
+  Schema.pattern(/^(https?:\/\/|git@|ssh:\/\/)[a-zA-Z0-9._\/-]+$/),
+)
+
 const DeployBody = Schema.Struct({
   name: SafeName,
-  ref: Schema.optional(Schema.String),
+  ref: Schema.optional(SafeRef),
   as: Schema.optional(SafeName),
-  repo: Schema.optional(Schema.String),
+  repo: Schema.optional(SafeRepoUrl),
 })
 
 const PromoteBody = Schema.Struct({

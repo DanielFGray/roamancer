@@ -23,8 +23,7 @@
   args:
     chdir: /opt/infra
   become_user: prod
-  register: bun_install
-  changed_when: "'Saved lockfile' not in bun_install.stderr"
+  changed_when: false
 
 - name: Deploy infra agent env file
   template:

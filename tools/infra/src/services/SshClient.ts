@@ -45,6 +45,32 @@ export class SshClient extends Effect.Service<SshClient>()("infra/SshClient", {
         return stdout
       }),
 
+    /** Write content to a remote file via base64 pipe (immune to heredoc injection) */
+    writeFile: (host: string, remotePath: string, content: string, opts?: { mode?: string; sudo?: boolean; user?: string }) =>
+      Effect.gen(function* () {
+        const b64 = Buffer.from(content).toString("base64")
+        const decode = `echo '${b64}' | base64 -d`
+        const write = opts?.sudo
+          ? `${decode} | sudo tee ${remotePath} > /dev/null`
+          : `${decode} > ${remotePath}`
+        const chmod = opts?.mode
+          ? (opts.sudo ? ` && sudo chmod ${opts.mode} ${remotePath}` : ` && chmod ${opts.mode} ${remotePath}`)
+          : ""
+        const dest = target(host, opts?.user)
+        const proc = spawn({
+          cmd: ["ssh", dest, `${write}${chmod}`],
+          stdout: "pipe",
+          stderr: "pipe",
+        })
+        const exitCode = yield* Effect.promise(() => proc.exited)
+        if (exitCode !== 0) {
+          const stderr = yield* Effect.promise(() => proc.stderr.text())
+          return yield* Effect.fail(
+            new SshError({ code: exitCode, signal: null, message: `ssh ${dest} writeFile: ${stderr.trim()}` }),
+          )
+        }
+      }),
+
     rsync: (source: string, dest: string, host: string, user?: string) =>
       Effect.gen(function* () {
         const remoteDest = `${target(host, user)}:${dest}`

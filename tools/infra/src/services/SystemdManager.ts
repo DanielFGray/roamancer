@@ -65,10 +65,7 @@ export class SystemdManager extends Effect.Service<SystemdManager>()(
             const content = renderUnit(config)
 
             // Write unit file via sudo (needs root for /etc/systemd/system)
-            yield* ssh.exec(
-              host,
-              `sudo tee ${unitPath} > /dev/null << 'UNITEOF'\n${content}UNITEOF`,
-            )
+            yield* ssh.writeFile(host, unitPath, content, { sudo: true })
 
             yield* ssh.exec(host, "sudo systemctl daemon-reload")
             yield* ssh.exec(host, `sudo systemctl enable ${unitName}`)

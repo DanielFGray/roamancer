@@ -111,11 +111,10 @@ const serviceUp = Command.make("up", { name: serviceNameArg }).pipe(
       const secrets = yield* provisionServiceSecrets(svc)
       if (secrets) {
         yield* Console.log("Writing .env to remote...")
-        yield* ssh.exec(
-          svc.host,
-          `cat > ${svc.remoteDir}/.env << 'ENVEOF'\n${formatEnv(secrets)}\nENVEOF\nchmod 600 ${svc.remoteDir}/.env`,
-          SVC_USER,
-        )
+        yield* ssh.writeFile(svc.host, `${svc.remoteDir}/.env`, formatEnv(secrets), {
+          mode: "600",
+          user: SVC_USER,
+        })
       }
 
       yield* Console.log("Starting services...")

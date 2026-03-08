@@ -4,6 +4,7 @@
     url: "https://github.com/openbao/openbao/releases/download/v{{ vault_version }}/openbao_{{ vault_version }}_linux_amd64.deb"
     dest: /tmp/openbao.deb
     mode: "0644"
+    checksum: "sha256:{{ vault_checksum }}"
 
 - name: Install OpenBao
   apt:

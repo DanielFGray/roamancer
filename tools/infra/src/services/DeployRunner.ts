@@ -345,11 +345,10 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
               // b. Write .env with new port
               const envWithPort = { ...secrets, PORT: String(port) }
               yield* Console.log("  writing .env...")
-              yield* ssh.exec(
-                config.host,
-                `cat > ${newDir}/.env << 'ENVEOF'\n${formatEnv(envWithPort)}\nENVEOF\nchmod 600 ${newDir}/.env`,
-                SVC_USER,
-              )
+              yield* ssh.writeFile(config.host, `${newDir}/.env`, formatEnv(envWithPort), {
+                mode: "600",
+                user: SVC_USER,
+              })
 
               // c. Install deps on remote
               yield* Console.log("  installing remote deps...")
@@ -464,11 +463,10 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
             // Write .env AFTER rsync (rsync --delete would clobber it)
             const envWithPort = { ...secrets, PORT: String(port) }
             yield* Console.log("  writing .env...")
-            yield* ssh.exec(
-              config.host,
-              `cat > ${remoteDir}/.env << 'ENVEOF'\n${formatEnv(envWithPort)}\nENVEOF\nchmod 600 ${remoteDir}/.env`,
-              SVC_USER,
-            )
+            yield* ssh.writeFile(config.host, `${remoteDir}/.env`, formatEnv(envWithPort), {
+              mode: "600",
+              user: SVC_USER,
+            })
 
             // Install deps on remote
             yield* Console.log("  installing remote deps...")
@@ -490,7 +488,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
             yield* Console.log("  starting service...")
             yield* systemd.start(config.host, unitName)
 
-            return {
+            const freshStageInfo: StageInfo = {
               type: "service",
               ref: actualRef,
               hash,
@@ -499,7 +497,13 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
               domain: config.domain,
               deployed_at: new Date().toISOString(),
               healthcheck_path: config.healthcheckPath,
-            } as StageInfo
+            }
+
+            // Health check before exposing to Caddy
+            yield* Console.log("  checking health...")
+            yield* healthCheck.check(freshStageInfo, stage)
+
+            return freshStageInfo
           }).pipe(Effect.onError(() => cleanup))
 
           // 9. Save metadata + sync routes (skip if zero-downtime already handled it)
