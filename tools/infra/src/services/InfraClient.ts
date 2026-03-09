@@ -49,9 +49,11 @@ const StageDetail = S.Struct({
   promoted: S.Boolean,
   type: S.String,
   port: S.NullOr(S.Number),
+  domain: S.String,
   ref: S.String,
   hash: S.String,
   deployed_at: S.String,
+  previewUrl: S.String,
 })
 
 const StageListResult = S.Struct({
@@ -190,6 +192,16 @@ const make = {
 
   backups: () =>
     request("GET", "/backups", BackupStatusResponse),
+
+  routes: () =>
+    request(
+      "GET",
+      "/routes",
+      S.Array(S.Record({ key: S.String, value: S.Unknown })),
+    ),
+
+  syncRoutes: () =>
+    request("POST", "/sync", StubResponse),
 }
 
 export class InfraClient extends Effect.Service<InfraClient>()(

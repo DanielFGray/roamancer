@@ -29,11 +29,21 @@ export const sanitizeRef = (ref: string): string =>
 
 const git = (args: string[], cwd?: string): Effect.Effect<string, GitError> =>
   Effect.gen(function* () {
-    const proc = spawn({
-      cmd: ["git", ...args],
-      ...(cwd !== undefined ? { cwd } : {}),
-      stdout: "pipe",
-      stderr: "pipe",
+    const proc = yield* Effect.try({
+      try: () =>
+        spawn({
+          cmd: ["git", ...args],
+          ...(cwd !== undefined ? { cwd } : {}),
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        }),
+      catch: (err) =>
+        new GitError({
+          command: `git ${args.join(" ")}`,
+          message: String(err),
+          code: null,
+        }),
     })
 
     const stdout = yield* Effect.promise(() => proc.stdout.text())
@@ -73,10 +83,18 @@ export class GitManager extends Effect.Service<GitManager>()("infra/GitManager",
           if (proc.exitCode !== 0) throw new Error("Failed to create projects dir")
         })
         yield* git(["clone", "--bare", url, repo])
+        // bare clones lack a fetch refspec — add one so `fetch --all` updates local refs
+        yield* git(["-C", repo, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"])
       }),
 
     fetch: (name: string) =>
-      git(["-C", barePath(name), "fetch", "--all", "--prune"]).pipe(Effect.asVoid),
+      Effect.gen(function* () {
+        // ensure fetch refspec exists (bare clones created before this fix lack it)
+        yield* git(["-C", barePath(name), "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"]).pipe(
+          Effect.catchAll(() => Effect.void),
+        )
+        yield* git(["-C", barePath(name), "fetch", "--all", "--prune"])
+      }).pipe(Effect.asVoid),
 
     addWorktree: (name: string, stage: string, ref: string) =>
       Effect.gen(function* () {

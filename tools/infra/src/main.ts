@@ -8,6 +8,14 @@ import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
 import { vaultCommand } from "./commands/vault.ts"
 import { backupCommand } from "./commands/backup.ts"
 import { serviceCommand } from "./commands/service.ts"
+import { hostCommand } from "./commands/host.ts"
+import {
+  doctorCommand,
+  routesCommand,
+  syncCommand,
+  probeCommand,
+  dnsCommand,
+} from "./commands/diagnostics.ts"
 import {
   deployCommand,
   promoteCommand,
@@ -17,6 +25,7 @@ import {
   projectsCommand,
   statusCommand,
   backupsCommand,
+  logsCommand,
   directCommand,
 } from "./commands/remote.ts"
 import { OpenBaoClientLive, type OpenBaoConfig } from "./services/OpenBaoClient.ts"
@@ -111,9 +120,16 @@ const infra = Command.make("infra").pipe(
     projectsCommand,
     statusCommand,
     backupsCommand,
+    logsCommand,
     vaultCommand,
     backupCommand,
     serviceCommand,
+    hostCommand,
+    doctorCommand,
+    routesCommand,
+    syncCommand,
+    probeCommand,
+    dnsCommand,
     directCommand,
   ]),
   Command.withDescription("Infrastructure management CLI"),

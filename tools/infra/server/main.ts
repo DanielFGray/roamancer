@@ -19,11 +19,12 @@ import {
 import { WebhooksGroupLive } from "./webhook.ts"
 import { SchedulerLive, BackupStatus, BackupStatusLive } from "./scheduler.ts"
 import { DeployRunner } from "../src/services/DeployRunner.ts"
+import { CaddyManager } from "../src/services/CaddyManager.ts"
 import { SshClient } from "../src/services/SshClient.ts"
 import { OpenBaoClientLive } from "../src/services/OpenBaoClient.ts"
 import { PasswordGenerator } from "../src/services/PasswordGenerator.ts"
 import { GitManager } from "../src/services/GitManager.ts"
-import { API_PORT, API_TOKEN, OPENBAO_ADDR } from "../src/lib/config.ts"
+import { API_PORT, API_TOKEN, OPENBAO_ADDR, CADDY_ADMIN_URL } from "../src/lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Stub response helper (status endpoint only)
@@ -119,6 +120,25 @@ const StatusGroupLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const statusRef = yield* BackupStatus
           return yield* Ref.get(statusRef)
+        }),
+      )
+      .handle("getRoutes", () =>
+        Effect.promise(async () => {
+          try {
+            const res = await fetch(
+              `${CADDY_ADMIN_URL}/config/apps/http/servers/srv0/routes`,
+            )
+            return res.ok ? await res.json() : []
+          } catch {
+            return []
+          }
+        }),
+      )
+      .handle("syncRoutes", () =>
+        Effect.gen(function* () {
+          const caddy = yield* CaddyManager
+          yield* caddy.sync()
+          return { status: "ok" as const, message: "Caddy routes synced" }
         }),
       ),
 )
@@ -222,9 +242,21 @@ const DeployRunnerLive = DeployRunner.Default.pipe(
   Layer.provideMerge(Leaves),
 )
 
+const CaddySyncLive = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const caddy = yield* CaddyManager
+    yield* Effect.log("Syncing Caddy routes on startup...")
+    yield* caddy.sync()
+  }).pipe(Effect.catchAll((err) =>
+    Effect.log(`Caddy startup sync failed (will retry on next deploy): ${err}`),
+  )),
+).pipe(Layer.provide(CaddyManager.Default))
+
 const ServiceDeps = Layer.mergeAll(
   DeployRunnerLive,
   BackupStatusLive,
+  CaddySyncLive,
+  CaddyManager.Default,
 )
 
 // ---------------------------------------------------------------------------

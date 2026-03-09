@@ -1,4 +1,44 @@
 ---
+- name: Get prod user UID
+  command: id -u prod
+  register: prod_uid
+  changed_when: false
+
+- name: Create prod SSH directory
+  file:
+    path: /home/prod/.ssh
+    state: directory
+    owner: prod
+    group: web
+    mode: "0700"
+
+- name: Generate SSH key for prod user
+  community.crypto.openssh_keypair:
+    path: /home/prod/.ssh/id_ed25519
+    type: ed25519
+    owner: prod
+    group: web
+  register: prod_ssh_key
+
+- name: Authorize prod key for self-SSH
+  authorized_key:
+    user: prod
+    key: "{{ prod_ssh_key.public_key }}"
+    state: present
+
+- name: Deploy prod SSH config
+  template:
+    src: ssh-config.j2
+    dest: /home/prod/.ssh/config
+    owner: prod
+    group: web
+    mode: "0600"
+
+- name: Show prod public key for GitHub deploy keys
+  debug:
+    msg: "prod@{{ inventory_hostname }} public key: {{ prod_ssh_key.public_key }}"
+  when: prod_ssh_key.changed
+
 - name: Create infra agent directory
   file:
     path: /opt/infra
@@ -7,11 +47,16 @@
     group: web
     mode: "0775"
 
+- name: Ensure infra dir is group-writable for rsync
+  command: chmod -R g+w /opt/infra
+  changed_when: false
+
 - name: Rsync infra agent bundle
   command: >
     rsync -rlD --delete
-    --exclude=node_modules --exclude=.git --exclude=docs
-    -e 'ssh -o StrictHostKeyChecking=no'
+    --chmod=Dg+rwx,Fg+rw
+    --exclude=node_modules --exclude=.git --exclude=docs --exclude=state.db --exclude=.env
+    -e 'ssh -p {{ ansible_port | default(22) }} -o StrictHostKeyChecking=no'
     {{ playbook_dir }}/tools/infra/
     {{ ansible_user }}@{{ ansible_host }}:/opt/infra/
   delegate_to: localhost
@@ -42,16 +87,29 @@
     mode: "0600"
   notify: restart infra-agent
 
-- name: Deploy infra agent systemd unit
+- name: Deploy infra agent user unit
   template:
     src: infra-agent.service.j2
-    dest: /etc/systemd/system/infra-agent.service
+    dest: /home/prod/.config/systemd/user/infra-agent.service
+    owner: prod
+    group: web
     mode: "0644"
   notify: restart infra-agent
 
-- name: Start infra agent
+- name: Remove old system unit if present
+  file:
+    path: /etc/systemd/system/infra-agent.service
+    state: absent
+  notify: reload systemd
+
+- name: Start infra agent user unit
+  become_user: prod
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ prod_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ prod_uid.stdout }}/bus"
   systemd:
     name: infra-agent
+    scope: user
     state: started
     enabled: true
     daemon_reload: true

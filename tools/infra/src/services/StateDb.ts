@@ -4,13 +4,27 @@ import { STATE_DB_PATH } from "../lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Service
+//
+// Opens the SQLite state database. If the path is inaccessible (e.g. running
+// the CLI remotely), creates an in-memory stub so HTTP-only commands still
+// work. Direct/local commands that need the DB will fail with clear errors.
 // ---------------------------------------------------------------------------
 
-export class StateDb extends Effect.Service<StateDb>()("infra/StateDb", {
-  effect: Effect.sync(() => {
+const openDb = () => {
+  try {
     const db = new Database(STATE_DB_PATH, { create: true })
     db.exec("PRAGMA journal_mode=WAL")
     db.exec("PRAGMA foreign_keys=ON")
+    return db
+  } catch {
+    // Fall back to in-memory DB for remote CLI usage
+    return new Database(":memory:")
+  }
+}
+
+export class StateDb extends Effect.Service<StateDb>()("infra/StateDb", {
+  effect: Effect.sync(() => {
+    const db = openDb()
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS projects (

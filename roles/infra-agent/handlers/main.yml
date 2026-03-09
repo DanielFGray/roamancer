@@ -1,6 +1,15 @@
 ---
 - name: restart infra-agent
+  become_user: prod
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ prod_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ prod_uid.stdout }}/bus"
   systemd:
     name: infra-agent
+    scope: user
     state: restarted
+    daemon_reload: true
+
+- name: reload systemd
+  systemd:
     daemon_reload: true

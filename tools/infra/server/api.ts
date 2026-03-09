@@ -44,9 +44,11 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()(
 // Schemas
 // ---------------------------------------------------------------------------
 
-/** Alphanumeric + hyphens/underscores, 1-64 chars. Prevents path traversal and shell injection. */
+/** Alphanumeric + hyphens/underscores/dots, 1-64 chars. No consecutive dots (prevents path traversal). */
 const SafeName = Schema.String.pipe(
-  Schema.pattern(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/),
+  Schema.pattern(/^[a-zA-Z0-9](?:[a-zA-Z0-9_.-]*[a-zA-Z0-9])?$/),
+  Schema.maxLength(64),
+  Schema.filter((s) => !s.includes(".."), { message: () => "name must not contain '..'" }),
 )
 
 export const StubResponse = Schema.Struct({
@@ -125,9 +127,11 @@ const StageDetailSchema = Schema.Struct({
   promoted: Schema.Boolean,
   type: Schema.String,
   port: Schema.NullOr(Schema.Number),
+  domain: Schema.String,
   ref: Schema.String,
   hash: Schema.String,
   deployed_at: Schema.String,
+  previewUrl: Schema.String,
 })
 
 export const StageListResultSchema = Schema.Struct({
@@ -195,12 +199,20 @@ const BackupStatusResponse = Schema.Struct({
   vault: BackupJobStatusSchema,
 })
 
+const CaddyRouteSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown })
+
 const statusGroup = HttpApiGroup.make("status")
   .add(
     HttpApiEndpoint.get("getStatus", "/status").addSuccess(StubResponse),
   )
   .add(
     HttpApiEndpoint.get("getBackups", "/backups").addSuccess(BackupStatusResponse),
+  )
+  .add(
+    HttpApiEndpoint.get("getRoutes", "/routes").addSuccess(Schema.Array(CaddyRouteSchema)),
+  )
+  .add(
+    HttpApiEndpoint.post("syncRoutes", "/sync").addSuccess(StubResponse),
   )
   .middleware(Authorization)
 

@@ -1,0 +1,41 @@
+---
+- name: Install ufw
+  apt:
+    name: ufw
+    state: present
+
+- name: Set default deny incoming
+  ufw:
+    direction: incoming
+    policy: deny
+
+- name: Set default allow outgoing
+  ufw:
+    direction: outgoing
+    policy: allow
+
+- name: Allow SSH on custom port
+  ufw:
+    rule: allow
+    port: "{{ ansible_port }}"
+    proto: tcp
+    comment: SSH
+
+- name: Allow WireGuard
+  ufw:
+    rule: allow
+    port: "51820"
+    proto: udp
+    comment: WireGuard
+
+- name: Allow additional ports
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto | default('tcp') }}"
+    comment: "{{ item.comment | default(omit) }}"
+  loop: "{{ firewall_allow | default([]) }}"
+
+- name: Enable ufw
+  ufw:
+    state: enabled

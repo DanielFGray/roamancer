@@ -1,4 +1,14 @@
 ---
+- name: Add cluster hosts to /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    regexp: ".*{{ item.name }}$"
+    line: "{{ item.ip }}  {{ item.name }}"
+    state: present
+  loop:
+    - { name: cynic.dlab, ip: 10.13.37.196 }
+    - { name: atheist.dlab, ip: 10.13.37.83 }
+
 - name: Update apt cache
   apt:
     update_cache: true
@@ -40,6 +50,38 @@
   args:
     creates: /home/prod/.bun/bin/bun
   become_user: prod
+
+- name: Enable lingering for prod user
+  command: loginctl enable-linger prod
+  args:
+    creates: /var/lib/systemd/linger/prod
+
+- name: Create systemd user unit directory
+  file:
+    path: /home/prod/.config/systemd/user
+    state: directory
+    owner: prod
+    group: web
+    mode: "0755"
+
+- name: Add bun to system PATH
+  copy:
+    dest: /etc/profile.d/bun.sh
+    content: |
+      if [ -d "$HOME/.bun/bin" ]; then
+        export PATH="$HOME/.bun/bin:$PATH"
+      fi
+    mode: "0644"
+
+- name: Add bun to prod .bashrc
+  lineinfile:
+    path: /home/prod/.bashrc
+    regexp: ".*\\.bun/bin.*"
+    line: 'export PATH="$HOME/.bun/bin:$PATH"'
+    create: true
+    owner: prod
+    group: web
+    mode: "0644"
 
 - name: Create service directories
   file:

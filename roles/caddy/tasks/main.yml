@@ -30,15 +30,50 @@
     name: caddy
     state: present
 
+- name: Download custom Caddy binary with plugins
+  get_url:
+    url: "https://caddyserver.com/api/download?os=linux&arch=amd64{% for p in caddy_plugins %}&p={{ p }}{% endfor %}"
+    dest: /usr/bin/caddy
+    mode: "0755"
+    force: true
+  when: caddy_plugins | default([]) | length > 0
+  notify: restart caddy
+
+- name: Create systemd override directory
+  file:
+    path: /etc/systemd/system/caddy.service.d
+    state: directory
+    mode: "0755"
+  when: caddy_env | default({}) | length > 0
+
+- name: Deploy Caddy systemd override for env file
+  copy:
+    dest: /etc/systemd/system/caddy.service.d/override.conf
+    content: |
+      [Service]
+      EnvironmentFile=/etc/caddy/caddy.env
+    mode: "0644"
+  when: caddy_env | default({}) | length > 0
+  notify: restart caddy
+
+- name: Deploy Caddy env file
+  template:
+    src: caddy.env.j2
+    dest: /etc/caddy/caddy.env
+    mode: "0600"
+  when: caddy_env | default({}) | length > 0
+  notify: restart caddy
+
 - name: Deploy Caddyfile
   template:
-    src: Caddyfile.j2
+    src: "{{ caddy_template | default('Caddyfile.j2') }}"
     dest: /etc/caddy/Caddyfile
     mode: "0644"
-  notify: reload caddy
+  notify: restart caddy
 
 - name: Start Caddy
   systemd:
     name: caddy
     state: started
     enabled: true
+    daemon_reload: true

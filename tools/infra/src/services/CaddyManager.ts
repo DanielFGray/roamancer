@@ -1,6 +1,6 @@
 import { Effect, Schema as S } from "effect"
 import { DeployMeta, type DeployMetaErr } from "./DeployMeta.ts"
-import { CADDY_ADMIN_URL, PREVIEW_DOMAIN } from "../lib/config.ts"
+import { CADDY_ADMIN_URL } from "../lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -32,13 +32,11 @@ const productionRouteId = (project: string) =>
 // Helpers
 // ---------------------------------------------------------------------------
 
-const sanitizeDomain = (domain: string) => domain.replace(/\./g, "-")
+const stageHost = (hash: string, domain: string) =>
+  `${hash}-preview.${domain}`
 
-const stageHost = (stage: string, domain: string) =>
-  `${stage}--${sanitizeDomain(domain)}.${PREVIEW_DOMAIN}`
-
-export const previewUrl = (stage: string, domain: string) =>
-  `https://${stageHost(stage, domain)}`
+export const previewUrl = (hash: string, domain: string) =>
+  `https://${stageHost(hash, domain)}`
 
 /** Build a Caddy JSON route for a static/SPA site */
 const staticRoute = (id: string, host: string, root: string) => ({
@@ -129,6 +127,15 @@ const caddyPut = (path: string, body: unknown): Effect.Effect<void, CaddyError> 
     }),
   )
 
+/** PATCH JSON to Caddy. Replaces existing value at path. */
+const caddyPatch = (path: string, body: unknown): Effect.Effect<void, CaddyError> =>
+  caddyFetch("PATCH", path, body).pipe(
+    Effect.flatMap((res) => {
+      if (!res.ok) return caddyErrorFromResponse(res)
+      return Effect.void
+    }),
+  )
+
 const caddyErrorFromResponse = (res: Response): Effect.Effect<never, CaddyError> =>
   Effect.tryPromise({
     try: () => res.text(),
@@ -168,7 +175,7 @@ export class CaddyManager extends Effect.Service<CaddyManager>()(
 
                 // Stage preview routes
                 for (const [stage, info] of Object.entries(project.stages)) {
-                  const host = stageHost(stage, info.domain)
+                  const host = stageHost(info.hash, info.domain)
                   const id = stageRouteId(name, stage)
                   if (info.type === "static") {
                     managedRoutes.push(
@@ -200,13 +207,31 @@ export class CaddyManager extends Effect.Service<CaddyManager>()(
               }),
             )
 
-            // Ensure the Caddy server has a listen directive
-            // (creates the server structure if it doesn't exist yet)
-            const listen = yield* caddyGet<string[]>(
-              "/config/apps/http/servers/srv0/listen",
+            // Ensure the Caddy HTTP server structure exists.
+            // When Caddy starts with a minimal Caddyfile (just admin + auto_https off),
+            // neither apps nor apps/http exist — bootstrap the whole tree.
+            const apps = yield* caddyGet<Record<string, unknown>>(
+              "/config/apps",
             )
-            if (!listen) {
-              yield* caddyPut("/config/apps/http/servers/srv0/listen", [":443", ":80"])
+            if (!apps) {
+              yield* caddyPut("/config/apps", {
+                http: {
+                  servers: {
+                    srv0: { listen: [":80"], routes: [] },
+                  },
+                },
+              })
+            } else {
+              const httpApp = yield* caddyGet<Record<string, unknown>>(
+                "/config/apps/http",
+              )
+              if (!httpApp) {
+                yield* caddyPut("/config/apps/http", {
+                  servers: {
+                    srv0: { listen: [":80"], routes: [] },
+                  },
+                })
+              }
             }
 
             // Read current routes, preserve non-managed ones
@@ -222,7 +247,8 @@ export class CaddyManager extends Effect.Service<CaddyManager>()(
             )
 
             // Write merged routes: external first, then ours
-            yield* caddyPut("/config/apps/http/servers/srv0/routes", [
+            // Always PATCH since we ensure the server structure exists above
+            yield* caddyPatch("/config/apps/http/servers/srv0/routes", [
               ...externalRoutes,
               ...managedRoutes,
             ])

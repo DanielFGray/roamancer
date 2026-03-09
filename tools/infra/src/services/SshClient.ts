@@ -27,7 +27,7 @@ export class SshClient extends Effect.Service<SshClient>()("infra/SshClient", {
       Effect.gen(function* () {
         const dest = target(host, user)
         const proc = spawn({
-          cmd: ["ssh", dest, command],
+          cmd: ["ssh", dest, `bash -lc ${JSON.stringify(command)}`],
           stdout: "pipe",
           stderr: "pipe",
         })
@@ -46,19 +46,16 @@ export class SshClient extends Effect.Service<SshClient>()("infra/SshClient", {
       }),
 
     /** Write content to a remote file via base64 pipe (immune to heredoc injection) */
-    writeFile: (host: string, remotePath: string, content: string, opts?: { mode?: string; sudo?: boolean; user?: string }) =>
+    writeFile: (host: string, remotePath: string, content: string, opts?: { mode?: string; user?: string }) =>
       Effect.gen(function* () {
         const b64 = Buffer.from(content).toString("base64")
         const decode = `echo '${b64}' | base64 -d`
-        const write = opts?.sudo
-          ? `${decode} | sudo tee ${remotePath} > /dev/null`
-          : `${decode} > ${remotePath}`
-        const chmod = opts?.mode
-          ? (opts.sudo ? ` && sudo chmod ${opts.mode} ${remotePath}` : ` && chmod ${opts.mode} ${remotePath}`)
-          : ""
+        const write = `${decode} > ${remotePath}`
+        const chmod = opts?.mode ? ` && chmod ${opts.mode} ${remotePath}` : ""
         const dest = target(host, opts?.user)
+        const cmd = `${write}${chmod}`
         const proc = spawn({
-          cmd: ["ssh", dest, `${write}${chmod}`],
+          cmd: ["ssh", dest, `bash -lc ${JSON.stringify(cmd)}`],
           stdout: "pipe",
           stderr: "pipe",
         })
@@ -67,6 +64,26 @@ export class SshClient extends Effect.Service<SshClient>()("infra/SshClient", {
           const stderr = yield* Effect.promise(() => proc.stderr.text())
           return yield* Effect.fail(
             new SshError({ code: exitCode, signal: null, message: `ssh ${dest} writeFile: ${stderr.trim()}` }),
+          )
+        }
+      }),
+
+    /** Run a command interactively with TTY (for sudo, etc.) */
+    execInteractive: (host: string, command: string, user?: string) =>
+      Effect.gen(function* () {
+        const dest = target(host, user)
+        const proc = spawn({
+          cmd: ["ssh", "-t", dest, `bash -lc ${JSON.stringify(command)}`],
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        })
+
+        const exitCode = yield* Effect.promise(() => proc.exited)
+
+        if (exitCode !== 0) {
+          return yield* Effect.fail(
+            new SshError({ code: exitCode, signal: null, message: `ssh ${dest}: exited ${exitCode}` }),
           )
         }
       }),

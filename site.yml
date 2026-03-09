@@ -2,25 +2,65 @@
 - name: Base setup for all VMs
   hosts: all
   become: true
+  tags: [common, podman]
   roles:
     - common
     - podman
 
+- name: Firewall on obs node
+  hosts: obs
+  become: true
+  tags: [firewall]
+  roles:
+    - role: firewall
+      vars:
+        firewall_allow:
+          - { port: "80", comment: HTTP }
+          - { port: "443", comment: HTTPS }
+
+- name: Firewall on web node
+  hosts: web
+  become: true
+  tags: [firewall]
+  roles:
+    - role: firewall
+
 - name: OpenBao on obs node
   hosts: obs
   become: true
+  tags: [vault]
   roles:
     - vault
+
+- name: Caddy reverse proxy on obs node
+  hosts: obs
+  become: true
+  tags: [caddy, caddy-proxy]
+  roles:
+    - role: caddy
+      vars:
+        caddy_template: Caddyfile-proxy.j2
+        caddy_plugins:
+          - github.com/caddy-dns/cloudflare
+        caddy_env:
+          CF_API_TOKEN: "{{ cloudflare_api_token }}"
+        caddy_managed_domains:
+          - dfg.rocks
+          - danielfgray.com
+          - dfg.codes
+          - postgres.garden
 
 - name: Caddy on web node
   hosts: web
   become: true
+  tags: [caddy, caddy-web]
   roles:
     - caddy
 
 - name: Compose services on web node
   hosts: web
   become: true
+  tags: [compose, compose-web]
   roles:
     - role: compose
       vars:
@@ -33,6 +73,7 @@
 - name: SigNoz on obs node
   hosts: obs
   become: true
+  tags: [compose, compose-obs]
   roles:
     - role: compose
       vars:
@@ -47,5 +88,6 @@
 - name: Infra agent on web node
   hosts: web
   become: true
+  tags: [infra-agent]
   roles:
     - infra-agent

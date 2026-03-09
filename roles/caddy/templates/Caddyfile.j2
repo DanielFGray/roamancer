@@ -1,59 +1,6 @@
 {
 	admin localhost:2019
+	auto_https off
 }
 
-# Reusable snippets
-
-(static) {
-	root * {args[0]}
-	try_files {path} /index.html
-	file_server
-}
-
-(otel_cors) {
-	@cors_preflight expression `{method} == "OPTIONS" && ({http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.codes" || {http.request.header.Origin} == "https://signoz.dfg.codes")`
-	@cors_origin expression `{http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.codes" || {http.request.header.Origin} == "https://signoz.dfg.codes"`
-	@preflight_denied method OPTIONS
-	handle @cors_preflight {
-		header Access-Control-Allow-Origin "{http.request.header.Origin}"
-		header Access-Control-Allow-Methods "GET, POST, OPTIONS"
-		header Access-Control-Allow-Headers "content-type, x-requested-with"
-		header Access-Control-Max-Age "3600"
-		respond 204
-	}
-	handle @preflight_denied {
-		respond 403
-	}
-
-	header @cors_origin Access-Control-Allow-Origin "{http.request.header.Origin}"
-	header @cors_origin Access-Control-Allow-Methods "GET, POST, OPTIONS"
-	header @cors_origin Access-Control-Allow-Headers "content-type, x-requested-with"
-	header @cors_origin Access-Control-Max-Age "3600"
-}
-
-# ─── Infrastructure services ─────────────────────────────────
-
-signoz.dfg.codes {
-	handle /v1/* {
-		import otel_cors
-		reverse_proxy {{ obs_addr }}:4318
-	}
-	handle {
-		reverse_proxy {{ obs_addr }}:8080
-	}
-}
-
-otel.dfg.codes {
-	import otel_cors
-	reverse_proxy {{ obs_addr }}:4318
-}
-
-# ─── Redirects ──────────────────────────────────────────────
-
-git.dfg.codes {
-	redir https://github.com/DanielFGray{uri} permanent
-}
-
-git.danielfgray.com {
-	redir https://github.com/DanielFGray{uri} permanent
-}
+# Routes managed dynamically by infra agent via admin API

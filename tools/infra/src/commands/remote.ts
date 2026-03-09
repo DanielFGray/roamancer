@@ -2,6 +2,9 @@ import { Args, Command, Options } from "@effect/cli"
 import { Console, Effect, Option } from "effect"
 import { InfraClient } from "../services/InfraClient.ts"
 import { DeployRunner } from "../services/DeployRunner.ts"
+import { DeployMeta } from "../services/DeployMeta.ts"
+import { SshClient } from "../services/SshClient.ts"
+import { SVC_USER } from "../lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Default commands (via HTTP server)
@@ -121,12 +124,14 @@ export const stagesCommand = Command.make("stages", {
       const result = yield* client.getStages(name)
       yield* Console.log(`Stages for ${result.name}:\n`)
       yield* Effect.forEach(result.stages, (s) => {
-        const promoted = s.promoted ? " [promoted]" : ""
-        const port = s.port !== null ? ` :${s.port}` : ""
-        return Console.log(`  ${s.stage}${promoted}  ${s.type}${port}  ${s.ref}@${s.hash}  ${s.deployed_at}`)
+        const promoted = s.promoted ? " [production]" : ""
+        return Console.log(
+          `  ${s.stage}${promoted}  ${s.type}  ${s.ref}@${s.hash}\n` +
+          `    ${s.previewUrl}`,
+        )
       })
       if (result.production) {
-        yield* Console.log(`\nProduction: ${result.production}`)
+        yield* Console.log(`\nProduction domain: ${result.production}`)
       }
     }),
   ),
@@ -169,6 +174,65 @@ export const backupsCommand = Command.make("backups").pipe(
     }),
   ),
   Command.withDescription("Backup status"),
+)
+
+// ---------------------------------------------------------------------------
+// Logs (direct SSH, works from anywhere)
+// ---------------------------------------------------------------------------
+
+export const logsCommand = Command.make("logs", {
+  name: Args.text({ name: "name" }).pipe(Args.withDescription("Project name")),
+  stage: Args.text({ name: "stage" }).pipe(
+    Args.withDefault(""),
+    Args.withDescription("Stage name (default: first/only stage)"),
+  ),
+  lines: Options.integer("lines").pipe(
+    Options.withAlias("n"),
+    Options.withDefault(50),
+    Options.withDescription("Number of lines to show"),
+  ),
+  follow: Options.boolean("follow").pipe(
+    Options.withAlias("f"),
+    Options.withDefault(false),
+    Options.withDescription("Follow log output"),
+  ),
+}).pipe(
+  Command.withHandler(({ name, stage: stageArg, lines, follow }) =>
+    Effect.gen(function* () {
+      const meta = yield* DeployMeta
+      const ssh = yield* SshClient
+
+      const project = yield* meta.getProject(name)
+      if (!project || Object.keys(project.stages).length === 0) {
+        yield* Console.error(`No stages found for: ${name}`)
+        return
+      }
+
+      // Resolve stage name
+      const stageName = stageArg !== ""
+        ? stageArg
+        : Object.keys(project.stages)[0]!
+      const info = project.stages[stageName]
+      if (!info) {
+        yield* Console.error(`Stage "${stageName}" not found. Available: ${Object.keys(project.stages).join(", ")}`)
+        return
+      }
+
+      const unitName = `infra-${name}-${stageName}`
+      const followFlag = follow ? " -f" : ""
+      const cmd = `XDG_RUNTIME_DIR=/run/user/$(id -u) journalctl --user -u ${unitName} --no-pager -n ${lines}${followFlag}`
+
+      if (info.type === "static") {
+        yield* Console.log(`${name}/${stageName} is a static site — no service logs.`)
+        yield* Console.log(`Files at: ${info.host}:/srv/www/${info.domain}/stages/${stageName}`)
+        return
+      }
+
+      const output = yield* ssh.exec(info.host, cmd, SVC_USER)
+      yield* Console.log(output.trim())
+    }),
+  ),
+  Command.withDescription("View service logs for a deployed stage"),
 )
 
 // ---------------------------------------------------------------------------
@@ -283,12 +347,14 @@ const directStages = Command.make("stages", {
       }
       yield* Console.log(`Stages for ${result.name}:\n`)
       yield* Effect.forEach(result.stages, (s) => {
-        const promoted = s.promoted ? " [promoted]" : ""
-        const port = s.port !== null ? ` :${s.port}` : ""
-        return Console.log(`  ${s.stage}${promoted}  ${s.type}${port}  ${s.ref}@${s.hash}  ${s.deployed_at}`)
+        const promoted = s.promoted ? " [production]" : ""
+        return Console.log(
+          `  ${s.stage}${promoted}  ${s.type}  ${s.ref}@${s.hash}\n` +
+          `    ${s.previewUrl}`,
+        )
       })
       if (result.production) {
-        yield* Console.log(`\nProduction: ${result.production}`)
+        yield* Console.log(`\nProduction domain: ${result.production}`)
       }
     }),
   ),

@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { SshClient } from "./SshClient.ts"
+import { SVC_USER } from "../lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Config
@@ -10,17 +11,18 @@ export interface UnitConfig {
   readonly workingDirectory: string
   readonly execStart: string
   readonly environment?: Record<string, string>
-  readonly user?: string
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const UNIT_DIR = "/etc/systemd/system"
+const UNIT_DIR = `/home/${SVC_USER}/.config/systemd/user`
+
+/** Prefix required for systemctl --user to work over SSH */
+const SYSTEMCTL = "XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user"
 
 const renderUnit = (config: UnitConfig): string => {
-  const user = config.user ?? "prod"
   const envLines = config.environment
     ? Object.entries(config.environment)
         .map(([k, v]) => `Environment="${k}=${v}"`)
@@ -34,7 +36,6 @@ const renderUnit = (config: UnitConfig): string => {
     "",
     "[Service]",
     "Type=simple",
-    `User=${user}`,
     `WorkingDirectory=${config.workingDirectory}`,
     `ExecStart=${config.execStart}`,
     "Restart=always",
@@ -43,7 +44,7 @@ const renderUnit = (config: UnitConfig): string => {
     ...(envLines ? [envLines] : []),
     "",
     "[Install]",
-    "WantedBy=multi-user.target",
+    "WantedBy=default.target",
     "",
   ].join("\n")
 }
@@ -64,20 +65,19 @@ export class SystemdManager extends Effect.Service<SystemdManager>()(
             const unitPath = `${UNIT_DIR}/${unitName}.service`
             const content = renderUnit(config)
 
-            // Write unit file via sudo (needs root for /etc/systemd/system)
-            yield* ssh.writeFile(host, unitPath, content, { sudo: true })
-
-            yield* ssh.exec(host, "sudo systemctl daemon-reload")
-            yield* ssh.exec(host, `sudo systemctl enable ${unitName}`)
+            yield* ssh.exec(host, `mkdir -p ${UNIT_DIR}`, SVC_USER)
+            yield* ssh.writeFile(host, unitPath, content, { user: SVC_USER })
+            yield* ssh.exec(host, `${SYSTEMCTL} daemon-reload`, SVC_USER)
+            yield* ssh.exec(host, `${SYSTEMCTL} enable ${unitName}`, SVC_USER)
           }),
 
         start: (host: string, unitName: string) =>
-          ssh.exec(host, `sudo systemctl restart ${unitName}`).pipe(
+          ssh.exec(host, `${SYSTEMCTL} restart ${unitName}`, SVC_USER).pipe(
             Effect.asVoid,
           ),
 
         stop: (host: string, unitName: string) =>
-          ssh.exec(host, `sudo systemctl stop ${unitName}`).pipe(
+          ssh.exec(host, `${SYSTEMCTL} stop ${unitName}`, SVC_USER).pipe(
             Effect.asVoid,
           ),
 
@@ -85,17 +85,15 @@ export class SystemdManager extends Effect.Service<SystemdManager>()(
           Effect.gen(function* () {
             yield* ssh.exec(
               host,
-              `sudo systemctl stop ${unitName} 2>/dev/null; sudo systemctl disable ${unitName} 2>/dev/null; true`,
+              `${SYSTEMCTL} stop ${unitName} 2>/dev/null; ${SYSTEMCTL} disable ${unitName} 2>/dev/null; true`,
+              SVC_USER,
             )
-            yield* ssh.exec(
-              host,
-              `sudo rm -f ${UNIT_DIR}/${unitName}.service`,
-            )
-            yield* ssh.exec(host, "sudo systemctl daemon-reload")
+            yield* ssh.exec(host, `rm -f ${UNIT_DIR}/${unitName}.service`, SVC_USER)
+            yield* ssh.exec(host, `${SYSTEMCTL} daemon-reload`, SVC_USER)
           }),
 
         status: (host: string, unitName: string) =>
-          ssh.exec(host, `sudo systemctl status ${unitName}`),
+          ssh.exec(host, `${SYSTEMCTL} status ${unitName}`, SVC_USER),
       }
     }),
   },

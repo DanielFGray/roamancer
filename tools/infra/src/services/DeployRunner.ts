@@ -76,9 +76,11 @@ export interface StageDetail {
   readonly promoted: boolean
   readonly type: string
   readonly port: number | null
+  readonly domain: string
   readonly ref: string
   readonly hash: string
   readonly deployed_at: string
+  readonly previewUrl: string
 }
 
 export interface RollbackResult {
@@ -126,6 +128,8 @@ interface ProjectConfig {
 // Local build helper
 // ---------------------------------------------------------------------------
 
+const BUN_PATH = `${process.env["HOME"] ?? "/home/prod"}/.bun/bin`
+
 const runLocal = (
   cwd: string,
   cmd: string,
@@ -133,12 +137,13 @@ const runLocal = (
   env?: Record<string, string>,
 ) =>
   Effect.gen(function* () {
+    const baseEnv = { ...process.env, PATH: `${BUN_PATH}:${process.env["PATH"] ?? ""}` }
     const proc = spawn({
       cmd: [cmd, ...args],
       cwd,
       stdout: "inherit",
       stderr: "inherit",
-      ...(env !== undefined ? { env: { ...process.env, ...env } } : {}),
+      env: { ...baseEnv, ...env },
     })
 
     const exitCode = yield* Effect.promise(() => proc.exited)
@@ -364,7 +369,6 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
                 description: `${name} (${stage}) [new]`,
                 workingDirectory: newDir,
                 execStart: `/usr/bin/env bun run start`,
-                user: SVC_USER,
               })
 
               yield* Console.log("  starting new service...")
@@ -443,7 +447,6 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
                 description: `${name} (${stage})`,
                 workingDirectory: oldDir,
                 execStart: `/usr/bin/env bun run start`,
-                user: SVC_USER,
               })
               yield* systemd.start(config.host, unitName)
 
@@ -482,7 +485,6 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
               description: `${name} (${stage})`,
               workingDirectory: remoteDir,
               execStart: `/usr/bin/env bun run start`,
-              user: SVC_USER,
             })
 
             yield* Console.log("  starting service...")
@@ -523,7 +525,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
             stage,
             hash,
             type: stageInfo.type,
-            previewUrl: previewUrl(stage, config.domain),
+            previewUrl: previewUrl(hash, config.domain),
           } satisfies DeployResult
         }))
 
@@ -714,9 +716,11 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
             promoted: project.promoted === stage,
             type: info.type,
             port: info.port,
+            domain: info.domain,
             ref: info.ref,
             hash: info.hash,
             deployed_at: info.deployed_at,
+            previewUrl: previewUrl(info.hash, info.domain),
           } satisfies StageDetail))
 
           return {

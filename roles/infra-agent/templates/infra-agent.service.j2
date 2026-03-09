@@ -1,12 +1,10 @@
 [Unit]
 Description=Infra deployment agent
-After=network-online.target caddy.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=prod
-Group=web
 WorkingDirectory=/opt/infra
 ExecStart=/home/prod/.bun/bin/bun run /opt/infra/server/main.ts
 EnvironmentFile=-/opt/infra/.env
@@ -14,4 +12,4 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
