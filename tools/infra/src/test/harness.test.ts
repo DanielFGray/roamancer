@@ -38,6 +38,8 @@ it("keeps worktrees separate from service artifacts", () => {
   );
   expect(paths.service).toBe("/tmp/projects/demo/stages/main");
   expect(paths.serviceCandidate).toBe("/tmp/projects/demo/stages/main.new");
+  expect(paths.staticFilesCandidate).toBe("/tmp/www/demo/stages/main.new");
+  expect(paths.staticFilesBackup).toBe("/tmp/www/demo/stages/main.previous");
   expect(paths.worktree).not.toBe(paths.service);
 });
 

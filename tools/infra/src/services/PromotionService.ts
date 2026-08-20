@@ -1,6 +1,6 @@
 import { Console, Effect, Schema as S } from "effect";
 import { CaddyManager, type CaddyError } from "./CaddyManager.ts";
-import { DeployMeta } from "./DeployMeta.ts";
+import { DeployMeta, type DeployMetaErr } from "./DeployMeta.ts";
 import { HealthCheck, type HealthCheckError } from "./HealthCheck.ts";
 
 export class StageNotFoundError extends S.TaggedError<StageNotFoundError>()("StageNotFoundError", {
@@ -37,10 +37,16 @@ export interface PromotionServiceShape {
     readonly name: string;
     readonly stage: string;
     readonly force?: boolean;
-  }) => Effect.Effect<PromoteResult, StageNotFoundError | HealthCheckError | CaddyError>;
+  }) => Effect.Effect<
+    PromoteResult,
+    StageNotFoundError | HealthCheckError | CaddyError | DeployMetaErr
+  >;
   readonly rollback: (params: {
     readonly name: string;
-  }) => Effect.Effect<RollbackResult, NothingToRollbackError | StageNotFoundError | CaddyError>;
+  }) => Effect.Effect<
+    RollbackResult,
+    NothingToRollbackError | StageNotFoundError | CaddyError | DeployMetaErr
+  >;
 }
 
 export const makePromotionService = (

@@ -11,6 +11,7 @@ import { DEPLOYMENT_ROOTS, SVC_USER } from "../lib/config.ts";
 import { deploymentNames, deploymentPaths } from "../lib/deployment.ts";
 
 export type ServiceTarget = "final" | "candidate";
+export type StaticTarget = "final" | "candidate";
 
 const servicePath = (name: string, stage: string, target: ServiceTarget) => {
   const paths = deploymentPaths(name, stage, DEPLOYMENT_ROOTS);
@@ -21,6 +22,8 @@ const serviceUnit = (name: string, stage: string, target: ServiceTarget) => {
   const names = deploymentNames(name, stage);
   return target === "final" ? names.serviceUnit : names.candidateUnit;
 };
+
+const shellPath = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export const makeDeploymentComponents = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -59,15 +62,86 @@ export const makeDeploymentComponents = Effect.gen(function* () {
         host: string;
         worktreePath: string;
         dist: string;
+        target: StaticTarget;
       }) {
-        const remotePath = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS).staticFiles;
-        yield* ssh.exec(input.host, `mkdir -p ${remotePath}`, SVC_USER);
+        const paths = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS);
+        const remotePath =
+          input.target === "final" ? paths.staticFiles : paths.staticFilesCandidate;
+        yield* ssh.exec(input.host, `mkdir -p ${shellPath(remotePath)}`, SVC_USER);
         yield* ssh.rsync(`${input.worktreePath}/${input.dist}/`, remotePath, input.host, SVC_USER);
       }),
 
-      remove: Effect.fnUntraced(function* (input: { stage: string; domain: string; host: string }) {
-        const remotePath = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS).staticFiles;
-        yield* ssh.exec(input.host, `rm -rf ${remotePath}`, SVC_USER);
+      remove: Effect.fnUntraced(function* (input: {
+        stage: string;
+        domain: string;
+        host: string;
+        target: StaticTarget;
+      }) {
+        const paths = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS);
+        const remotePath =
+          input.target === "final" ? paths.staticFiles : paths.staticFilesCandidate;
+        yield* ssh.exec(input.host, `rm -rf ${shellPath(remotePath)}`, SVC_USER);
+      }),
+
+      activate: Effect.fnUntraced(function* (input: {
+        stage: string;
+        domain: string;
+        host: string;
+      }) {
+        const paths = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS);
+        const result = yield* ssh.exec(
+          input.host,
+          `rm -rf ${shellPath(paths.staticFilesBackup)} && ` +
+            `if [ -e ${shellPath(paths.staticFiles)} ]; then ` +
+            `mv ${shellPath(paths.staticFiles)} ${shellPath(paths.staticFilesBackup)} && ` +
+            `previous=1; else previous=0; fi && ` +
+            `if mv ${shellPath(paths.staticFilesCandidate)} ${shellPath(paths.staticFiles)}; then ` +
+            `printf '%s' "$previous"; else ` +
+            `if [ "$previous" = 1 ]; then ` +
+            `rm -rf ${shellPath(paths.staticFiles)} && ` +
+            `mv ${shellPath(paths.staticFilesBackup)} ${shellPath(paths.staticFiles)}; fi; ` +
+            `exit 1; fi`,
+          SVC_USER,
+        );
+        return result.trim() === "1";
+      }),
+
+      rollback: Effect.fnUntraced(function* (input: {
+        stage: string;
+        domain: string;
+        host: string;
+        hadPrevious: boolean;
+      }) {
+        const paths = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS);
+        const restore = input.hadPrevious
+          ? `if [ -e ${shellPath(paths.staticFilesBackup)} ]; then ` +
+            `rm -rf ${shellPath(paths.staticFiles)} && ` +
+            `mv ${shellPath(paths.staticFilesBackup)} ${shellPath(paths.staticFiles)}; fi`
+          : `rm -rf ${shellPath(paths.staticFiles)}`;
+        yield* ssh.exec(
+          input.host,
+          `${restore} && rm -rf ${shellPath(paths.staticFilesCandidate)} ` +
+            `&& rm -rf ${shellPath(paths.staticFilesBackup)}`,
+          SVC_USER,
+        );
+      }),
+
+      complete: Effect.fnUntraced(function* (input: {
+        stage: string;
+        domain: string;
+        host: string;
+      }) {
+        const paths = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS);
+        yield* ssh.exec(input.host, `rm -rf ${shellPath(paths.staticFilesBackup)}`, SVC_USER);
+      }),
+
+      removeBackup: Effect.fnUntraced(function* (input: {
+        stage: string;
+        domain: string;
+        host: string;
+      }) {
+        const paths = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS);
+        yield* ssh.exec(input.host, `rm -rf ${shellPath(paths.staticFilesBackup)}`, SVC_USER);
       }),
     },
 

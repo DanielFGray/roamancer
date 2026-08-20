@@ -117,26 +117,32 @@ export class DeployMeta extends Effect.Service<DeployMeta>()("infra/DeployMeta",
           } satisfies ProjectMeta;
         }),
 
-      saveProject: (name: string, meta: ProjectMeta) =>
-        Effect.sync(() => {
-          db.transaction(() => {
-            upsertProject.run(name, meta.repo, meta.promoted, meta.promoted_previous);
-            deleteStages.run(name);
-            for (const [stageName, info] of Object.entries(meta.stages)) {
-              insertStage.run(
-                name,
-                stageName,
-                info.type,
-                info.ref,
-                info.hash,
-                info.port,
-                info.host,
-                info.domain,
-                info.deployed_at,
-                info.healthcheck_path ?? null,
-              );
-            }
-          })();
+      saveProject: (name: string, meta: ProjectMeta): Effect.Effect<void, DeployMetaError> =>
+        Effect.try({
+          try: () => {
+            db.transaction(() => {
+              upsertProject.run(name, meta.repo, meta.promoted, meta.promoted_previous);
+              deleteStages.run(name);
+              for (const [stageName, info] of Object.entries(meta.stages)) {
+                insertStage.run(
+                  name,
+                  stageName,
+                  info.type,
+                  info.ref,
+                  info.hash,
+                  info.port,
+                  info.host,
+                  info.domain,
+                  info.deployed_at,
+                  info.healthcheck_path ?? null,
+                );
+              }
+            })();
+          },
+          catch: (error) =>
+            new DeployMetaError({
+              message: `Failed to save project ${name}: ${error instanceof Error ? error.message : String(error)}`,
+            }),
         }),
 
       listProjects: () =>
@@ -145,9 +151,15 @@ export class DeployMeta extends Effect.Service<DeployMeta>()("infra/DeployMeta",
           return rows.map((r) => r.name);
         }),
 
-      deleteProject: (name: string) =>
-        Effect.sync(() => {
-          deleteStmt.run(name);
+      deleteProject: (name: string): Effect.Effect<void, DeployMetaError> =>
+        Effect.try({
+          try: () => {
+            deleteStmt.run(name);
+          },
+          catch: (error) =>
+            new DeployMetaError({
+              message: `Failed to delete project ${name}: ${error instanceof Error ? error.message : String(error)}`,
+            }),
         }),
 
       allocatePort: () =>

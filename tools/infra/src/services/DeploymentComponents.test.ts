@@ -22,21 +22,51 @@ it.effect("publishes and removes static artifacts through their owned path", () 
       host: "test-host",
       worktreePath: "/test/worktrees/demo/main",
       dist: "dist",
+      target: "candidate",
     });
     yield* components.staticArtifacts.remove({
       stage: "main",
       domain: "demo.example",
       host: "test-host",
+      target: "candidate",
     });
 
     expect(state.calls.ssh).toEqual([
-      { host: "test-host", command: "mkdir -p /srv/www/demo.example/stages/main" },
+      { host: "test-host", command: "mkdir -p '/srv/www/demo.example/stages/main.new'" },
       {
         host: "test-host",
-        command: "rsync /test/worktrees/demo/main/dist/ /srv/www/demo.example/stages/main",
+        command: "rsync /test/worktrees/demo/main/dist/ /srv/www/demo.example/stages/main.new",
       },
-      { host: "test-host", command: "rm -rf /srv/www/demo.example/stages/main" },
+      { host: "test-host", command: "rm -rf '/srv/www/demo.example/stages/main.new'" },
     ]);
+  });
+});
+
+it.effect("activates and completes static candidates through owned paths", () => {
+  const state = makeTestServices();
+
+  return Effect.gen(function* () {
+    const components = yield* componentsFromTestLayers(state);
+    const hadPrevious = yield* components.staticArtifacts.activate({
+      stage: "main",
+      domain: "demo.example",
+      host: "test-host",
+    });
+    yield* components.staticArtifacts.complete({
+      stage: "main",
+      domain: "demo.example",
+      host: "test-host",
+    });
+
+    expect(hadPrevious).toBe(false);
+    expect(state.calls.ssh).toHaveLength(2);
+    expect(state.calls.ssh[0]?.command).toContain("mv '/srv/www/demo.example/stages/main.new'");
+    expect(state.calls.ssh[0]?.command).toContain("mv '/srv/www/demo.example/stages/main'");
+    expect(state.calls.ssh[0]?.command).toContain("if mv");
+    expect(state.calls.ssh[1]).toEqual({
+      host: "test-host",
+      command: "rm -rf '/srv/www/demo.example/stages/main.previous'",
+    });
   });
 });
 

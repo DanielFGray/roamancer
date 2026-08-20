@@ -4,7 +4,7 @@ import * as Path from "@effect/platform/Path";
 import * as HttpClientError from "@effect/platform/HttpClientError";
 import * as HttpClientRequest from "@effect/platform/HttpClientRequest";
 import { CaddyError, CaddyManager } from "../services/CaddyManager.ts";
-import { DeployMeta, type ProjectMeta } from "../services/DeployMeta.ts";
+import { DeployMeta, DeployMetaError, type ProjectMeta } from "../services/DeployMeta.ts";
 import { GitManager } from "../services/GitManager.ts";
 import { HealthCheck } from "../services/HealthCheck.ts";
 import { HealthCheckError } from "../services/HealthCheck.ts";
@@ -29,6 +29,10 @@ export interface TestServices {
   failSystemdAction?: string;
   failCaddySync?: boolean;
   failOpenBaoPut?: boolean;
+  failMetaSave?: boolean;
+  failMetaDelete?: boolean;
+  failBuild?: string;
+  staticHadPrevious?: boolean;
   nextPort?: number;
 }
 
@@ -48,7 +52,9 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
       if (state.failSshCommand && command.includes(state.failSshCommand)) {
         return Effect.fail(new SshError({ code: 1, signal: null, message: `failed: ${command}` }));
       }
-      return Effect.succeed("");
+      return command.includes("printf '%s'")
+        ? Effect.succeed(state.staticHadPrevious ? "1" : "0")
+        : Effect.succeed("");
     },
     writeFile: (host, remotePath, content) => {
       state.calls.ssh.push({ host, command: `write ${remotePath}` });
@@ -61,7 +67,9 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     },
     rsync: (source, destination, host) => {
       state.calls.ssh.push({ host, command: `rsync ${source} ${destination}` });
-      return Effect.as(Effect.void, undefined);
+      return state.failSshCommand && `rsync ${source} ${destination}`.includes(state.failSshCommand)
+        ? Effect.fail(new SshError({ code: 1, signal: null, message: "rsync failed" }))
+        : Effect.as(Effect.void, undefined);
     },
   });
 
@@ -96,15 +104,19 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     _tag: "infra/DeployMeta",
     getProject: (name) => Effect.succeed(state.projects.get(name) ?? null),
     saveProject: (name, project) =>
-      Effect.sync(() => {
-        state.calls.events.push("metadata.save");
-        state.projects.set(name, project);
-      }),
+      state.failMetaSave
+        ? Effect.fail(new DeployMetaError({ message: "metadata save failed" }))
+        : Effect.sync(() => {
+            state.calls.events.push("metadata.save");
+            state.projects.set(name, project);
+          }),
     listProjects: () => Effect.succeed([...state.projects.keys()]),
     deleteProject: (name) =>
-      Effect.sync(() => {
-        state.projects.delete(name);
-      }),
+      state.failMetaDelete
+        ? Effect.fail(new DeployMetaError({ message: "metadata delete failed" }))
+        : Effect.sync(() => {
+            state.projects.delete(name);
+          }),
     allocatePort: () => Effect.succeed(state.nextPort ?? 3001),
   });
 

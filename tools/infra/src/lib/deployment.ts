@@ -14,6 +14,8 @@ export interface DeploymentPaths {
   readonly service: string;
   readonly serviceCandidate: string;
   readonly staticFiles: string;
+  readonly staticFilesCandidate: string;
+  readonly staticFilesBackup: string;
 }
 
 export const deploymentPaths = (
@@ -26,6 +28,8 @@ export const deploymentPaths = (
   service: `${roots.projects}/${name}/stages/${stage}`,
   serviceCandidate: `${roots.projects}/${name}/stages/${stage}.new`,
   staticFiles: `${roots.staticFiles}/${name}/stages/${stage}`,
+  staticFilesCandidate: `${roots.staticFiles}/${name}/stages/${stage}.new`,
+  staticFilesBackup: `${roots.staticFiles}/${name}/stages/${stage}.previous`,
 });
 
 export const worktreeParent = (name: string, roots: DeploymentRoots = deploymentRoots()) =>

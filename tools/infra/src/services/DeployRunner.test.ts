@@ -1,15 +1,11 @@
 import { expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import * as HttpClientError from "@effect/platform/HttpClientError";
-import { makeDeployRunner } from "./DeployRunner.ts";
-import { DeploymentComponents, makeDeploymentComponents } from "./DeploymentComponents.ts";
-import { CaddyError, CaddyManager } from "./CaddyManager.ts";
-import { DeployMeta } from "./DeployMeta.ts";
-import { HealthCheck } from "./HealthCheck.ts";
-import { makePromotionService, PromotionService } from "./PromotionService.ts";
-import { SecretResolver } from "./SecretResolver.ts";
+import { CaddyError } from "./CaddyManager.ts";
+import { DeployMetaError } from "./DeployMeta.ts";
 import { SshError } from "./SshClient.ts";
-import { makeTestServices, seedProject, testLayers } from "../test/layers.ts";
+import { runnerFromTestLayers } from "../test/deploy-runner-harness.ts";
+import { makeTestServices, seedProject } from "../test/layers.ts";
 
 const serviceStage = () => ({
   type: "service" as const,
@@ -20,39 +16,6 @@ const serviceStage = () => ({
   domain: "demo",
   deployed_at: "2026-01-01T00:00:00.000Z",
 });
-
-const runnerFromTestLayers = (state: ReturnType<typeof makeTestServices>) => {
-  state.files.set(
-    "/test/worktrees/demo/main/package.json",
-    JSON.stringify({
-      scripts: { deploy: "bun run start" },
-      infra: { host: "test-host", domain: "demo" },
-    }),
-  );
-  const external = Layer.mergeAll(testLayers(state), SecretResolver.Default);
-  const components = Layer.effect(
-    DeploymentComponents,
-    makeDeploymentComponents.pipe(
-      Effect.map((value) => ({ ...value, _tag: "infra/DeploymentComponents" as const })),
-    ),
-  ).pipe(Layer.provide(external));
-  const promotion = Layer.effect(
-    PromotionService,
-    Effect.gen(function* () {
-      const service = makePromotionService(
-        yield* DeployMeta,
-        yield* CaddyManager,
-        yield* HealthCheck,
-      );
-      return { _tag: "infra/PromotionService" as const, ...service };
-    }),
-  ).pipe(Layer.provide(external));
-
-  return Effect.gen(function* () {
-    yield* Effect.void;
-    return yield* makeDeployRunner;
-  }).pipe(Effect.provide(Layer.mergeAll(external, components, promotion)));
-};
 
 it.effect("cleans a failed fresh service without leaving its owned final artifact", () => {
   const state = makeTestServices();
@@ -169,5 +132,30 @@ it.effect("removes the worktree when secret seeding fails during preparation", (
     expect(state.calls.git).toContain("removeWorktree demo main");
     expect(state.calls.ssh).toEqual([]);
     expect(state.calls.systemd).toEqual([]);
+  });
+});
+
+it.effect("cleans a fresh service when metadata commit fails", () => {
+  const state = makeTestServices();
+  state.failMetaSave = true;
+
+  return Effect.gen(function* () {
+    const runner = yield* runnerFromTestLayers(state);
+    const result = yield* Effect.either(
+      runner.deploy({ name: "demo", ref: "main", stage: "main" }),
+    );
+
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") expect(result.left).toBeInstanceOf(DeployMetaError);
+    expect(state.calls.systemd).toEqual([
+      { action: "install", host: "test-host", unit: "infra-demo-main" },
+      { action: "start", host: "test-host", unit: "infra-demo-main" },
+      { action: "remove", host: "test-host", unit: "infra-demo-main" },
+    ]);
+    expect(state.calls.ssh).toContainEqual({
+      host: "test-host",
+      command: "rm -rf /srv/projects/demo/stages/main",
+    });
+    expect(state.projects.has("demo")).toBe(false);
   });
 });
