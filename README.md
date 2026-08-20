@@ -65,15 +65,15 @@ nomad_consul_token: "<consul acl token for nomad agent>"
 Replace placeholders before apply:
 
 ```hcl
-registry.dfg.codes/postgresgarden-app@sha256:REPLACE_WITH_REAL_DIGEST
+registry.dfg.rocks/postgresgarden-app@sha256:REPLACE_WITH_REAL_DIGEST
 ```
 
 Example to get digest from registry (replace host/image/tag):
 
 ```bash
-docker build -t registry.dfg.codes/postgresgarden-app:prod-2026-03-06 .
-docker push registry.dfg.codes/postgresgarden-app:prod-2026-03-06
-docker inspect --format='{{index .RepoDigests 0}}' registry.dfg.codes/postgresgarden-app:prod-2026-03-06
+docker build -t registry.dfg.rocks/postgresgarden-app:prod-2026-03-06 .
+docker push registry.dfg.rocks/postgresgarden-app:prod-2026-03-06
+docker inspect --format='{{index .RepoDigests 0}}' registry.dfg.rocks/postgresgarden-app:prod-2026-03-06
 ```
 
 ## Alerts job

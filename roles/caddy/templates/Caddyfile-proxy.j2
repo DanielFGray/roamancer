@@ -5,8 +5,8 @@
 # ─── Snippets ──────────────────────────────────────────────
 
 (otel_cors) {
-	@cors_preflight expression `{method} == "OPTIONS" && ({http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.codes" || {http.request.header.Origin} == "https://signoz.dfg.codes")`
-	@cors_origin expression `{http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.codes" || {http.request.header.Origin} == "https://signoz.dfg.codes"`
+	@cors_preflight expression `{method} == "OPTIONS" && ({http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.rocks" || {http.request.header.Origin} == "https://signoz.dfg.rocks")`
+	@cors_origin expression `{http.request.header.Origin} == "https://postgres.garden" || {http.request.header.Origin} == "https://otel.dfg.rocks" || {http.request.header.Origin} == "https://signoz.dfg.rocks"`
 	@preflight_denied method OPTIONS
 	handle @cors_preflight {
 		header Access-Control-Allow-Origin "{http.request.header.Origin}"
@@ -27,7 +27,7 @@
 
 # ─── Infrastructure services (local to atheist) ──────────
 
-signoz.dfg.codes {
+signoz.dfg.rocks {
 	handle /v1/* {
 		import otel_cors
 		reverse_proxy localhost:4318
@@ -37,14 +37,14 @@ signoz.dfg.codes {
 	}
 }
 
-otel.dfg.codes {
+otel.dfg.rocks {
 	import otel_cors
 	reverse_proxy localhost:4318
 }
 
 # ─── Redirects ───────────────────────────────────────────
 
-git.dfg.codes {
+git.dfg.rocks {
 	redir https://github.com/DanielFGray{uri} permanent
 }
 

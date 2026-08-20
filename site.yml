@@ -47,7 +47,6 @@
         caddy_managed_domains:
           - dfg.rocks
           - danielfgray.com
-          - dfg.codes
           - postgres.garden
 
 - name: Caddy on web node

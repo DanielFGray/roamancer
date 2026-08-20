@@ -8,8 +8,8 @@ receivers:
         cors:
           allowed_origins:
             - "https://postgres.garden"
-            - "https://otel.dfg.codes"
-            - "https://signoz.dfg.codes"
+            - "https://otel.dfg.rocks"
+            - "https://signoz.dfg.rocks"
 
 processors:
   batch:
