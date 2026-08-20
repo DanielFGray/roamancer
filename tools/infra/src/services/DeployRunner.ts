@@ -12,6 +12,7 @@ import { SecretResolver } from "./SecretResolver.ts";
 import { SshClient } from "./SshClient.ts";
 import { SystemdManager } from "./SystemdManager.ts";
 import { HealthCheck } from "./HealthCheck.ts";
+import { PromotionService, StageNotFoundError } from "./PromotionService.ts";
 import { parseEnvExample, formatEnv } from "../lib/env-parser.ts";
 import {
   CADDY_HOST,
@@ -35,24 +36,6 @@ export class BuildError extends S.TaggedError<BuildError>()("BuildError", {
 export class ProjectConfigError extends S.TaggedError<ProjectConfigError>()("ProjectConfigError", {
   message: S.String,
 }) {}
-
-export class StageNotFoundError extends S.TaggedError<StageNotFoundError>()("StageNotFoundError", {
-  name: S.String,
-  stage: S.String,
-}) {
-  override get message() {
-    return `Stage "${this.stage}" not found for project: ${this.name}`;
-  }
-}
-
-export class NothingToRollbackError extends S.TaggedError<NothingToRollbackError>()(
-  "NothingToRollbackError",
-  { name: S.String },
-) {
-  override get message() {
-    return `No previous promotion to rollback to for: ${this.name}`;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -91,20 +74,9 @@ export interface StageDetail {
   readonly previewUrl: string;
 }
 
-export interface RollbackResult {
-  readonly name: string;
-  readonly stage: string;
-}
-
 export interface TeardownResult {
   readonly name: string;
   readonly stage: string;
-}
-
-export interface PromoteResult {
-  readonly name: string;
-  readonly stage: string;
-  readonly domain: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +152,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRu
     const ssh = yield* SshClient;
     const systemd = yield* SystemdManager;
     const healthCheck = yield* HealthCheck;
+    const promotion = yield* PromotionService;
     const bao = yield* OpenBaoClient;
     const resolver = yield* SecretResolver;
     const fs = yield* FileSystem.FileSystem;
@@ -548,92 +521,13 @@ export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRu
         }),
       );
 
-    // -------------------------------------------------------------------
-    // promote
-    // -------------------------------------------------------------------
-
+    // Promotion and rollback stay locked here so every project operation uses
+    // the same orchestration boundary.
     const promote = (params: { name: string; stage: string; force?: boolean }) =>
-      withProjectLock(
-        params.name,
-        Effect.gen(function* () {
-          const { name, stage, force } = params;
-
-          const project = yield* meta.getProject(name);
-          if (!project || Object.keys(project.stages).length === 0) {
-            return yield* new StageNotFoundError({ name, stage });
-          }
-
-          const stageInfo = project.stages[stage];
-          if (!stageInfo) {
-            return yield* new StageNotFoundError({ name, stage });
-          }
-
-          // Health check before promoting
-          if (!force) {
-            yield* Console.log(`  checking health of ${stage}...`);
-            yield* healthCheck
-              .check(stageInfo, stage)
-              .pipe(
-                Effect.tapError((err) =>
-                  Console.error(`Health check failed: ${err.reason}\nUse --force to skip.`),
-                ),
-              );
-            yield* Console.log("  healthy");
-          } else {
-            yield* Console.log("  skipping health check (--force)");
-          }
-
-          yield* meta.saveProject(name, {
-            ...project,
-            promoted: stage,
-            promoted_previous: project.promoted,
-          });
-
-          yield* caddy.sync();
-
-          return {
-            name,
-            stage,
-            domain: stageInfo.domain,
-          } satisfies PromoteResult;
-        }),
-      );
-
-    // -------------------------------------------------------------------
-    // rollback
-    // -------------------------------------------------------------------
+      withProjectLock(params.name, promotion.promote(params));
 
     const rollback = (params: { name: string }) =>
-      withProjectLock(
-        params.name,
-        Effect.gen(function* () {
-          const { name } = params;
-
-          const project = yield* meta.getProject(name);
-          if (!project) {
-            return yield* new NothingToRollbackError({ name });
-          }
-
-          if (!project.promoted_previous) {
-            return yield* new NothingToRollbackError({ name });
-          }
-
-          const prevStage = project.promoted_previous;
-          if (!project.stages[prevStage]) {
-            return yield* new StageNotFoundError({ name, stage: prevStage });
-          }
-
-          yield* meta.saveProject(name, {
-            ...project,
-            promoted: prevStage,
-            promoted_previous: project.promoted,
-          });
-
-          yield* caddy.sync();
-
-          return { name, stage: prevStage } satisfies RollbackResult;
-        }),
-      );
+      withProjectLock(params.name, promotion.rollback(params));
 
     // -------------------------------------------------------------------
     // teardown
@@ -763,6 +657,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRu
     SshClient.Default,
     SystemdManager.Default,
     HealthCheck.Default,
+    PromotionService.Default,
     BunContext.layer,
   ],
 }) {}

@@ -5,6 +5,7 @@ import { CaddyManager } from "../services/CaddyManager.ts";
 import { DeployMeta, type ProjectMeta } from "../services/DeployMeta.ts";
 import { GitManager } from "../services/GitManager.ts";
 import { HealthCheck } from "../services/HealthCheck.ts";
+import { HealthCheckError } from "../services/HealthCheck.ts";
 import { OpenBaoClient, type OpenBaoClientShape } from "../services/OpenBaoClient.ts";
 import { SshClient } from "../services/SshClient.ts";
 import { SystemdManager } from "../services/SystemdManager.ts";
@@ -13,6 +14,7 @@ export interface TestCalls {
   readonly ssh: Array<{ host: string; command: string }>;
   readonly git: Array<string>;
   readonly systemd: Array<{ action: string; host: string; unit: string }>;
+  readonly events: Array<string>;
 }
 
 export interface TestServices {
@@ -20,6 +22,7 @@ export interface TestServices {
   readonly projects: Map<string, ProjectMeta>;
   readonly files: Map<string, string>;
   readonly openBao: Map<string, Record<string, string>>;
+  healthError?: HealthCheckError;
 }
 
 const emptyMeta = (name: string): ProjectMeta => ({
@@ -80,6 +83,7 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     getProject: (name) => Effect.succeed(state.projects.get(name) ?? null),
     saveProject: (name, project) =>
       Effect.sync(() => {
+        state.calls.events.push("metadata.save");
         state.projects.set(name, project);
       }),
     listProjects: () => Effect.succeed([...state.projects.keys()]),
@@ -118,12 +122,18 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
 
   const health = Layer.succeed(HealthCheck, {
     _tag: "infra/HealthCheck",
-    check: () => Effect.void,
+    check: (_info, stage) => {
+      state.calls.events.push(`health.check:${stage}`);
+      return state.healthError ? Effect.fail(state.healthError) : Effect.void;
+    },
   });
   const caddy = Layer.succeed(CaddyManager, {
     _tag: "infra/CaddyManager",
     listRoutes: () => Effect.succeed([]),
-    sync: () => Effect.void,
+    sync: () => {
+      state.calls.events.push("caddy.sync");
+      return Effect.void;
+    },
   });
   const openBao: OpenBaoClientShape = {
     init: () => Effect.succeed({ unsealKeys: ["test-key"], rootToken: "test-token" }),
@@ -173,7 +183,7 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
 };
 
 export const makeTestServices = (): TestServices => ({
-  calls: { ssh: [], git: [], systemd: [] },
+  calls: { ssh: [], git: [], systemd: [], events: [] },
   projects: new Map(),
   files: new Map(),
   openBao: new Map(),
