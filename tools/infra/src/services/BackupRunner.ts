@@ -2,7 +2,7 @@ import { Effect, Schema as S } from "effect"
 import { SshClient } from "./SshClient.ts"
 import { OpenBaoClient } from "./OpenBaoClient.ts"
 import { formatTimestamp, formatBytes } from "../lib/format.ts"
-import { SVC_USER } from "../lib/config.ts"
+import { OPENBAO_TOKEN, SVC_USER } from "../lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -121,11 +121,11 @@ export const backupVault = Effect.gen(function* () {
   const backupFile = `/opt/backups/vault/vault-${timestamp}.snap`
 
   // vault token comes from env -- same token used by the OpenBaoClient
-  const vaultToken = process.env["OPENBAO_TOKEN"]
+  const vaultToken = OPENBAO_TOKEN
   if (!vaultToken) {
     return yield* new BackupError({
       target: "vault",
-      message: "OPENBAO_TOKEN env var not set -- cannot create vault snapshot",
+      message: "OpenBao token not configured -- cannot create vault snapshot",
     })
   }
 

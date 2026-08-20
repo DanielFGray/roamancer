@@ -1,4 +1,33 @@
 ---
+- name: Check OpenBao TLS certificate file
+  stat:
+    path: "{{ vault_tls_cert_file | default('/etc/openbao/tls/openbao.crt') }}"
+  register: vault_tls_cert
+  when: not (vault_tls_disable | default(false) | bool)
+
+- name: Check OpenBao TLS key file
+  stat:
+    path: "{{ vault_tls_key_file | default('/etc/openbao/tls/openbao.key') }}"
+  register: vault_tls_key
+  when: not (vault_tls_disable | default(false) | bool)
+
+- name: Check OpenBao TLS CA file
+  stat:
+    path: "{{ vault_tls_ca_file | default('/etc/openbao/tls/ca.crt') }}"
+  register: vault_tls_ca
+  when: not (vault_tls_disable | default(false) | bool)
+
+- name: Assert OpenBao TLS files exist
+  assert:
+    that:
+      - vault_tls_cert.stat.exists
+      - vault_tls_key.stat.exists
+      - vault_tls_ca.stat.exists
+    fail_msg: >-
+      OpenBao TLS is enabled but one or more TLS files are missing.
+      Set vault_tls_cert_file, vault_tls_key_file, and vault_tls_ca_file or explicitly set vault_tls_disable=true.
+  when: not (vault_tls_disable | default(false) | bool)
+
 - name: Download OpenBao .deb package
   get_url:
     url: "https://github.com/openbao/openbao/releases/download/v{{ vault_version }}/openbao_{{ vault_version }}_linux_amd64.deb"

@@ -44,6 +44,7 @@
   loop_control:
     label: "{{ item.name }}"
   when: item.env_template is defined
+  no_log: true
 
 - name: Start compose stacks
   command: podman-compose up -d

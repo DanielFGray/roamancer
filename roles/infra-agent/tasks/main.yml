@@ -4,6 +4,28 @@
   register: prod_uid
   changed_when: false
 
+- name: Require infra API token for agent
+  assert:
+    that:
+      - infra_api_token is defined
+      - infra_api_token | trim | length > 0
+    fail_msg: infra_api_token must be set for the infra agent; refusing to deploy an unauthenticated control plane.
+
+- name: Require OpenBao token for agent
+  assert:
+    that:
+      - infra_openbao_token is defined
+      - infra_openbao_token | trim | length > 0
+    fail_msg: infra_openbao_token must be set for the infra agent; refusing to deploy an agent without secret access credentials.
+
+- name: Ensure infra config directory exists
+  file:
+    path: /home/prod/.config/infra
+    state: directory
+    owner: prod
+    group: web
+    mode: "0700"
+
 - name: Create prod SSH directory
   file:
     path: /home/prod/.ssh
@@ -55,8 +77,8 @@
   command: >
     rsync -rlD --delete
     --chmod=Dg+rwx,Fg+rw
-    --exclude=node_modules --exclude=.git --exclude=docs --exclude=state.db --exclude=.env
-    -e 'ssh -p {{ ansible_port | default(22) }} -o StrictHostKeyChecking=no'
+    --exclude=node_modules --exclude=.git --exclude=docs --exclude=state.db --exclude=.env --exclude=.config/infra/api-token --exclude=.config/infra/webhook-secret --exclude=.config/infra/openbao-token
+    -e 'ssh -p {{ ansible_port | default(22) }} -o StrictHostKeyChecking=accept-new -o UpdateHostKeys=yes'
     {{ playbook_dir }}/tools/infra/
     {{ ansible_user }}@{{ ansible_host }}:/opt/infra/
   delegate_to: localhost
@@ -78,13 +100,28 @@
   become_user: prod
   changed_when: false
 
-- name: Deploy infra agent env file
-  template:
-    src: infra-agent.env.j2
-    dest: /opt/infra/.env
+- name: Write OpenBao bootstrap token file
+  copy:
+    content: "{{ infra_openbao_token | trim }}\n"
+    dest: /home/prod/.config/infra/openbao-token
     owner: prod
     group: web
     mode: "0600"
+  no_log: true
+  notify: restart infra-agent
+
+- name: Seed infra agent secrets into OpenBao
+  command: >
+    /usr/bin/env HOME=/home/prod OPENBAO_ADDR={{ vault_addr | quote }}
+    OPENBAO_TOKEN={{ infra_openbao_token | quote }}
+    INFRA_API_TOKEN={{ infra_api_token | quote }}
+    {% if infra_webhook_secret is defined and (infra_webhook_secret | trim | length > 0) %}INFRA_WEBHOOK_SECRET={{ infra_webhook_secret | quote }} {% endif %}
+    /home/prod/.bun/bin/bun run /opt/infra/src/main.ts vault seed-agent-secrets
+  args:
+    chdir: /opt/infra
+  become_user: prod
+  no_log: true
+  changed_when: false
   notify: restart infra-agent
 
 - name: Deploy infra agent user unit

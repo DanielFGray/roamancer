@@ -1,6 +1,11 @@
 import { Effect, Schema as S } from "effect"
+import { BunContext } from "@effect/platform-bun"
+import * as FileSystem from "@effect/platform/FileSystem"
+import * as Path from "@effect/platform/Path"
+import { spawn } from "bun"
 import { DeployMeta, type DeployMetaErr } from "./DeployMeta.ts"
-import { CADDY_ADMIN_URL } from "../lib/config.ts"
+import { CADDY_SITES_DIR, DEPLOYMENT_ROOTS } from "../lib/config.ts"
+import { deploymentNames, deploymentPaths, previewHost } from "../lib/deployment.ts"
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -14,144 +19,57 @@ export class CaddyError extends S.TaggedError<CaddyError>()(
 export type CaddyErr = CaddyError | DeployMetaErr
 
 // ---------------------------------------------------------------------------
-// Route ID convention
-//
-// Every route managed by infra gets an @id prefixed with "infra/".
-// Non-managed routes (Forgejo, monitoring, etc.) are left untouched.
-// ---------------------------------------------------------------------------
-
-const ROUTE_ID_PREFIX = "infra/"
-
-const stageRouteId = (project: string, stage: string) =>
-  `${ROUTE_ID_PREFIX}${project}/${stage}`
-
-const productionRouteId = (project: string) =>
-  `${ROUTE_ID_PREFIX}${project}/_production`
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const stageHost = (hash: string, domain: string) =>
-  `${hash}-preview.${domain}`
+const MANAGED_SNIPPET_PREFIX = "infra--"
 
-export const previewUrl = (hash: string, domain: string) =>
-  `https://${stageHost(hash, domain)}`
-
-/** Build a Caddy JSON route for a static/SPA site */
-const staticRoute = (id: string, host: string, root: string) => ({
-  "@id": id,
-  match: [{ host: [host] }],
-  handle: [
-    {
-      handler: "subroute",
-      routes: [
-        {
-          handle: [
-            {
-              handler: "rewrite",
-              uri: "{http.matchers.file.relative}",
-            },
-            {
-              handler: "file_server",
-              root,
-            },
-          ],
-          match: [
-            {
-              file: {
-                root,
-                try_files: ["{http.request.uri.path}", "/index.html"],
-              },
-            },
-          ],
-        },
-      ],
-    },
-  ],
-})
-
-/** Build a Caddy JSON route for a reverse proxy */
-const proxyRoute = (id: string, host: string, port: number) => ({
-  "@id": id,
-  match: [{ host: [host] }],
-  handle: [
-    {
-      handler: "reverse_proxy",
-      upstreams: [{ dial: `localhost:${port}` }],
-    },
-  ],
-})
+const isManagedSnippet = (filename: string) =>
+  filename.startsWith(MANAGED_SNIPPET_PREFIX) && filename.endsWith(".caddyfile")
 
 // ---------------------------------------------------------------------------
-// Caddy admin API helpers
+// Snippet generators
 // ---------------------------------------------------------------------------
 
-const caddyFetch = (method: string, path: string, body?: unknown) =>
-  Effect.tryPromise({
-    try: () =>
-      fetch(`${CADDY_ADMIN_URL}${path}`, {
-        method,
-        ...(body !== undefined
-          ? {
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            }
-          : {}),
-      }),
-    catch: (err) =>
-      new CaddyError({
-        message: `Failed to reach Caddy admin API: ${err instanceof Error ? err.message : String(err)}`,
-      }),
-  })
+const staticSnippet = (host: string, root: string) =>
+  `${host} {
+\troot * ${root}
+\ttry_files {path} /index.html
+\tfile_server
+}
+`
 
-/** GET JSON from Caddy. Returns null on 404. */
-const caddyGet = <T>(path: string): Effect.Effect<T | null, CaddyError> =>
-  caddyFetch("GET", path).pipe(
-    Effect.flatMap((res) => {
-      if (res.status === 404) return Effect.succeed(null as T | null)
-      if (!res.ok) return caddyErrorFromResponse(res)
-      return Effect.tryPromise({
-        try: () => res.json() as Promise<T>,
-        catch: () => new CaddyError({ message: "failed to parse Caddy response" }),
+const proxySnippet = (host: string, port: number) =>
+  `${host} {
+\treverse_proxy localhost:${port}
+}
+`
+
+// ---------------------------------------------------------------------------
+// Caddy reload
+// ---------------------------------------------------------------------------
+
+const reloadCaddy = () =>
+  Effect.gen(function* () {
+    const proc = spawn({
+      cmd: ["caddy", "reload", "--config", "/etc/caddy/Caddyfile"],
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const exitCode = yield* Effect.promise(() => proc.exited)
+    if (exitCode !== 0) {
+      const stderr = yield* Effect.promise(() => proc.stderr.text())
+      return yield* new CaddyError({
+        message: `caddy reload failed (exit ${exitCode}): ${stderr.trim()}`,
       })
-    }),
-  )
-
-/** PUT JSON to Caddy. Creates intermediate paths if they don't exist. */
-const caddyPut = (path: string, body: unknown): Effect.Effect<void, CaddyError> =>
-  caddyFetch("PUT", path, body).pipe(
-    Effect.flatMap((res) => {
-      if (!res.ok) return caddyErrorFromResponse(res)
-      return Effect.void
-    }),
-  )
-
-/** PATCH JSON to Caddy. Replaces existing value at path. */
-const caddyPatch = (path: string, body: unknown): Effect.Effect<void, CaddyError> =>
-  caddyFetch("PATCH", path, body).pipe(
-    Effect.flatMap((res) => {
-      if (!res.ok) return caddyErrorFromResponse(res)
-      return Effect.void
-    }),
-  )
-
-const caddyErrorFromResponse = (res: Response): Effect.Effect<never, CaddyError> =>
-  Effect.tryPromise({
-    try: () => res.text(),
-    catch: () => new CaddyError({ message: `Caddy API returned ${res.status}` }),
-  }).pipe(
-    Effect.flatMap((text) =>
-      new CaddyError({ message: `Caddy API returned ${res.status}: ${text}` }),
-    ),
-  )
+    }
+  })
 
 // ---------------------------------------------------------------------------
 // Service
 //
-// Reads current Caddy routes, preserves non-managed ones, and merges in
-// our managed routes. Uses /config/... API instead of /load to avoid
-// wiping routes managed by other tools.
+// Reads deployment metadata, writes Caddyfile snippets to sites-enabled/,
+// removes orphans, and reloads Caddy. Routes survive restarts.
 // ---------------------------------------------------------------------------
 
 export class CaddyManager extends Effect.Service<CaddyManager>()(
@@ -159,14 +77,55 @@ export class CaddyManager extends Effect.Service<CaddyManager>()(
   {
     effect: Effect.gen(function* () {
       const meta = yield* DeployMeta
+      const fs = yield* FileSystem.FileSystem
+      const pathSvc = yield* Path.Path
+
+      const writeTo = (filename: string, content: string) =>
+        fs.writeFileString(pathSvc.join(CADDY_SITES_DIR, filename), content).pipe(
+          Effect.mapError((err) =>
+            new CaddyError({ message: `Failed to write ${filename}: ${err}` }),
+          ),
+        )
+
+      const removeFile = (filename: string) =>
+        fs.remove(pathSvc.join(CADDY_SITES_DIR, filename)).pipe(
+          Effect.mapError((err) =>
+            new CaddyError({ message: `Failed to remove ${filename}: ${err}` }),
+          ),
+        )
+
+      const listFiles = () =>
+        fs.readDirectory(CADDY_SITES_DIR).pipe(
+          Effect.map((entries) => entries.filter((f) => f.endsWith(".caddyfile"))),
+          Effect.mapError((err) =>
+            new CaddyError({ message: `Failed to list ${CADDY_SITES_DIR}: ${err}` }),
+          ),
+        )
+
+      const readFile = (filename: string) =>
+        fs.readFileString(pathSvc.join(CADDY_SITES_DIR, filename)).pipe(
+          Effect.mapError((err) =>
+            new CaddyError({ message: `Failed to read ${filename}: ${err}` }),
+          ),
+        )
 
       return {
+        /** List current snippet files and their contents */
+        listRoutes: () =>
+          Effect.gen(function* () {
+            const files = yield* listFiles()
+            return yield* Effect.forEach(files, (file) =>
+              readFile(file).pipe(
+                Effect.map((content) => ({ file, content })),
+              ),
+            )
+          }),
+
+        /** Reconcile snippet files from deploy state and reload Caddy */
         sync: () =>
           Effect.gen(function* () {
             const projects = yield* meta.listProjects()
-
-            // Build our managed routes
-            const managedRoutes: Array<Record<string, unknown>> = []
+            const expectedFiles = new Set<string>()
 
             yield* Effect.forEach(projects, (name) =>
               Effect.gen(function* () {
@@ -175,90 +134,66 @@ export class CaddyManager extends Effect.Service<CaddyManager>()(
 
                 // Stage preview routes
                 for (const [stage, info] of Object.entries(project.stages)) {
-                  const host = stageHost(info.hash, info.domain)
-                  const id = stageRouteId(name, stage)
-                  if (info.type === "static") {
-                    managedRoutes.push(
-                      staticRoute(id, host, `/srv/www/${info.domain}/stages/${stage}`),
-                    )
-                  } else if (info.port != null) {
-                    managedRoutes.push(proxyRoute(id, host, info.port))
-                  }
+                  const host = previewHost(info.hash, info.domain)
+                  const filename = deploymentNames(name, stage).stageSnippet
+                  expectedFiles.add(filename)
+
+                  const content =
+                    info.type === "static"
+                      ? staticSnippet(
+                          host,
+                          deploymentPaths(info.domain, stage, DEPLOYMENT_ROOTS).staticFiles,
+                        )
+                      : info.port != null
+                        ? proxySnippet(host, info.port)
+                        : null
+
+                  if (content) yield* writeTo(filename, content)
                 }
 
                 // Production route (if promoted)
                 if (project.promoted) {
                   const promoted = project.stages[project.promoted]
                   if (promoted) {
-                    const id = productionRouteId(name)
-                    if (promoted.type === "static") {
-                      managedRoutes.push(
-                        staticRoute(
-                          id,
-                          promoted.domain,
-                          `/srv/www/${promoted.domain}/stages/${project.promoted}`,
-                        ),
-                      )
-                    } else if (promoted.port != null) {
-                      managedRoutes.push(proxyRoute(id, promoted.domain, promoted.port))
-                    }
+                    const filename = deploymentNames(name, project.promoted).productionSnippet
+                    expectedFiles.add(filename)
+
+                    const content =
+                      promoted.type === "static"
+                        ? staticSnippet(
+                            promoted.domain,
+                          deploymentPaths(promoted.domain, project.promoted, DEPLOYMENT_ROOTS).staticFiles,
+                          )
+                        : promoted.port != null
+                          ? proxySnippet(promoted.domain, promoted.port)
+                          : null
+
+                    if (content) yield* writeTo(filename, content)
                   }
                 }
               }),
             )
 
-            // Ensure the Caddy HTTP server structure exists.
-            // When Caddy starts with a minimal Caddyfile (just admin + auto_https off),
-            // neither apps nor apps/http exist — bootstrap the whole tree.
-            const apps = yield* caddyGet<Record<string, unknown>>(
-              "/config/apps",
-            )
-            if (!apps) {
-              yield* caddyPut("/config/apps", {
-                http: {
-                  servers: {
-                    srv0: { listen: [":80"], routes: [] },
-                  },
-                },
-              })
-            } else {
-              const httpApp = yield* caddyGet<Record<string, unknown>>(
-                "/config/apps/http",
-              )
-              if (!httpApp) {
-                yield* caddyPut("/config/apps/http", {
-                  servers: {
-                    srv0: { listen: [":80"], routes: [] },
-                  },
-                })
+            // Other tools may own snippets in this directory. Reconcile only ours.
+            const existing = yield* listFiles()
+            for (const file of existing) {
+              if (isManagedSnippet(file) && !expectedFiles.has(file)) {
+                yield* removeFile(file)
               }
             }
 
-            // Read current routes, preserve non-managed ones
-            const current =
-              (yield* caddyGet<Array<Record<string, unknown>>>(
-                "/config/apps/http/servers/srv0/routes",
-              )) ?? []
+            // Reload Caddy to pick up changes
+            yield* reloadCaddy()
 
-            const externalRoutes = current.filter(
-              (r) =>
-                typeof r["@id"] !== "string" ||
-                !r["@id"].startsWith(ROUTE_ID_PREFIX),
-            )
-
-            // Write merged routes: external first, then ours
-            // Always PATCH since we ensure the server structure exists above
-            yield* caddyPatch("/config/apps/http/servers/srv0/routes", [
-              ...externalRoutes,
-              ...managedRoutes,
-            ])
-
+            const orphansRemoved = existing.filter(
+              (file) => isManagedSnippet(file) && !expectedFiles.has(file),
+            ).length
             yield* Effect.log(
-              `Caddy sync: ${managedRoutes.length} managed route(s), ${externalRoutes.length} external route(s) preserved`,
+              `Caddy sync: ${expectedFiles.size} snippet(s) written, ${orphansRemoved} orphan(s) removed`,
             )
           }),
       }
     }),
-    dependencies: [DeployMeta.Default],
+    dependencies: [DeployMeta.Default, BunContext.layer],
   },
 ) {}

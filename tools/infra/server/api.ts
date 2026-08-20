@@ -98,6 +98,7 @@ export const DeployResultSchema = Schema.Struct({
   hash: Schema.String,
   type: Schema.String,
   previewUrl: Schema.String,
+  autoPromote: Schema.optional(Schema.String),
 })
 
 export const PromoteResultSchema = Schema.Struct({
@@ -250,6 +251,12 @@ const actionsGroup = HttpApiGroup.make("actions")
 const webhooksGroup = HttpApiGroup.make("webhooks")
   .add(
     HttpApiEndpoint.post("forgejoWebhook", "/webhook/forgejo")
+      .addSuccess(StubResponse)
+      .addError(WebhookForbidden)
+      .addError(WebhookError),
+  )
+  .add(
+    HttpApiEndpoint.post("githubWebhook", "/webhook/github")
       .addSuccess(StubResponse)
       .addError(WebhookForbidden)
       .addError(WebhookError),

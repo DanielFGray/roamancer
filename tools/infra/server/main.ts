@@ -21,10 +21,22 @@ import { SchedulerLive, BackupStatus, BackupStatusLive } from "./scheduler.ts"
 import { DeployRunner } from "../src/services/DeployRunner.ts"
 import { CaddyManager } from "../src/services/CaddyManager.ts"
 import { SshClient } from "../src/services/SshClient.ts"
-import { OpenBaoClientLive } from "../src/services/OpenBaoClient.ts"
+import { OpenBaoClient, OpenBaoClientLive } from "../src/services/OpenBaoClient.ts"
 import { PasswordGenerator } from "../src/services/PasswordGenerator.ts"
 import { GitManager } from "../src/services/GitManager.ts"
-import { API_PORT, API_TOKEN, OPENBAO_ADDR, CADDY_ADMIN_URL } from "../src/lib/config.ts"
+import {
+  API_PORT,
+  API_TOKEN,
+  API_TOKEN_FILE,
+  INFRA_AGENT_API_TOKEN_KEY,
+  INFRA_CONFIG_DIR,
+  INFRA_AGENT_SECRET_PATH,
+  INFRA_AGENT_WEBHOOK_SECRET_KEY,
+  OPENBAO_ADDR,
+  OPENBAO_TOKEN,
+  WEBHOOK_SECRET_FILE,
+} from "../src/lib/config.ts"
+import { writeFileSync, mkdirSync, chmodSync } from "node:fs"
 
 // ---------------------------------------------------------------------------
 // Stub response helper (status endpoint only)
@@ -33,6 +45,20 @@ import { API_PORT, API_TOKEN, OPENBAO_ADDR, CADDY_ADMIN_URL } from "../src/lib/c
 const stub = (message: string) =>
   Effect.succeed({ status: "ok" as const, message })
 
+const tokenEquals = (actual: string, expected: string) => {
+  const actualBuf = Buffer.from(actual)
+  const expectedBuf = Buffer.from(expected)
+  return actualBuf.length === expectedBuf.length && timingSafeEqual(actualBuf, expectedBuf)
+}
+
+const apiToken = () => process.env["INFRA_API_TOKEN"] ?? API_TOKEN
+
+const writeSecretFile = (path: string, value: string) => {
+  mkdirSync(INFRA_CONFIG_DIR, { recursive: true })
+  writeFileSync(path, `${value.trim()}\n`, { mode: 0o600 })
+  chmodSync(path, 0o600)
+}
+
 // ---------------------------------------------------------------------------
 // Auth middleware implementation
 // ---------------------------------------------------------------------------
@@ -40,9 +66,9 @@ const stub = (message: string) =>
 const AuthorizationLive = Layer.effect(
   Authorization,
   Effect.gen(function* () {
-    if (!API_TOKEN) {
-      yield* Effect.logWarning(
-        "INFRA_API_TOKEN not set -- running in dev mode (all requests allowed)",
+    if (!apiToken()) {
+      yield* Effect.logError(
+        "INFRA_API_TOKEN not set -- protected infra API endpoints will reject all requests",
       )
     }
 
@@ -51,15 +77,14 @@ const AuthorizationLive = Layer.effect(
         Effect.gen(function* () {
           const raw = Redacted.value(token)
 
-          // dev mode: no token configured, allow everything
-          if (!API_TOKEN) {
-            return CurrentUser.of({ token: raw })
+          const expected = apiToken()
+          if (!expected) {
+            return yield* new Unauthorized({
+              message: "infra API disabled until INFRA_API_TOKEN is configured",
+            })
           }
 
-          const rawBuf = Buffer.from(raw)
-          const expectedBuf = Buffer.from(API_TOKEN)
-
-          if (rawBuf.length !== expectedBuf.length || !timingSafeEqual(rawBuf, expectedBuf)) {
+          if (!tokenEquals(raw, expected)) {
             return yield* new Unauthorized({ message: "invalid bearer token" })
           }
 
@@ -123,23 +148,21 @@ const StatusGroupLive = HttpApiBuilder.group(
         }),
       )
       .handle("getRoutes", () =>
-        Effect.promise(async () => {
-          try {
-            const res = await fetch(
-              `${CADDY_ADMIN_URL}/config/apps/http/servers/srv0/routes`,
-            )
-            return res.ok ? await res.json() : []
-          } catch {
-            return []
-          }
-        }),
+        Effect.gen(function* () {
+          const caddy = yield* CaddyManager
+          return yield* caddy.listRoutes()
+        }).pipe(Effect.catchAll(() => Effect.succeed([]))),
       )
       .handle("syncRoutes", () =>
         Effect.gen(function* () {
           const caddy = yield* CaddyManager
           yield* caddy.sync()
           return { status: "ok" as const, message: "Caddy routes synced" }
-        }),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.succeed({ status: "error" as const, message: String(err) }),
+          ),
+        ),
       ),
 )
 
@@ -228,8 +251,38 @@ const InfraApiLive = HttpApiBuilder.api(InfraApi).pipe(
 
 const OpenBaoLive = OpenBaoClientLive({
   addr: OPENBAO_ADDR,
-  token: process.env["OPENBAO_TOKEN"],
+  token: OPENBAO_TOKEN,
 }).pipe(Layer.provide(FetchHttpClient.layer))
+
+const AgentSecretOverridesLive = Layer.effectDiscard(
+  Effect.gen(function* () {
+    if (!OPENBAO_TOKEN) {
+      yield* Effect.logWarning(
+        "OPENBAO_TOKEN not configured; infra agent cannot hydrate API/webhook secrets from OpenBao",
+      )
+      return
+    }
+
+    const bao = yield* OpenBaoClient
+    const secrets = yield* bao.kvGet(INFRA_AGENT_SECRET_PATH).pipe(
+      Effect.catchAll(() => Effect.succeed<Record<string, string>>({})),
+    )
+
+    const apiToken = secrets[INFRA_AGENT_API_TOKEN_KEY]
+    if (apiToken && !process.env["INFRA_API_TOKEN"]) {
+      process.env["INFRA_API_TOKEN"] = apiToken
+      writeSecretFile(API_TOKEN_FILE, apiToken)
+      yield* Effect.log("Loaded INFRA_API_TOKEN from OpenBao")
+    }
+
+    const webhookSecret = secrets[INFRA_AGENT_WEBHOOK_SECRET_KEY]
+    if (webhookSecret && !process.env["INFRA_WEBHOOK_SECRET"]) {
+      process.env["INFRA_WEBHOOK_SECRET"] = webhookSecret
+      writeSecretFile(WEBHOOK_SECRET_FILE, webhookSecret)
+      yield* Effect.log("Loaded INFRA_WEBHOOK_SECRET from OpenBao")
+    }
+  }),
+).pipe(Layer.provide(OpenBaoLive))
 
 const Leaves = Layer.mergeAll(
   PasswordGenerator.Default,
@@ -270,6 +323,7 @@ const HttpLive = HttpApiBuilder.serve(HttpMiddleware.logger).pipe(
 )
 
 const MainLive = Layer.mergeAll(HttpLive, SchedulerLive).pipe(
+  Layer.provide(AgentSecretOverridesLive),
   Layer.provide(ServiceDeps),
   Layer.provide(Logger.minimumLogLevel(LogLevel.Info)),
 )

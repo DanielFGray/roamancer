@@ -29,6 +29,13 @@ Production-baseline Ansible setup for Nomad/Consul/Vault/Caddy nodes.
 - `deploy-site` Nomad job is no longer auto-deployed from Ansible by default.
 - Nomad job rollout is now idempotent (`nomad job plan -detailed-exitcode` + conditional `job run`).
 - Added `alerts.nomad` periodic watchdog job with Vault-backed Slack webhook secret (`secret/data/alerts`).
+- Infra API now fails closed when `INFRA_API_TOKEN` is missing.
+- Webhook-driven auto-promotion is now opt-in via `INFRA_WEBHOOK_AUTO_PROMOTE=true`.
+- Compose-managed data/observability ports now bind to localhost by default.
+- Infra agent SSH now uses TOFU host key verification (`accept-new`) instead of disabling checks.
+- CLI config `*_command` execution is now disabled by default; opt in with `INFRA_ENABLE_CONFIG_COMMANDS=true`.
+- Non-local `OPENBAO_ADDR` / `INFRA_SERVER_URL` values must use HTTPS unless `INFRA_ALLOW_INSECURE_HTTP=true` is explicitly set.
+- Infra agent API/webhook secrets are now seeded into OpenBao and loaded at runtime instead of being templated into `/opt/infra/.env`.
 
 ## Required inventory variables
 
@@ -96,8 +103,20 @@ Override via inventory vars:
 - `vault_tls_cert_file`
 - `vault_tls_key_file`
 - `vault_tls_ca_file`
+- `vault_tls_disable` (set to `true` only for explicitly insecure local/testing setups)
 
 Playbook now asserts these files exist when TLS is enabled.
+
+## Infra agent secret bootstrap
+
+The infra agent now expects:
+
+- OpenBao bootstrap token at `~/.config/infra/openbao-token`
+- API token cached at `~/.config/infra/api-token`
+- webhook secret cached at `~/.config/infra/webhook-secret`
+
+Ansible seeds `infra-agent` secrets into OpenBao during deploy, then the agent hydrates its local cached token files from OpenBao at runtime.
+This removes API/webhook secrets from `/opt/infra/.env`, but the OpenBao bootstrap token still remains a sensitive local bootstrap credential.
 
 ## Validation
 

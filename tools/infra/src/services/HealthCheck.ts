@@ -1,7 +1,8 @@
 import { Effect, Schema as S, Schedule } from "effect"
 import { SshClient } from "./SshClient.ts"
 import type { StageInfo } from "./DeployMeta.ts"
-import { SVC_USER } from "../lib/config.ts"
+import { DEPLOYMENT_ROOTS, SVC_USER } from "../lib/config.ts"
+import { deploymentPaths } from "../lib/deployment.ts"
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -86,7 +87,7 @@ export class HealthCheck extends Effect.Service<HealthCheck>()(
           }
 
           // Static: use pre-resolved ssh
-          const dir = `/srv/www/${info.domain}/stages/${stage}`
+          const dir = deploymentPaths(info.domain, stage, DEPLOYMENT_ROOTS).staticFiles
           const cmd = `test -d ${dir} && test "$(ls -A ${dir})"`
 
           return ssh.exec(info.host, cmd, SVC_USER).pipe(

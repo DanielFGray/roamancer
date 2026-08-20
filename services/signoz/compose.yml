@@ -15,8 +15,8 @@ services:
     depends_on:
       - zookeeper
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
     environment:
@@ -28,7 +28,7 @@ services:
     depends_on:
       - clickhouse
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - signoz-data:/var/lib/signoz
     environment:
@@ -50,8 +50,8 @@ services:
     depends_on:
       - clickhouse
     ports:
-      - "4317:4317"
-      - "4318:4318"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
     command: ["--config=/etc/otel-collector-config.yaml"]

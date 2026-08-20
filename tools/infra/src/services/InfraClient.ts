@@ -20,6 +20,7 @@ const DeployResult = S.Struct({
   hash: S.String,
   type: S.String,
   previewUrl: S.String,
+  autoPromote: S.optional(S.String),
 })
 
 const PromoteResult = S.Struct({

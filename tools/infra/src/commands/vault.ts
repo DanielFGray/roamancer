@@ -4,8 +4,15 @@ import * as FileSystem from "@effect/platform/FileSystem"
 import * as Path from "@effect/platform/Path"
 import { OpenBaoClient } from "../services/OpenBaoClient.ts"
 import { SecretResolver } from "../services/SecretResolver.ts"
+import { PasswordGenerator } from "../services/PasswordGenerator.ts"
 import { parseEnvExample } from "../lib/env-parser.ts"
-import { PROJECTS_DIR, REPO_ROOT } from "../lib/config.ts"
+import {
+  INFRA_AGENT_API_TOKEN_KEY,
+  INFRA_AGENT_SECRET_PATH,
+  INFRA_AGENT_WEBHOOK_SECRET_KEY,
+  PROJECTS_DIR,
+  REPO_ROOT,
+} from "../lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -200,12 +207,40 @@ const vaultStatus = Command.make("status").pipe(
   Command.withDescription("Show vault seal status and secret paths"),
 )
 
+const vaultSeedAgentSecrets = Command.make("seed-agent-secrets").pipe(
+  Command.withHandler(() =>
+    Effect.gen(function* () {
+      const bao = yield* OpenBaoClient
+      const gen = yield* PasswordGenerator
+
+      const existing = yield* bao.kvGet(INFRA_AGENT_SECRET_PATH).pipe(
+        Effect.catchAll(() => Effect.succeed<Record<string, string>>({})),
+      )
+
+      const apiToken = process.env["INFRA_API_TOKEN"]
+        ?? existing[INFRA_AGENT_API_TOKEN_KEY]
+        ?? (yield* gen.generate())
+      const webhookSecret = process.env["INFRA_WEBHOOK_SECRET"]
+        ?? existing[INFRA_AGENT_WEBHOOK_SECRET_KEY]
+        ?? (yield* gen.generate())
+
+      yield* bao.kvPut(INFRA_AGENT_SECRET_PATH, {
+        ...existing,
+        [INFRA_AGENT_API_TOKEN_KEY]: apiToken,
+        [INFRA_AGENT_WEBHOOK_SECRET_KEY]: webhookSecret,
+      })
+      yield* Console.log(`Seeded infra-agent secrets to OpenBao path: ${INFRA_AGENT_SECRET_PATH}`)
+    }),
+  ),
+  Command.withDescription("Seed infra-agent API/webhook secrets into OpenBao"),
+)
+
 // ---------------------------------------------------------------------------
 // Group command
 // ---------------------------------------------------------------------------
 
 export const vaultCommand = Command.make("vault").pipe(
   Command.withHandler(() => Effect.void),
-  Command.withSubcommands([vaultInit, vaultRotate, vaultStatus]),
+  Command.withSubcommands([vaultInit, vaultRotate, vaultStatus, vaultSeedAgentSecrets]),
   Command.withDescription("Manage OpenBao vault (init, rotate, status)"),
 )

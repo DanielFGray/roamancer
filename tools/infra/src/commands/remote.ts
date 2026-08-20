@@ -4,7 +4,8 @@ import { InfraClient } from "../services/InfraClient.ts"
 import { DeployRunner } from "../services/DeployRunner.ts"
 import { DeployMeta } from "../services/DeployMeta.ts"
 import { SshClient } from "../services/SshClient.ts"
-import { SVC_USER } from "../lib/config.ts"
+import { DEPLOYMENT_ROOTS, SVC_USER } from "../lib/config.ts"
+import { deploymentNames, deploymentPaths } from "../lib/deployment.ts"
 
 // ---------------------------------------------------------------------------
 // Default commands (via HTTP server)
@@ -218,13 +219,15 @@ export const logsCommand = Command.make("logs", {
         return
       }
 
-      const unitName = `infra-${name}-${stageName}`
+      const unitName = deploymentNames(name, stageName).serviceUnit
       const followFlag = follow ? " -f" : ""
       const cmd = `XDG_RUNTIME_DIR=/run/user/$(id -u) journalctl --user -u ${unitName} --no-pager -n ${lines}${followFlag}`
 
       if (info.type === "static") {
         yield* Console.log(`${name}/${stageName} is a static site — no service logs.`)
-        yield* Console.log(`Files at: ${info.host}:/srv/www/${info.domain}/stages/${stageName}`)
+        yield* Console.log(
+          `Files at: ${info.host}:${deploymentPaths(info.domain, stageName, DEPLOYMENT_ROOTS).staticFiles}`,
+        )
         return
       }
 

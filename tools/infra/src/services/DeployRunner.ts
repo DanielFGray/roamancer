@@ -6,14 +6,15 @@ import * as FileSystem from "@effect/platform/FileSystem"
 import * as Path from "@effect/platform/Path"
 import { GitManager, sanitizeRef } from "./GitManager.ts"
 import { DeployMeta, type StageInfo } from "./DeployMeta.ts"
-import { CaddyManager, previewUrl } from "./CaddyManager.ts"
+import { CaddyManager } from "./CaddyManager.ts"
 import { OpenBaoClient } from "./OpenBaoClient.ts"
 import { SecretResolver } from "./SecretResolver.ts"
 import { SshClient } from "./SshClient.ts"
 import { SystemdManager } from "./SystemdManager.ts"
 import { HealthCheck } from "./HealthCheck.ts"
 import { parseEnvExample, formatEnv } from "../lib/env-parser.ts"
-import { CADDY_HOST, RETIRE_GRACE_SECONDS, SVC_USER } from "../lib/config.ts"
+import { CADDY_HOST, DEPLOYMENT_ROOTS, RETIRE_GRACE_SECONDS, SVC_USER } from "../lib/config.ts"
+import { deploymentNames, deploymentPaths, previewUrl } from "../lib/deployment.ts"
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -57,6 +58,7 @@ export interface DeployResult {
   readonly hash: string
   readonly type: string
   readonly previewUrl: string
+  readonly autoPromote: string | undefined
 }
 
 export interface ProjectInfo {
@@ -109,6 +111,7 @@ const PackageJson = S.Struct({
     domain: S.optional(S.String),
     dist: S.optional(S.String),
     host: S.optional(S.String),
+    autoPromote: S.optional(S.String),
     healthcheck: S.optional(S.Struct({
       path: S.optional(S.String),
       timeout: S.optional(S.Number),
@@ -122,6 +125,7 @@ interface ProjectConfig {
   readonly dist: string
   readonly host: string
   readonly healthcheckPath: string
+  readonly autoPromote: string | undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +214,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
             dist: infra.dist ?? "dist",
             host: infra.host ?? CADDY_HOST,
             healthcheckPath: infra.healthcheck?.path ?? "/health",
+            autoPromote: infra.autoPromote,
           } satisfies ProjectConfig
         })
 
@@ -309,7 +314,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
               yield* Console.log("  building...")
               yield* runLocal(wt, "bun", ["run", "build"], secrets)
 
-              const remoteDir = `/srv/www/${config.domain}/stages/${stage}`
+              const remoteDir = deploymentPaths(config.domain, stage, DEPLOYMENT_ROOTS).staticFiles
               yield* Console.log(`  syncing -> ${config.host}:${remoteDir}`)
               yield* ssh.exec(config.host, `mkdir -p ${remoteDir}`, SVC_USER)
               yield* ssh.rsync(`${wt}/${config.dist}/`, remoteDir, config.host, SVC_USER)
@@ -328,16 +333,18 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
 
             yield* Console.log(`  port: ${port}`)
 
-            const unitName = `infra-${name}-${stage}`
+            const paths = deploymentPaths(name, stage, DEPLOYMENT_ROOTS)
+            const names = deploymentNames(name, stage)
+            const unitName = names.serviceUnit
 
             // ---------------------------------------------------------------
             // Zero-downtime deploy: old service keeps running while new starts
             // ---------------------------------------------------------------
             if (isZeroDowntime) {
               const oldPort = existingStage.port!
-              const oldDir = `/srv/projects/${name}/stages/${stage}`
-              const newDir = `/srv/projects/${name}/stages/${stage}.new`
-              const newUnitName = `${unitName}-new`
+              const oldDir = paths.service
+              const newDir = paths.serviceCandidate
+              const newUnitName = names.candidateUnit
 
               yield* Console.log("  zero-downtime deploy")
               yield* Console.log(`  old port: ${oldPort} -> new port: ${port}`)
@@ -456,7 +463,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
             // ---------------------------------------------------------------
             // Fresh deploy (no existing service)
             // ---------------------------------------------------------------
-            const remoteDir = `/srv/projects/${name}/stages/${stage}`
+            const remoteDir = paths.service
 
             // Rsync source (no local install — remote handles its own deps)
             yield* Console.log(`  syncing -> ${config.host}:${remoteDir}`)
@@ -526,6 +533,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
             hash,
             type: stageInfo.type,
             previewUrl: previewUrl(hash, config.domain),
+            autoPromote: config.autoPromote,
           } satisfies DeployResult
         }))
 
@@ -633,7 +641,8 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
           const info = project.stages[stage]!
 
           if (info.type === "service") {
-            const unitName = `infra-${name}-${stage}`
+            const paths = deploymentPaths(name, stage, DEPLOYMENT_ROOTS)
+            const unitName = deploymentNames(name, stage).serviceUnit
             yield* Console.log("  removing systemd unit...")
             yield* systemd.remove(info.host, unitName).pipe(
               Effect.catchAll(() => Effect.void),
@@ -642,7 +651,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
             yield* Console.log("  removing project files...")
             yield* ssh.exec(
               info.host,
-              `rm -rf /srv/projects/${name}/stages/${stage}`,
+              `rm -rf ${paths.service}`,
               SVC_USER,
             ).pipe(Effect.catchAll(() => Effect.void))
 
@@ -653,7 +662,7 @@ export class DeployRunner extends Effect.Service<DeployRunner>()(
             yield* Console.log("  removing static files...")
             yield* ssh.exec(
               info.host,
-              `rm -rf /srv/www/${info.domain}/stages/${stage}`,
+              `rm -rf ${deploymentPaths(info.domain, stage, DEPLOYMENT_ROOTS).staticFiles}`,
               SVC_USER,
             ).pipe(Effect.catchAll(() => Effect.void))
           }

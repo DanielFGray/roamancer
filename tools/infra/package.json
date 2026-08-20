@@ -10,11 +10,14 @@
   "scripts": {
     "dev": "bun run src/main.ts",
     "server": "bun run server/main.ts",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@effect/vitest": "^0.30.0",
     "@types/bun": "latest",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.0"
   },
   "dependencies": {
     "@effect/cli": "^0.73.2",

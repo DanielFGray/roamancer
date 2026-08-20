@@ -1,6 +1,8 @@
 import { Effect, Schema as S } from "effect"
 import { spawn } from "bun"
 import { PROJECTS_DIR, GIT_HOST } from "../lib/config.ts"
+import { deploymentPaths, worktreeParent } from "../lib/deployment.ts"
+import { DEPLOYMENT_ROOTS } from "../lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -16,9 +18,8 @@ export class GitError extends S.TaggedError<GitError>()("GitError", {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const barePath = (name: string) => `${PROJECTS_DIR}/${name}.git`
-const stagesDir = (name: string) => `${PROJECTS_DIR}/${name}/stages`
-const worktreePath = (name: string, stage: string) => `${stagesDir(name)}/${stage}`
+const barePath = (name: string) => deploymentPaths(name, "", DEPLOYMENT_ROOTS).bareRepo
+const worktreePath = (name: string, stage: string) => deploymentPaths(name, stage, DEPLOYMENT_ROOTS).worktree
 
 export const sanitizeRef = (ref: string): string =>
   ref
@@ -105,7 +106,7 @@ export class GitManager extends Effect.Service<GitManager>()("infra/GitManager",
         )
 
         yield* Effect.sync(() => {
-          Bun.spawnSync(["mkdir", "-p", stagesDir(name)])
+          Bun.spawnSync(["mkdir", "-p", worktreeParent(name, DEPLOYMENT_ROOTS)])
         })
 
         yield* git(["-C", barePath(name), "worktree", "add", "--detach", wt, ref])

@@ -162,15 +162,12 @@ export const routesCommand = Command.make("routes").pipe(
 
       yield* Console.log("Routes:")
       yield* Effect.forEach(routes, (route) => {
-        const id = (route as Record<string, unknown>)["@id"] ?? "(unknown)"
-        const matchEntries = (route as Record<string, unknown>)["match"] as
-          | Array<Record<string, unknown>>
-          | undefined
-        const hosts =
-          matchEntries
-            ?.flatMap((m) => (m["host"] as string[] | undefined) ?? [])
-            .join(", ") ?? "(no match)"
-        return Console.log(`  ${id}  ->  ${hosts}`)
+        const r = route as Record<string, unknown>
+        const file = (r["file"] as string) ?? "(unknown)"
+        // Extract the domain from the first line of the Caddyfile snippet
+        const content = (r["content"] as string) ?? ""
+        const domain = content.split("{")[0]?.trim() ?? "(unknown)"
+        return Console.log(`  ${file}  ->  ${domain}`)
       })
     }),
   ),

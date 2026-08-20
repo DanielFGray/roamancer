@@ -6,8 +6,13 @@ storage "raft" {
 
 listener "tcp" {
   address     = "0.0.0.0:8200"
-  tls_disable = true
+  tls_disable = {{ 'true' if (vault_tls_disable | default(false) | bool) else 'false' }}
+{% if not (vault_tls_disable | default(false) | bool) %}
+  tls_cert_file = "{{ vault_tls_cert_file | default('/etc/openbao/tls/openbao.crt') }}"
+  tls_key_file  = "{{ vault_tls_key_file | default('/etc/openbao/tls/openbao.key') }}"
+  tls_client_ca_file = "{{ vault_tls_ca_file | default('/etc/openbao/tls/ca.crt') }}"
+{% endif %}
 }
 
 api_addr     = "{{ vault_addr }}"
-cluster_addr = "http://{{ obs_addr }}:8201"
+cluster_addr = "{{ vault_cluster_addr | default(((vault_tls_disable | default(false) | bool) | ternary('http', 'https')) ~ '://' ~ obs_addr ~ ':8201') }}"

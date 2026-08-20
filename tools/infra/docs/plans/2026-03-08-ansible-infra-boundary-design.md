@@ -2,7 +2,7 @@
 
 ## Problem
 
-The Caddyfile contains hardcoded routes for specific projects (danielfgray.com, postgres.garden, dfg.codes, etc.). The infra tool manages project routes via the Caddy admin API. These two systems conflict: Caddyfile reloads could clobber admin API routes, and adding new projects requires editing Ansible templates.
+The Caddyfile contains hardcoded routes for specific projects (danielfgray.com, postgres.garden, dfg.codes, etc.). Adding new projects requires editing Ansible templates, which conflicts with the infra tool owning project lifecycle.
 
 Compose services (Postgres, Valkey, SigNoz) exist in the repo but aren't deployed by the playbook.
 
@@ -37,7 +37,7 @@ Infrastructure routes only:
 
 Removed: all project site routes (danielfgray.com, dfg.codes, dfg.rocks, postgres.garden, pg-sourcerer.dfg.codes, eddie.dfg.rocks).
 
-The `(static)` and `(otel_cors)` snippets stay — `(static)` will be used by infra tool routes too (Caddy snippets are available to admin API routes).
+The Caddyfile imports project snippets from `/etc/caddy/sites-enabled`. The infra tool writes and removes only snippets with its `infra--` filename prefix.
 
 ### Compose Services
 
@@ -55,9 +55,9 @@ Deployed via `podman-compose up -d` in the playbook.
 
 ## Infra Tool Responsibilities
 
-All project Caddy routes via admin API (`@id` prefixed with `infra/`). All project systemd services. All project env files, secrets, port allocation. Full deploy/promote/rollback/teardown lifecycle.
+All project Caddy snippets with filenames prefixed by `infra--`. All project systemd services. All project env files, secrets, port allocation. Full deploy/promote/rollback/teardown lifecycle.
 
-The CaddyManager already handles this — it reads existing routes, filters out `infra/`-prefixed ones, and writes back the merged array. Infrastructure routes from the Caddyfile are preserved because they don't have the `infra/` prefix.
+The CaddyManager reconciles its snippets from deployment metadata and reloads Caddy. It preserves snippets without the `infra--` prefix, so Ansible and other tools can own routes in the same imported directory.
 
 ## Hosts
 
@@ -109,8 +109,8 @@ The CaddyManager already handles this — it reads existing routes, filters out 
 
 ## Key Constraints
 
-- Caddy admin API must be enabled in the global config (`admin localhost:2019`)
-- Caddyfile reload does not clobber admin API routes (Caddy merges them)
-- The `(static)` snippet must remain in the Caddyfile — admin API routes can reference it
+- Caddyfile must import `/etc/caddy/sites-enabled/*.caddyfile`
+- Infra-managed snippet filenames must start with `infra--`
+- Caddy reconciliation must preserve snippets without the `infra--` prefix
 - Infra agent needs Bun runtime (installed by common role) and network access to obs node (for OpenBao)
 - Compose `.env` files need secrets from OpenBao (provisioned manually or via infra tool bootstrap)

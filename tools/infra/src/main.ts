@@ -39,15 +39,15 @@ import { HealthCheck } from "./services/HealthCheck.ts"
 import { SystemdManager } from "./services/SystemdManager.ts"
 import { InfraClient } from "./services/InfraClient.ts"
 import { DeployRunner } from "./services/DeployRunner.ts"
-import { OPENBAO_ADDR } from "./lib/config.ts"
+import { OPENBAO_ADDR, OPENBAO_TOKEN } from "./lib/config.ts"
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 const loadConfig = Effect.gen(function* () {
-  if (process.env["OPENBAO_TOKEN"]) {
-    return { addr: OPENBAO_ADDR, token: process.env["OPENBAO_TOKEN"] } satisfies OpenBaoConfig
+  if (OPENBAO_TOKEN) {
+    return { addr: OPENBAO_ADDR, token: OPENBAO_TOKEN } satisfies OpenBaoConfig
   }
 
   const path = yield* Path.Path

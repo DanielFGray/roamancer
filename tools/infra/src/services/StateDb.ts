@@ -2,12 +2,18 @@ import { Effect } from "effect"
 import { Database } from "bun:sqlite"
 import { STATE_DB_PATH } from "../lib/config.ts"
 
+export class StateDbOpenError extends Error {
+  constructor(path: string, cause: unknown) {
+    super(`Failed to open state database at ${path}: ${cause instanceof Error ? cause.message : String(cause)}`)
+    this.name = "StateDbOpenError"
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Service
 //
-// Opens the SQLite state database. If the path is inaccessible (e.g. running
-// the CLI remotely), creates an in-memory stub so HTTP-only commands still
-// work. Direct/local commands that need the DB will fail with clear errors.
+// Opens the SQLite state database and fails clearly if its configured path is
+// inaccessible. Remote CLI commands use InfraClient and do not open this DB.
 // ---------------------------------------------------------------------------
 
 const openDb = () => {
@@ -16,9 +22,8 @@ const openDb = () => {
     db.exec("PRAGMA journal_mode=WAL")
     db.exec("PRAGMA foreign_keys=ON")
     return db
-  } catch {
-    // Fall back to in-memory DB for remote CLI usage
-    return new Database(":memory:")
+  } catch (error) {
+    throw new StateDbOpenError(STATE_DB_PATH, error)
   }
 }
 
