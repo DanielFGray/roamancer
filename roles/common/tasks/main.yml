@@ -1,13 +1,14 @@
 ---
+# Which host answers at which address is inventory, not role logic. It was a
+# literal loop here, which meant the addresses could only ever describe one
+# environment and nothing outside this file could state them.
 - name: Add cluster hosts to /etc/hosts
   lineinfile:
     path: /etc/hosts
-    regexp: ".*{{ item.name }}$"
-    line: "{{ item.ip }}  {{ item.name }}"
+    regexp: ".*{{ hostvars[item].dlab_fqdn }}$"
+    line: "{{ hostvars[item].dlab_ip }}  {{ hostvars[item].dlab_fqdn }}"
     state: present
-  loop:
-    - { name: cynic.dlab, ip: 10.13.37.196 }
-    - { name: atheist.dlab, ip: 10.13.37.83 }
+  loop: "{{ groups['all'] }}"
 
 - name: Update apt cache
   apt:
