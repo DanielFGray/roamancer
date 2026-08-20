@@ -50,6 +50,8 @@ export interface TestServices {
   finalUnit?: boolean;
   finalWorkingDirectory?: string;
   finalActive?: boolean;
+  staticCandidateArtifact?: boolean;
+  staticFinalArtifact?: boolean;
   staticHadPrevious?: boolean;
   nextPort?: number;
 }
@@ -62,7 +64,10 @@ const emptyMeta = (name: string): ProjectMeta => ({
 });
 
 /** Test replacements for every external deployment boundary. */
-export const testLayers = (state: TestServices = makeTestServices()) => {
+export const testLayers = (
+  state: TestServices = makeTestServices(),
+  caddyOverride?: Layer.Layer<CaddyManager>,
+) => {
   const ssh = Layer.succeed(SshClient, {
     _tag: "infra/SshClient",
     exec: (host, command) => {
@@ -79,7 +84,11 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
       }
       if (command.includes("mkdir -p /srv/projects/demo/stages/main.new"))
         state.candidateArtifact = true;
+      if (command.includes("mkdir -p /srv/www/demo/stages/main.new"))
+        state.staticCandidateArtifact = true;
       if (command === "rm -rf /srv/projects/demo/stages/main.new") state.candidateArtifact = false;
+      if (command === "rm -rf '/srv/www/demo/stages/main.new'")
+        state.staticCandidateArtifact = false;
       if (
         command.includes("mv '/srv/projects/demo/stages/main.new' '/srv/projects/demo/stages/main'")
       ) {
@@ -88,6 +97,19 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
         if (state.candidatePort !== undefined) state.finalPort = state.candidatePort;
       }
       if (command === "rm -rf /srv/projects/demo/stages/main") state.finalArtifact = false;
+      if (command === "rm -rf '/srv/www/demo/stages/main'") state.staticFinalArtifact = false;
+      if (
+        command.includes("/srv/www/demo/stages/main.new") &&
+        command.includes("/srv/www/demo/stages/main")
+      ) {
+        state.staticCandidateArtifact = false;
+        state.staticFinalArtifact = true;
+      }
+      if (
+        command.includes("mv '/srv/www/demo/stages/main' '/srv/www/demo/stages/main.previous'") &&
+        !command.includes("main.new")
+      )
+        state.staticFinalArtifact = false;
       if (command.includes("candidateWorking")) {
         return Effect.succeed(
           `candidate=${state.candidateUnit ? 1 : 0}\nfinal=${state.finalUnit ? 1 : 0}\n` +
@@ -109,6 +131,11 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
               `candidatePort=${state.candidatePort ?? ""}\nfinalPort=${state.finalPort ?? ""}`,
           );
         }
+        if (command.includes("/srv/www/demo/stages/main.new")) {
+          return Effect.succeed(
+            `candidate=${state.staticCandidateArtifact ? 1 : 0}\nfinal=${state.staticFinalArtifact ? 1 : 0}`,
+          );
+        }
         return Effect.succeed(`candidate=${candidate ? 1 : 0}\nfinal=${final ? 1 : 0}`);
       }
       return command.includes("printf '%s'")
@@ -118,6 +145,8 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     writeFile: (host, remotePath, content) => {
       state.calls.ssh.push({ host, command: `write ${remotePath}` });
       state.files.set(remotePath, content);
+      if (remotePath === "/srv/www/demo/stages/main.new") state.staticCandidateArtifact = true;
+      if (remotePath === "/srv/www/demo/stages/main") state.staticFinalArtifact = true;
       const port = content.match(/^PORT=(\d+)$/m)?.[1];
       if (remotePath.endsWith("/main.new/.env") && port) state.candidatePort = Number(port);
       if (remotePath.endsWith("/main/.env") && port) state.finalPort = Number(port);
@@ -129,6 +158,8 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     },
     rsync: (source, destination, host) => {
       state.calls.ssh.push({ host, command: `rsync ${source} ${destination}` });
+      if (destination === "/srv/www/demo/stages/main.new") state.staticCandidateArtifact = true;
+      if (destination === "/srv/www/demo/stages/main") state.staticFinalArtifact = true;
       return state.failSshCommand && `rsync ${source} ${destination}`.includes(state.failSshCommand)
         ? Effect.fail(new SshError({ code: 1, signal: null, message: "rsync failed" }))
         : Effect.as(Effect.void, undefined);
@@ -313,7 +344,7 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     meta,
     systemd,
     health,
-    caddy,
+    caddyOverride ?? caddy,
     Layer.succeed(OpenBaoClient, openBao),
     fs,
     Path.layer,

@@ -205,7 +205,7 @@ const ActionsGroupLive = HttpApiBuilder.group(InfraApi, "actions", (handlers) =>
 // Compose & serve
 // ---------------------------------------------------------------------------
 
-const InfraApiLive = HttpApiBuilder.api(InfraApi).pipe(
+export const InfraApiLive = HttpApiBuilder.api(InfraApi).pipe(
   Layer.provide(ProjectsGroupLive),
   Layer.provide(StatusGroupLive),
   Layer.provide(ActionsGroupLive),
@@ -312,4 +312,4 @@ const MainLive = Layer.mergeAll(HttpLive, SchedulerLive).pipe(
   Layer.provide(Logger.minimumLogLevel(LogLevel.Info)),
 );
 
-Layer.launch(MainLive).pipe(BunRuntime.runMain);
+if (import.meta.main) Layer.launch(MainLive).pipe(BunRuntime.runMain);
