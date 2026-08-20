@@ -15,6 +15,7 @@
 ### Task 1: Strip project routes from Caddyfile template
 
 **Files:**
+
 - Modify: `roles/caddy/templates/Caddyfile.j2`
 
 **Step 1: Replace the Caddyfile template**
@@ -109,6 +110,7 @@ Enables admin API on localhost:2019."
 ### Task 2: Create compose role for service deployment
 
 **Files:**
+
 - Create: `roles/compose/tasks/main.yml`
 
 **Step 1: Create the role directory**
@@ -181,6 +183,7 @@ git commit -m "ansible: add compose role for podman-compose service deployment"
 ### Task 3: Create infra-agent role
 
 **Files:**
+
 - Create: `roles/infra-agent/tasks/main.yml`
 - Create: `roles/infra-agent/templates/infra-agent.service.j2`
 - Create: `roles/infra-agent/templates/infra-agent.env.j2`
@@ -311,6 +314,7 @@ git commit -m "ansible: add infra-agent role (rsync, systemd, env file)"
 ### Task 4: Update site.yml with new plays
 
 **Files:**
+
 - Modify: `site.yml`
 
 **Step 1: Rewrite site.yml**
@@ -390,6 +394,7 @@ git commit -m "ansible: update site.yml with compose and infra-agent plays"
 ### Task 5: Update inventory with new variables
 
 **Files:**
+
 - Modify: `inventory/hosts.yml`
 
 **Step 1: Add infra agent variables**

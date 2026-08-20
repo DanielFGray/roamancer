@@ -1,28 +1,39 @@
 {
   "name": "infra",
   "version": "0.1.0",
-  "module": "src/main.ts",
-  "type": "module",
   "private": true,
   "bin": {
     "infra": "src/main.ts"
   },
+  "type": "module",
+  "module": "src/main.ts",
   "scripts": {
     "dev": "bun run src/main.ts",
     "server": "bun run server/main.ts",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
-  },
-  "devDependencies": {
-    "@effect/vitest": "^0.30.0",
-    "@types/bun": "latest",
-    "typescript": "^5",
-    "vitest": "^3.2.0"
+    "test": "run-s format lint typecheck test:vitest",
+    "test:vitest": "vitest run",
+    "lint:fix": "oxfmt --fix",
+    "lint": "oxlint",
+    "format": "oxfmt --check",
+    "format:fix": "oxfmt --fix",
+    "typecheck": "tsc --noEmit",
+    "prepare": "effect-tsgo patch --typescript --oxlint"
   },
   "dependencies": {
     "@effect/cli": "^0.73.2",
     "@effect/platform": "^0.94.5",
     "@effect/platform-bun": "^0.87.1",
-    "effect": "^3.19.19"
+    "effect": "^3.19.19",
+    "npm-run-all": "latest"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.36.5",
+    "@effect/vitest": "^0.30.0",
+    "@types/bun": "latest",
+    "oxfmt": "^0.64.0",
+    "oxlint": "1.78.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "7.0.2",
+    "vitest": "^3.2.0"
   }
 }

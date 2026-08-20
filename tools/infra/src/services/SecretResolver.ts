@@ -1,7 +1,7 @@
-import { Effect } from "effect"
-import { PasswordGenerator } from "./PasswordGenerator.ts"
-import type { EnvField } from "../lib/env-parser.ts"
-import { resolveComposed } from "../lib/env-parser.ts"
+import { Effect } from "effect";
+import { PasswordGenerator } from "./PasswordGenerator.ts";
+import type { EnvField } from "../lib/env-parser.ts";
+import { resolveComposed } from "../lib/env-parser.ts";
 
 // ---------------------------------------------------------------------------
 // Service
@@ -14,38 +14,35 @@ import { resolveComposed } from "../lib/env-parser.ts"
 // value and generated fields get fresh passwords.
 // ---------------------------------------------------------------------------
 
-export class SecretResolver extends Effect.Service<SecretResolver>()(
-  "infra/SecretResolver",
-  {
-    effect: Effect.gen(function* () {
-      const gen = yield* PasswordGenerator
+export class SecretResolver extends Effect.Service<SecretResolver>()("infra/SecretResolver", {
+  effect: Effect.gen(function* () {
+    const gen = yield* PasswordGenerator;
 
-      return {
-        resolve: (
-          fields: ReadonlyArray<EnvField>,
-          existing?: Record<string, string>,
-        ): Effect.Effect<Record<string, string>> =>
-          Effect.gen(function* () {
-            // Phase 1: Static and Generated
-            const phase1 = yield* Effect.reduce(
-              fields.filter((f) => f.kind !== "composed"),
-              {} as Record<string, string>,
-              (acc, field) =>
-                field.kind === "static"
-                  ? Effect.succeed({ ...acc, [field.key]: existing?.[field.key] ?? field.value })
-                  : gen.generate().pipe(Effect.map((pw) => ({ ...acc, [field.key]: pw }))),
-            )
+    return {
+      resolve: (
+        fields: ReadonlyArray<EnvField>,
+        existing?: Record<string, string>,
+      ): Effect.Effect<Record<string, string>> =>
+        Effect.gen(function* () {
+          // Phase 1: Static and Generated
+          const phase1 = yield* Effect.reduce(
+            fields.filter((f) => f.kind !== "composed"),
+            {} as Record<string, string>,
+            (acc, field) =>
+              field.kind === "static"
+                ? Effect.succeed({ ...acc, [field.key]: existing?.[field.key] ?? field.value })
+                : gen.generate().pipe(Effect.map((pw) => ({ ...acc, [field.key]: pw }))),
+          );
 
-            // Phase 2: Composed (pure — fold over phase 1 results)
-            return fields
-              .filter((f) => f.kind === "composed")
-              .reduce(
-                (acc, field) => ({ ...acc, [field.key]: resolveComposed(field.value, acc) }),
-                phase1,
-              )
-          }),
-      }
-    }),
-    dependencies: [PasswordGenerator.Default],
-  },
-) {}
+          // Phase 2: Composed (pure — fold over phase 1 results)
+          return fields
+            .filter((f) => f.kind === "composed")
+            .reduce(
+              (acc, field) => ({ ...acc, [field.key]: resolveComposed(field.value, acc) }),
+              phase1,
+            );
+        }),
+    };
+  }),
+  dependencies: [PasswordGenerator.Default],
+}) {}

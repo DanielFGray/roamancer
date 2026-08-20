@@ -5,8 +5,8 @@ import {
   HttpApiMiddleware,
   HttpApiSchema,
   HttpApiSecurity,
-} from "@effect/platform"
-import { Context, Schema } from "effect"
+} from "@effect/platform";
+import { Context, Schema } from "effect";
 
 // ---------------------------------------------------------------------------
 // Webhook error schemas
@@ -49,44 +49,42 @@ const SafeName = Schema.String.pipe(
   Schema.pattern(/^[a-zA-Z0-9](?:[a-zA-Z0-9_.-]*[a-zA-Z0-9])?$/),
   Schema.maxLength(64),
   Schema.filter((s) => !s.includes(".."), { message: () => "name must not contain '..'" }),
-)
+);
 
 export const StubResponse = Schema.Struct({
   status: Schema.String,
   message: Schema.String,
-})
+});
 
 /** Git ref: branches, tags, SHAs. Allows alphanumeric, dots, slashes, hyphens, underscores, tildes. */
-const SafeRef = Schema.String.pipe(
-  Schema.pattern(/^[a-zA-Z0-9][a-zA-Z0-9._\/-]{0,127}$/),
-)
+const SafeRef = Schema.String.pipe(Schema.pattern(/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/));
 
 /** Git remote URL: git@host:path, https://host/path, or ssh://host/path */
 const SafeRepoUrl = Schema.String.pipe(
-  Schema.pattern(/^(https?:\/\/|git@|ssh:\/\/)[a-zA-Z0-9._\/-]+$/),
-)
+  Schema.pattern(/^(https?:\/\/|git@|ssh:\/\/)[a-zA-Z0-9._/-]+$/),
+);
 
 const DeployBody = Schema.Struct({
   name: SafeName,
   ref: Schema.optional(SafeRef),
   as: Schema.optional(SafeName),
   repo: Schema.optional(SafeRepoUrl),
-})
+});
 
 const PromoteBody = Schema.Struct({
   name: SafeName,
   stage: SafeName,
   force: Schema.optional(Schema.Boolean),
-})
+});
 
 const RollbackBody = Schema.Struct({
   name: SafeName,
-})
+});
 
 const TeardownBody = Schema.Struct({
   name: SafeName,
   stage: SafeName,
-})
+});
 
 // ---------------------------------------------------------------------------
 // Response schemas
@@ -99,29 +97,29 @@ export const DeployResultSchema = Schema.Struct({
   type: Schema.String,
   previewUrl: Schema.String,
   autoPromote: Schema.optional(Schema.String),
-})
+});
 
 export const PromoteResultSchema = Schema.Struct({
   name: Schema.String,
   stage: Schema.String,
   domain: Schema.String,
-})
+});
 
 export const RollbackResultSchema = Schema.Struct({
   name: Schema.String,
   stage: Schema.String,
-})
+});
 
 export const TeardownResultSchema = Schema.Struct({
   name: Schema.String,
   stage: Schema.String,
-})
+});
 
 export const ProjectInfoSchema = Schema.Struct({
   name: Schema.String,
   stageCount: Schema.Number,
   promoted: Schema.NullOr(Schema.String),
-})
+});
 
 const StageDetailSchema = Schema.Struct({
   stage: Schema.String,
@@ -133,15 +131,15 @@ const StageDetailSchema = Schema.Struct({
   hash: Schema.String,
   deployed_at: Schema.String,
   previewUrl: Schema.String,
-})
+});
 
 export const StageListResultSchema = Schema.Struct({
   name: Schema.String,
   stages: Schema.Array(StageDetailSchema),
   production: Schema.NullOr(Schema.String),
-})
+});
 
-const nameParam = HttpApiSchema.param("name", SafeName)
+const nameParam = HttpApiSchema.param("name", SafeName);
 
 // ---------------------------------------------------------------------------
 // Auth middleware
@@ -158,24 +156,18 @@ export class CurrentUser extends Context.Tag("CurrentUser")<
   { readonly token: string }
 >() {}
 
-export class Authorization extends HttpApiMiddleware.Tag<Authorization>()(
-  "Authorization",
-  {
-    failure: Unauthorized,
-    provides: CurrentUser,
-    security: { bearer: HttpApiSecurity.bearer },
-  },
-) {}
+export class Authorization extends HttpApiMiddleware.Tag<Authorization>()("Authorization", {
+  failure: Unauthorized,
+  provides: CurrentUser,
+  security: { bearer: HttpApiSecurity.bearer },
+}) {}
 
 // ---------------------------------------------------------------------------
 // API groups
 // ---------------------------------------------------------------------------
 
 const projectsGroup = HttpApiGroup.make("projects")
-  .add(
-    HttpApiEndpoint.get("listProjects", "/projects")
-      .addSuccess(Schema.Array(ProjectInfoSchema)),
-  )
+  .add(HttpApiEndpoint.get("listProjects", "/projects").addSuccess(Schema.Array(ProjectInfoSchema)))
   .add(
     HttpApiEndpoint.get("getProject")`/projects/${nameParam}`
       .addSuccess(StageListResultSchema)
@@ -186,36 +178,28 @@ const projectsGroup = HttpApiGroup.make("projects")
       .addSuccess(StageListResultSchema)
       .addError(NotFoundError),
   )
-  .middleware(Authorization)
+  .middleware(Authorization);
 
 const BackupJobStatusSchema = Schema.Struct({
   lastRun: Schema.NullOr(Schema.String),
   lastResult: Schema.Union(Schema.Literal("success"), Schema.Literal("failure")),
   lastError: Schema.NullOr(Schema.String),
   lastFile: Schema.NullOr(Schema.String),
-})
+});
 
 const BackupStatusResponse = Schema.Struct({
   postgres: BackupJobStatusSchema,
   vault: BackupJobStatusSchema,
-})
+});
 
-const CaddyRouteSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown })
+const CaddyRouteSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown });
 
 const statusGroup = HttpApiGroup.make("status")
-  .add(
-    HttpApiEndpoint.get("getStatus", "/status").addSuccess(StubResponse),
-  )
-  .add(
-    HttpApiEndpoint.get("getBackups", "/backups").addSuccess(BackupStatusResponse),
-  )
-  .add(
-    HttpApiEndpoint.get("getRoutes", "/routes").addSuccess(Schema.Array(CaddyRouteSchema)),
-  )
-  .add(
-    HttpApiEndpoint.post("syncRoutes", "/sync").addSuccess(StubResponse),
-  )
-  .middleware(Authorization)
+  .add(HttpApiEndpoint.get("getStatus", "/status").addSuccess(StubResponse))
+  .add(HttpApiEndpoint.get("getBackups", "/backups").addSuccess(BackupStatusResponse))
+  .add(HttpApiEndpoint.get("getRoutes", "/routes").addSuccess(Schema.Array(CaddyRouteSchema)))
+  .add(HttpApiEndpoint.post("syncRoutes", "/sync").addSuccess(StubResponse))
+  .middleware(Authorization);
 
 const actionsGroup = HttpApiGroup.make("actions")
   .add(
@@ -242,7 +226,7 @@ const actionsGroup = HttpApiGroup.make("actions")
       .addSuccess(TeardownResultSchema)
       .addError(NotFoundError),
   )
-  .middleware(Authorization)
+  .middleware(Authorization);
 
 // ---------------------------------------------------------------------------
 // Webhooks group (no bearer auth — uses HMAC instead)
@@ -260,7 +244,7 @@ const webhooksGroup = HttpApiGroup.make("webhooks")
       .addSuccess(StubResponse)
       .addError(WebhookForbidden)
       .addError(WebhookError),
-  )
+  );
 
 // ---------------------------------------------------------------------------
 // Top-level API
@@ -270,4 +254,4 @@ export const InfraApi = HttpApi.make("InfraApi")
   .add(projectsGroup)
   .add(statusGroup)
   .add(actionsGroup)
-  .add(webhooksGroup)
+  .add(webhooksGroup);
