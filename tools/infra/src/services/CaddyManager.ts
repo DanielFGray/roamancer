@@ -19,10 +19,15 @@ export type CaddyErr = CaddyError | DeployMetaErr;
 // Helpers
 // ---------------------------------------------------------------------------
 
-const MANAGED_SNIPPET_PREFIX = "infra--";
+export const MANAGED_SNIPPET_PREFIX = "infra--";
 
-const isManagedSnippet = (filename: string) =>
+export const isManagedSnippet = (filename: string) =>
   filename.startsWith(MANAGED_SNIPPET_PREFIX) && filename.endsWith(".caddyfile");
+
+export const orphanedManagedSnippets = (
+  existing: ReadonlyArray<string>,
+  expected: ReadonlySet<string>,
+) => existing.filter((file) => isManagedSnippet(file) && !expected.has(file));
 
 // ---------------------------------------------------------------------------
 // Snippet generators
@@ -174,20 +179,16 @@ export class CaddyManager extends Effect.Service<CaddyManager>()("infra/CaddyMan
 
         // Other tools may own snippets in this directory. Reconcile only ours.
         const existing = yield* listFiles();
-        for (const file of existing) {
-          if (isManagedSnippet(file) && !expectedFiles.has(file)) {
-            yield* removeFile(file);
-          }
+        const orphans = orphanedManagedSnippets(existing, expectedFiles);
+        for (const file of orphans) {
+          yield* removeFile(file);
         }
 
         // Reload Caddy to pick up changes
         yield* reloadCaddy();
 
-        const orphansRemoved = existing.filter(
-          (file) => isManagedSnippet(file) && !expectedFiles.has(file),
-        ).length;
         yield* Effect.log(
-          `Caddy sync: ${expectedFiles.size} snippet(s) written, ${orphansRemoved} orphan(s) removed`,
+          `Caddy sync: ${expectedFiles.size} snippet(s) written, ${orphans.length} orphan(s) removed`,
         );
       }),
     };

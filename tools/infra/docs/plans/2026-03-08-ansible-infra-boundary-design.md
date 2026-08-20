@@ -37,7 +37,7 @@ Infrastructure routes only:
 
 Removed: all project site routes (danielfgray.com, dfg.codes, dfg.rocks, postgres.garden, pg-sourcerer.dfg.codes, eddie.dfg.rocks).
 
-The Caddyfile imports project snippets from `/etc/caddy/sites-enabled`. The infra tool writes and removes only snippets with its `infra--` filename prefix.
+The Caddyfile imports project snippets from `/etc/caddy/sites-enabled`. The infra tool writes and removes only snippets in its `infra--` filename namespace.
 
 ### Compose Services
 
@@ -55,9 +55,9 @@ Deployed via `podman-compose up -d` in the playbook.
 
 ## Infra Tool Responsibilities
 
-All project Caddy snippets with filenames prefixed by `infra--`. All project systemd services. All project env files, secrets, port allocation. Full deploy/promote/rollback/teardown lifecycle.
+All project Caddy snippets in the `infra--` filename namespace. All project systemd services. All project env files, secrets, port allocation. Full deploy/promote/rollback/teardown lifecycle.
 
-The CaddyManager reconciles its snippets from deployment metadata and reloads Caddy. It preserves snippets without the `infra--` prefix, so Ansible and other tools can own routes in the same imported directory.
+The CaddyManager reconciles its snippets from deployment metadata and reloads Caddy. It preserves snippets outside the `infra--` namespace, so Ansible and other tools can own routes in the same imported directory.
 
 ## Hosts
 
@@ -110,7 +110,7 @@ The CaddyManager reconciles its snippets from deployment metadata and reloads Ca
 ## Key Constraints
 
 - Caddyfile must import `/etc/caddy/sites-enabled/*.caddyfile`
-- Infra-managed snippet filenames must start with `infra--`
-- Caddy reconciliation must preserve snippets without the `infra--` prefix
+- Infra-managed snippet filenames must use the `infra--` namespace
+- Caddy reconciliation must preserve snippets outside the `infra--` namespace
 - Infra agent needs Bun runtime (installed by common role) and network access to obs node (for OpenBao)
 - Compose `.env` files need secrets from OpenBao (provisioned manually or via infra tool bootstrap)

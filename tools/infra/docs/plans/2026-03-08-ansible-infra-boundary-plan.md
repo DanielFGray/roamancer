@@ -4,7 +4,7 @@
 
 **Goal:** Remove all hardcoded project routes/services from Ansible. Ansible provisions base infrastructure only. The infra tool manages all project lifecycle (routes, services, env files, secrets, ports).
 
-**Architecture:** Ansible handles OS setup, runtimes, daemons (Caddy, OpenBao), compose services (Postgres, Valkey, SigNoz), and the infra agent itself. The infra tool manages project Caddy routes via the admin API (`@id` prefixed `infra/`), systemd units, env files, secrets, and port allocation. The Caddyfile contains only infrastructure routes (SigNoz, OTEL, infra API, git redirects).
+**Architecture:** Ansible handles OS setup, runtimes, daemons (Caddy, OpenBao), compose services (Postgres, Valkey, SigNoz), and the infra agent itself. The infra tool manages project Caddy snippets in the `infra--` filename namespace, systemd units, env files, secrets, and port allocation. The Caddyfile contains only infrastructure routes (SigNoz, OTEL, infra API, git redirects) and imports the snippets.
 
 **Tech Stack:** Ansible (YAML playbooks), Jinja2 templates, Caddy, podman-compose, systemd
 
@@ -20,16 +20,12 @@
 
 **Step 1: Replace the Caddyfile template**
 
-Remove all project site blocks. Keep snippets, SigNoz/OTEL routes, git redirects. Add infra API route and Caddy admin API global option.
+Remove all project site blocks. Keep snippets, SigNoz/OTEL routes, and git redirects. Do not add an infra API route; the agent is accessed directly on port 9000.
 
 New content for `roles/caddy/templates/Caddyfile.j2`:
 
 ```caddy
-{
-	admin localhost:2019
-}
-
-# Reusable snippets — available to both Caddyfile and admin API routes
+# Reusable snippets — available to the Caddyfile and imported site snippets
 
 (static) {
 	root * {args[0]}
@@ -85,7 +81,7 @@ git.danielfgray.com {
 }
 ```
 
-Note: the infra API route is intentionally omitted from the Caddyfile — it listens on port 9000 and is accessed directly (not via Caddy) since it runs on the same host. If you want it behind Caddy later, the infra tool can add it via admin API.
+Note: the infra API route is intentionally omitted from the Caddyfile — it listens on port 9000 and is accessed directly (not via Caddy) since it runs on the same host.
 
 **Step 2: Verify template syntax**
 
@@ -101,8 +97,7 @@ git add roles/caddy/templates/Caddyfile.j2
 git commit -m "caddy: strip project routes, keep infra-only routes
 
 Caddyfile now only contains SigNoz, OTEL, and git redirects.
-Project routes are managed by the infra tool via Caddy admin API.
-Enables admin API on localhost:2019."
+Project routes are managed by the infra tool through Caddyfile snippets.
 ```
 
 ---
@@ -456,26 +451,26 @@ Expected: shows planned changes without applying them.
 
 ---
 
-### Task 7: Verify Caddy admin API compatibility
+### Task 7: Verify Caddy snippet reconciliation
 
-After deploying to the VM, verify the infra tool's CaddyManager works with the new Caddyfile.
+After deploying to the VM, verify the infra tool's CaddyManager writes imported snippets and reloads Caddy.
 
-**Step 1: Verify Caddy admin API is enabled**
-
-```bash
-ssh prod@cynic.dlab "curl -s http://localhost:2019/config/ | jq '.apps.http.servers.srv0.listen'"
-```
-
-Expected: `[":443"]` or similar — confirms admin API is live and the server exists.
-
-**Step 2: Verify infra tool can add routes**
-
-Deploy a test project via the infra tool and verify the route appears in Caddy config:
+**Step 1: Verify the imported snippet directory**
 
 ```bash
-ssh prod@cynic.dlab "curl -s http://localhost:2019/config/apps/http/servers/srv0/routes | jq '.[].\"@id\"'"
+ssh prod@cynic.dlab "ls /etc/caddy/sites-enabled/*.caddyfile"
 ```
 
-Expected: shows `infra/`-prefixed route IDs for the deployed project alongside infrastructure routes (which have no `@id`).
+Expected: the infra-managed snippets and any non-infra snippets are present.
+
+**Step 2: Verify infra tool can reconcile routes**
+
+Deploy a test project via the infra tool and verify its snippet appears in the imported directory:
+
+```bash
+ssh prod@cynic.dlab "ls /etc/caddy/sites-enabled/infra--*.caddyfile"
+```
+
+Expected: shows the deployed project's `infra--`-prefixed snippet.
 
 ---

@@ -35,12 +35,14 @@ export const deploymentPaths = (
 export const worktreeParent = (name: string, roots: DeploymentRoots = deploymentRoots()) =>
   `${roots.projects}/${name}/worktrees`;
 
+const encodeSnippetPart = (value: string) => encodeURIComponent(value).replaceAll("-", "%2D");
+
 export const deploymentNames = (name: string, stage: string) =>
   ({
     serviceUnit: `infra-${name}-${stage}`,
     candidateUnit: `infra-${name}-${stage}-new`,
-    stageSnippet: `infra--${name}--stage--${stage}.caddyfile`,
-    productionSnippet: `infra--${name}--production.caddyfile`,
+    stageSnippet: `infra--${encodeSnippetPart(name)}--stage--${encodeSnippetPart(stage)}.caddyfile`,
+    productionSnippet: `infra--${encodeSnippetPart(name)}--production.caddyfile`,
   }) as const;
 
 export const previewHost = (hash: string, domain: string) => `${hash}-preview.${domain}`;

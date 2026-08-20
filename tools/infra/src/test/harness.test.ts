@@ -9,6 +9,7 @@ import {
   worktreeParent,
 } from "../lib/deployment.ts";
 import { SshClient } from "../services/SshClient.ts";
+import { orphanedManagedSnippets } from "../services/CaddyManager.ts";
 import { removeWorktreeArgs } from "../services/GitManager.ts";
 import { makeTestServices, testLayers } from "./layers.ts";
 
@@ -68,4 +69,20 @@ it("derives deployment names and preview addresses from stage identity", () => {
   });
   expect(previewHost("abc123", "demo.example")).toBe("abc123-preview.demo.example");
   expect(previewUrl("abc123", "demo.example")).toBe("https://abc123-preview.demo.example");
+});
+
+it("keeps stage and production snippet names distinct for a production stage", () => {
+  const names = deploymentNames("demo", "production");
+  expect(names.stageSnippet).not.toBe(names.productionSnippet);
+  expect(names.stageSnippet).not.toBe(deploymentNames("demo--stage", "main").productionSnippet);
+});
+
+it("removes only orphaned infra snippets", () => {
+  const expected = new Set(["infra--demo--production.caddyfile"]);
+  expect(
+    orphanedManagedSnippets(
+      ["infra--demo--old.caddyfile", "custom.caddyfile", "manual.caddyfile"],
+      expected,
+    ),
+  ).toEqual(["infra--demo--old.caddyfile"]);
 });

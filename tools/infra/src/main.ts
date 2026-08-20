@@ -79,7 +79,7 @@ const OpenBaoLive = Layer.unwrapEffect(
 //   Level 0 (leaves)  : PasswordGenerator, SshClient, GitManager, OpenBaoClient, StateDb
 //   Level 1 (derived) : SecretResolver <- PasswordGenerator
 //                        DeployMeta <- StateDb
-//   Level 2 (composed): CaddyManager <- DeployMeta (uses Caddy admin API via fetch)
+//   Level 2 (composed): CaddyManager <- DeployMeta
 //                        HealthCheck <- SshClient
 //                        SystemdManager <- SshClient
 
