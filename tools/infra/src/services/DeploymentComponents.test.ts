@@ -132,7 +132,8 @@ it.effect("finalizes a candidate using only the component-owned paths", () => {
     expect(state.calls.ssh).toEqual([
       {
         host: "test-host",
-        command: "mv /srv/projects/demo/stages/main.new /srv/projects/demo/stages/main",
+        command:
+          "if [ -e '/srv/projects/demo/stages/main.new' ]; then rm -rf '/srv/projects/demo/stages/main' && mv '/srv/projects/demo/stages/main.new' '/srv/projects/demo/stages/main'; fi",
       },
     ]);
   });

@@ -1,12 +1,16 @@
-import { Console, Duration, Effect } from "effect";
+import { Console, Effect } from "effect";
 
 import { GitManager, sanitizeRef } from "./GitManager.ts";
-import { DeployMeta } from "./DeployMeta.ts";
+import { DeployMeta, type StageInfo } from "./DeployMeta.ts";
 import { DeploymentComponents } from "./DeploymentComponents.ts";
 import { PromotionService, StageNotFoundError } from "./PromotionService.ts";
 import { StageOperations } from "./StageOperations.ts";
-import { RETIRE_GRACE_SECONDS } from "../lib/config.ts";
 import { previewUrl } from "../lib/deployment.ts";
+
+type ServiceStageInfo = Omit<StageInfo, "type" | "port"> & {
+  readonly type: "service";
+  readonly port: number;
+};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -107,6 +111,28 @@ export const makeDeployRunner = Effect.gen(function* () {
         yield* Console.log(`  ref: ${actualRef} (${hash})`);
         yield* Console.log(`  stage: ${stage}`);
 
+        const existingBeforeWorktree = yield* meta.getProject(name);
+        const existingService = existingBeforeWorktree?.stages[stage];
+        if (existingService?.type === "service" && existingService.port !== null) {
+          const recovered = yield* stageOperations.finalize({
+            name,
+            stage,
+            host: existingService.host,
+            info: existingService as ServiceStageInfo,
+          });
+
+          if (recovered && existingService.ref === actualRef && existingService.hash === hash) {
+            return {
+              name,
+              stage,
+              hash: existingService.hash,
+              type: existingService.type,
+              previewUrl: previewUrl(existingService.hash, existingService.domain),
+              autoPromote: undefined,
+            } satisfies DeployResult;
+          }
+        }
+
         // 3. Create worktree
         const wt = yield* gitMgr.worktrees.add(name, stage, actualRef);
 
@@ -121,19 +147,24 @@ export const makeDeployRunner = Effect.gen(function* () {
 
           const existing = yield* meta.getProject(name);
           const existingStage = existing?.stages[stage];
-          const isZeroDowntime = existingStage?.type === "service" && existingStage.port !== null;
+          const serviceStage =
+            existingStage?.type === "service" && existingStage.port !== null
+              ? (existingStage as ServiceStageInfo)
+              : undefined;
+          const isZeroDowntime = serviceStage !== undefined;
 
           const port =
-            config.type === "service"
-              ? isZeroDowntime
-                ? yield* meta.allocatePort() // always fresh port for zero-downtime
-                : (existingStage?.port ?? (yield* meta.allocatePort()))
+            config.type === "service" && !isZeroDowntime
+              ? (existingStage?.port ?? (yield* meta.allocatePort()))
               : null;
 
           return { config, secrets, existing, isZeroDowntime, port };
         }).pipe(Effect.onError(() => stageOperations.cleanupWorktree(name, stage)));
 
         const { config, secrets, existing, isZeroDowntime, port } = prepared;
+
+        const deployPort =
+          config.type === "service" ? (isZeroDowntime ? yield* meta.allocatePort() : port) : null;
 
         // StageOperations owns build, artifact/instance cleanup, health, and commit policy.
         const stageInfo =
@@ -148,7 +179,7 @@ export const makeDeployRunner = Effect.gen(function* () {
                 secrets,
               })
             : isZeroDowntime
-              ? yield* stageOperations.deployService({
+              ? yield* stageOperations.acquireService({
                   name,
                   stage,
                   ref: actualRef,
@@ -156,10 +187,10 @@ export const makeDeployRunner = Effect.gen(function* () {
                   worktreePath: wt,
                   config,
                   secrets,
-                  port: port!,
+                  port: deployPort!,
                   target: "candidate",
                 })
-              : yield* stageOperations.deployService({
+              : yield* stageOperations.acquireService({
                   name,
                   stage,
                   ref: actualRef,
@@ -167,12 +198,12 @@ export const makeDeployRunner = Effect.gen(function* () {
                   worktreePath: wt,
                   config,
                   secrets,
-                  port: port!,
+                  port: deployPort!,
                   target: "final",
                 });
 
         if (isZeroDowntime) {
-          yield* Console.log("  healthy — switching traffic");
+          yield* Console.log("  healthy — committing traffic");
           yield* stageOperations.commit({
             name,
             stage,
@@ -181,41 +212,11 @@ export const makeDeployRunner = Effect.gen(function* () {
             target: "candidate",
           });
 
-          // Stop old service
-          yield* Console.log("  stopping old service...");
-          yield* components.serviceInstances
-            .stop({ name, stage, host: config.host, target: "final" })
-            .pipe(Effect.catchAll(() => Effect.void));
-
-          // Grace period for in-flight requests to drain
-          yield* Console.log(`  grace period: ${RETIRE_GRACE_SECONDS}s`);
-          yield* Effect.sleep(Duration.seconds(RETIRE_GRACE_SECONDS));
-
-          // Cleanup: remove old unit + old directory, rename new to final
-          yield* Console.log("  cleaning up old deployment...");
-          yield* components.serviceInstances
-            .remove({ name, stage, host: config.host, target: "final" })
-            .pipe(Effect.catchAll(() => Effect.void));
-          yield* components.serviceArtifacts
-            .remove({ name, stage, host: config.host, target: "final" })
-            .pipe(Effect.catchAll(() => Effect.void));
-
-          // Rename new directory -> final, reinstall systemd unit at final name
-          yield* components.serviceArtifacts.finalize({ name, stage, host: config.host });
-          yield* components.serviceInstances
-            .remove({ name, stage, host: config.host, target: "candidate" })
-            .pipe(Effect.catchAll(() => Effect.void));
-          yield* components.serviceInstances.install({
+          yield* stageOperations.finalize({
             name,
             stage,
             host: config.host,
-            target: "final",
-          });
-          yield* components.serviceInstances.start({
-            name,
-            stage,
-            host: config.host,
-            target: "final",
+            info: stageInfo as ServiceStageInfo,
           });
         } else {
           yield* stageOperations.commit({

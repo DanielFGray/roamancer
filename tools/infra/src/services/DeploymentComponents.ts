@@ -25,6 +25,14 @@ const serviceUnit = (name: string, stage: string, target: ServiceTarget) => {
 
 const shellPath = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+const marker = (output: string, name: string) =>
+  output.match(new RegExp(`(?:^|\\n)${name}=([^\\n]*)`))?.[1] ?? "";
+
+const markerNumber = (output: string, name: string) => {
+  const value = marker(output, name);
+  return value === "" ? null : Number(value);
+};
+
 export const makeDeploymentComponents = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -146,6 +154,25 @@ export const makeDeploymentComponents = Effect.gen(function* () {
     },
 
     serviceArtifacts: {
+      inspect: Effect.fnUntraced(function* (input: { name: string; stage: string; host: string }) {
+        const candidate = servicePath(input.name, input.stage, "candidate");
+        const final = servicePath(input.name, input.stage, "final");
+        const result = yield* ssh.exec(
+          input.host,
+          `printf 'candidate=%s\\n' $(test -e ${shellPath(candidate)} && printf 1 || printf 0); ` +
+            `printf 'final=%s\\n' $(test -e ${shellPath(final)} && printf 1 || printf 0); ` +
+            `printf 'candidatePort=%s\\n' "$(test -e ${shellPath(`${candidate}/.env`)} && sed -n 's/^PORT=//p' ${shellPath(`${candidate}/.env`)} || true)"; ` +
+            `printf 'finalPort=%s\\n' "$(test -e ${shellPath(`${final}/.env`)} && sed -n 's/^PORT=//p' ${shellPath(`${final}/.env`)} || true)"`,
+          SVC_USER,
+        );
+        return {
+          candidate: result.includes("candidate=1"),
+          final: result.includes("final=1"),
+          candidatePort: markerNumber(result, "candidatePort"),
+          finalPort: markerNumber(result, "finalPort"),
+        };
+      }),
+
       publish: Effect.fnUntraced(function* (input: {
         name: string;
         stage: string;
@@ -186,11 +213,40 @@ export const makeDeploymentComponents = Effect.gen(function* () {
       finalize: Effect.fnUntraced(function* (input: { name: string; stage: string; host: string }) {
         const candidate = servicePath(input.name, input.stage, "candidate");
         const final = servicePath(input.name, input.stage, "final");
-        yield* ssh.exec(input.host, `mv ${candidate} ${final}`, SVC_USER);
+        yield* ssh.exec(
+          input.host,
+          `if [ -e ${shellPath(candidate)} ]; then rm -rf ${shellPath(final)} && mv ${shellPath(candidate)} ${shellPath(final)}; fi`,
+          SVC_USER,
+        );
       }),
     },
 
     serviceInstances: {
+      inspect: Effect.fnUntraced(function* (input: { name: string; stage: string; host: string }) {
+        const names = deploymentNames(input.name, input.stage);
+        const unitDir = `/home/${SVC_USER}/.config/systemd/user`;
+        const candidateUnitFile = `${unitDir}/${names.candidateUnit}.service`;
+        const finalUnitFile = `${unitDir}/${names.serviceUnit}.service`;
+        const result = yield* ssh.exec(
+          input.host,
+          `printf 'candidate=%s\\n' $(test -f ${shellPath(candidateUnitFile)} && printf 1 || printf 0); ` +
+            `printf 'final=%s\\n' $(test -f ${shellPath(finalUnitFile)} && printf 1 || printf 0); ` +
+            `printf 'candidateWorking=%s\\n' "$(sed -n 's/^WorkingDirectory=//p' ${shellPath(candidateUnitFile)} 2>/dev/null || true)"; ` +
+            `printf 'finalWorking=%s\\n' "$(sed -n 's/^WorkingDirectory=//p' ${shellPath(finalUnitFile)} 2>/dev/null || true)"; ` +
+            `printf 'candidateActive=%s\\n' "$(XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user is-active ${shellPath(names.candidateUnit)} 2>/dev/null || true)"; ` +
+            `printf 'finalActive=%s\\n' "$(XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user is-active ${shellPath(names.serviceUnit)} 2>/dev/null || true)"`,
+          SVC_USER,
+        );
+        return {
+          candidate: result.includes("candidate=1"),
+          final: result.includes("final=1"),
+          candidateWorkingDirectory: marker(result, "candidateWorking") || null,
+          finalWorkingDirectory: marker(result, "finalWorking") || null,
+          candidateActive: marker(result, "candidateActive") === "active",
+          finalActive: marker(result, "finalActive") === "active",
+        };
+      }),
+
       install: Effect.fnUntraced(function* (input: {
         name: string;
         stage: string;

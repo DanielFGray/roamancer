@@ -17,6 +17,8 @@ export interface TestCalls {
   readonly git: Array<string>;
   readonly systemd: Array<{ action: string; host: string; unit: string }>;
   readonly events: Array<string>;
+  readonly allocations: Array<number>;
+  readonly trace: Array<string>;
 }
 
 export interface TestServices {
@@ -32,6 +34,19 @@ export interface TestServices {
   failMetaSave?: boolean;
   failMetaDelete?: boolean;
   failBuild?: string;
+  failSystemdInstallUnit?: string;
+  failSystemdRemoveUnit?: string;
+  failSystemdStartUnit?: string;
+  candidateArtifact?: boolean;
+  candidatePort?: number;
+  finalArtifact?: boolean;
+  finalPort?: number;
+  candidateUnit?: boolean;
+  candidateWorkingDirectory?: string;
+  candidateActive?: boolean;
+  finalUnit?: boolean;
+  finalWorkingDirectory?: string;
+  finalActive?: boolean;
   staticHadPrevious?: boolean;
   nextPort?: number;
 }
@@ -49,8 +64,49 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     _tag: "infra/SshClient",
     exec: (host, command) => {
       state.calls.ssh.push({ host, command });
+      if (command.includes("candidatePort")) state.calls.trace.push("artifact.inspect");
+      if (command.includes("if [ -e '/srv/projects/demo/stages/main.new'")) {
+        state.calls.trace.push("artifact.finalize");
+      }
+      if (command === "rm -rf /srv/projects/demo/stages/main.new") {
+        state.calls.trace.push("artifact.remove.candidate");
+      }
       if (state.failSshCommand && command.includes(state.failSshCommand)) {
         return Effect.fail(new SshError({ code: 1, signal: null, message: `failed: ${command}` }));
+      }
+      if (command.includes("mkdir -p /srv/projects/demo/stages/main.new"))
+        state.candidateArtifact = true;
+      if (command === "rm -rf /srv/projects/demo/stages/main.new") state.candidateArtifact = false;
+      if (
+        command.includes("mv '/srv/projects/demo/stages/main.new' '/srv/projects/demo/stages/main'")
+      ) {
+        state.candidateArtifact = false;
+        state.finalArtifact = true;
+        if (state.candidatePort !== undefined) state.finalPort = state.candidatePort;
+      }
+      if (command === "rm -rf /srv/projects/demo/stages/main") state.finalArtifact = false;
+      if (command.includes("candidateWorking")) {
+        return Effect.succeed(
+          `candidate=${state.candidateUnit ? 1 : 0}\nfinal=${state.finalUnit ? 1 : 0}\n` +
+            `candidateWorking=${state.candidateWorkingDirectory ?? ""}\n` +
+            `finalWorking=${state.finalWorkingDirectory ?? ""}\n` +
+            `candidateActive=${state.candidateActive ? "active" : "inactive"}\n` +
+            `finalActive=${state.finalActive ? "active" : "inactive"}`,
+        );
+      }
+      if (command.includes("printf 'candidate=%s")) {
+        const units = command.includes(".config/systemd/user");
+        const candidate = units
+          ? (state.candidateUnit ?? false)
+          : (state.candidateArtifact ?? false);
+        const final = units ? (state.finalUnit ?? false) : (state.finalArtifact ?? false);
+        if (command.includes("candidatePort")) {
+          return Effect.succeed(
+            `candidate=${candidate ? 1 : 0}\nfinal=${final ? 1 : 0}\n` +
+              `candidatePort=${state.candidatePort ?? ""}\nfinalPort=${state.finalPort ?? ""}`,
+          );
+        }
+        return Effect.succeed(`candidate=${candidate ? 1 : 0}\nfinal=${final ? 1 : 0}`);
       }
       return command.includes("printf '%s'")
         ? Effect.succeed(state.staticHadPrevious ? "1" : "0")
@@ -59,6 +115,9 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     writeFile: (host, remotePath, content) => {
       state.calls.ssh.push({ host, command: `write ${remotePath}` });
       state.files.set(remotePath, content);
+      const port = content.match(/^PORT=(\d+)$/m)?.[1];
+      if (remotePath.endsWith("/main.new/.env") && port) state.candidatePort = Number(port);
+      if (remotePath.endsWith("/main/.env") && port) state.finalPort = Number(port);
       return Effect.as(Effect.void, undefined);
     },
     execInteractive: (host, command) => {
@@ -117,38 +176,62 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
         : Effect.sync(() => {
             state.projects.delete(name);
           }),
-    allocatePort: () => Effect.succeed(state.nextPort ?? 3001),
+    allocatePort: () =>
+      Effect.sync(() => {
+        const port = state.nextPort ?? 3001;
+        state.calls.allocations.push(port);
+        return port;
+      }),
   });
 
   const systemd = Layer.succeed(SystemdManager, {
     _tag: "infra/SystemdManager",
     install: (host, unit) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         state.calls.systemd.push({ action: "install", host, unit });
-      }).pipe(
-        Effect.flatMap(() =>
-          state.failSystemdAction === "install"
-            ? Effect.fail(new SshError({ code: 1, signal: null, message: "install failed" }))
-            : Effect.void,
-        ),
-      ),
+        state.calls.trace.push(`systemd.install.${unit}`);
+        if (state.failSystemdAction === "install" || state.failSystemdInstallUnit === unit) {
+          return yield* new SshError({ code: 1, signal: null, message: "install failed" });
+        }
+        if (unit === "infra-demo-main-new") state.candidateUnit = true;
+        if (unit === "infra-demo-main-new") {
+          state.candidateWorkingDirectory = "/srv/projects/demo/stages/main.new";
+        }
+        if (unit === "infra-demo-main") {
+          state.finalUnit = true;
+          state.finalWorkingDirectory = "/srv/projects/demo/stages/main";
+        }
+      }),
     start: (host, unit) =>
       Effect.sync(() => {
         state.calls.systemd.push({ action: "start", host, unit });
+        state.calls.trace.push(`systemd.start.${unit}`);
       }).pipe(
         Effect.flatMap(() =>
-          state.failSystemdAction === "start"
+          state.failSystemdAction === "start" || state.failSystemdStartUnit === unit
             ? Effect.fail(new SshError({ code: 1, signal: null, message: "start failed" }))
-            : Effect.void,
+            : Effect.sync(() => {
+                if (unit === "infra-demo-main-new") state.candidateActive = true;
+                if (unit === "infra-demo-main") state.finalActive = true;
+              }),
         ),
       ),
     stop: (host, unit) =>
       Effect.sync(() => {
         state.calls.systemd.push({ action: "stop", host, unit });
+        state.calls.trace.push(`systemd.stop.${unit}`);
+        if (unit === "infra-demo-main-new") state.candidateActive = false;
+        if (unit === "infra-demo-main") state.finalActive = false;
       }),
     remove: (host, unit) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         state.calls.systemd.push({ action: "remove", host, unit });
+        state.calls.trace.push(`systemd.remove.${unit}`);
+        if (state.failSystemdRemoveUnit === unit) {
+          return yield* new SshError({ code: 1, signal: null, message: "remove failed" });
+        }
+        if (unit === "infra-demo-main-new") state.candidateUnit = false;
+        if (unit === "infra-demo-main") state.finalUnit = false;
       }),
     status: (host, unit) =>
       Effect.sync(() => {
@@ -161,6 +244,7 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     _tag: "infra/HealthCheck",
     check: (_info, stage) => {
       state.calls.events.push(`health.check:${stage}`);
+      state.calls.trace.push(`health.check:${stage}`);
       return state.healthError ? Effect.fail(state.healthError) : Effect.void;
     },
   });
@@ -169,6 +253,7 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     listRoutes: () => Effect.succeed([]),
     sync: () => {
       state.calls.events.push("caddy.sync");
+      state.calls.trace.push("caddy.sync");
       return state.failCaddySync
         ? Effect.fail(new CaddyError({ message: "caddy sync failed" }))
         : Effect.void;
@@ -230,13 +315,21 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
 };
 
 export const makeTestServices = (): TestServices => ({
-  calls: { ssh: [], git: [], systemd: [], events: [] },
+  calls: { ssh: [], git: [], systemd: [], events: [], allocations: [], trace: [] },
   projects: new Map(),
   files: new Map(),
   openBao: new Map(),
 });
 
 export const seedProject = (state: TestServices, name: string, project?: Partial<ProjectMeta>) => {
-  state.projects.set(name, { ...emptyMeta(name), ...project });
+  const value = { ...emptyMeta(name), ...project };
+  state.projects.set(name, value);
+  if (value.stages.main?.type === "service") {
+    state.finalArtifact = true;
+    if (value.stages.main.port !== null) state.finalPort = value.stages.main.port;
+    state.finalUnit = true;
+    state.finalWorkingDirectory = "/srv/projects/demo/stages/main";
+    state.finalActive = true;
+  }
   return state;
 };

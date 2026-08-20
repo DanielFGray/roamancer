@@ -1,4 +1,4 @@
-import { DateTime, Effect, Schema as S } from "effect";
+import { DateTime, Duration, Effect, Schema as S } from "effect";
 import { BunContext } from "@effect/platform-bun";
 import * as FileSystem from "@effect/platform/FileSystem";
 import * as Path from "@effect/platform/Path";
@@ -8,7 +8,8 @@ import { DeploymentComponents, type ServiceTarget } from "./DeploymentComponents
 import { GitManager } from "./GitManager.ts";
 import { HealthCheck } from "./HealthCheck.ts";
 import { BuildRunner } from "./BuildRunner.ts";
-import { CADDY_HOST } from "../lib/config.ts";
+import { CADDY_HOST, DEPLOYMENT_ROOTS, RETIRE_GRACE_SECONDS } from "../lib/config.ts";
+import { deploymentPaths } from "../lib/deployment.ts";
 
 export class ProjectConfigError extends S.TaggedError<ProjectConfigError>()("ProjectConfigError", {
   message: S.String,
@@ -67,6 +68,11 @@ export interface CommitInput {
   readonly existing: ProjectMeta | null;
   readonly target: ServiceTarget | "static";
 }
+
+type ServiceStageInfo = Omit<StageInfo, "type" | "port"> & {
+  readonly type: "service";
+  readonly port: number;
+};
 
 export interface TeardownInput {
   readonly name: string;
@@ -162,7 +168,7 @@ export const makeStageOperations = Effect.gen(function* () {
     }).pipe(Effect.onError(() => cleanup));
   });
 
-  const deployService = Effect.fnUntraced(function* (input: ServiceDeploymentInput) {
+  const acquireService = Effect.fnUntraced(function* (input: ServiceDeploymentInput) {
     const cleanup = Effect.gen(function* () {
       yield* cleanupWorktree(input.name, input.stage);
       yield* removeService(input.name, input.stage, input.config.host, input.target).pipe(
@@ -205,6 +211,63 @@ export const makeStageOperations = Effect.gen(function* () {
       yield* health.check(info, input.stage);
       return info;
     }).pipe(Effect.onError(() => cleanup));
+  });
+
+  const finalize = Effect.fnUntraced(function* (input: {
+    readonly name: string;
+    readonly stage: string;
+    readonly host: string;
+    readonly info: ServiceStageInfo;
+  }) {
+    const artifacts = yield* components.serviceArtifacts.inspect(input);
+    const instances = yield* components.serviceInstances.inspect(input);
+    const paths = deploymentPaths(input.name, input.stage, DEPLOYMENT_ROOTS);
+    const candidateCommitted =
+      artifacts.candidate &&
+      artifacts.candidatePort === input.info.port &&
+      instances.candidateWorkingDirectory === paths.serviceCandidate;
+    const finalArtifactCommitted = artifacts.final && artifacts.finalPort === input.info.port;
+    const finalCommitted =
+      finalArtifactCommitted && instances.finalWorkingDirectory === paths.service;
+    const hasCommittedIdentity = candidateCommitted || finalArtifactCommitted;
+    const hasOrphanedIdentity = artifacts.candidate || instances.candidate;
+
+    if (!hasCommittedIdentity) {
+      if (hasOrphanedIdentity) {
+        yield* removeService(input.name, input.stage, input.host, "candidate");
+      }
+      return false;
+    }
+
+    // A healthy final that matches metadata is the normal steady state. An
+    // unrelated candidate can be removed without replaying traffic commit.
+    if (!candidateCommitted && finalCommitted && instances.finalActive) {
+      if (hasOrphanedIdentity) {
+        yield* removeService(input.name, input.stage, input.host, "candidate");
+      }
+      return false;
+    }
+
+    // Reconcile traffic while the candidate or its replacement final identity
+    // still proves that this operation needs recovery.
+    yield* caddy.sync();
+
+    if (candidateCommitted) {
+      if (instances.finalActive) {
+        yield* components.serviceInstances.stop({ ...input, target: "final" });
+        yield* Effect.sleep(Duration.seconds(RETIRE_GRACE_SECONDS));
+      }
+      yield* components.serviceInstances.remove({ ...input, target: "final" });
+      yield* components.serviceArtifacts.finalize(input);
+    }
+    if (instances.candidate) {
+      yield* components.serviceInstances.remove({ ...input, target: "candidate" });
+    }
+    if (!finalCommitted || !instances.finalActive) {
+      yield* components.serviceInstances.install({ ...input, target: "final" });
+      yield* components.serviceInstances.start({ ...input, target: "final" });
+    }
+    return true;
   });
 
   const commit = Effect.fnUntraced(function* (input: CommitInput) {
@@ -321,7 +384,7 @@ export const makeStageOperations = Effect.gen(function* () {
     yield* caddy.sync();
   });
 
-  return { readConfig, cleanupWorktree, publishStatic, deployService, commit, teardown };
+  return { readConfig, cleanupWorktree, publishStatic, acquireService, commit, finalize, teardown };
 });
 
 export class StageOperations extends Effect.Service<StageOperations>()("infra/StageOperations", {
