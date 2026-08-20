@@ -70,3 +70,15 @@ export const runnerFromTestLayers = (state: ReturnType<typeof makeTestServices>)
     return yield* makeDeployRunner;
   }).pipe(Effect.provide(Layer.mergeAll(external, components, promotion, stageOperations)));
 };
+
+/** Component boundary used by service-level tests that do not need DeployRunner. */
+export const deploymentComponentsFromTestLayers = (state: ReturnType<typeof makeTestServices>) => {
+  const external = Layer.mergeAll(testLayers(state), SecretResolver.Default);
+  const components = Layer.effect(
+    DeploymentComponents,
+    makeDeploymentComponents.pipe(
+      Effect.map((value) => ({ ...value, _tag: "infra/DeploymentComponents" as const })),
+    ),
+  ).pipe(Layer.provide(external));
+  return Layer.mergeAll(external, components);
+};

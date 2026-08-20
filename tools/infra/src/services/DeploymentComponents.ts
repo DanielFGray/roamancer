@@ -64,6 +64,23 @@ export const makeDeploymentComponents = Effect.gen(function* () {
     },
 
     staticArtifacts: {
+      inspect: Effect.fnUntraced(function* (input: {
+        stage: string;
+        domain: string;
+        host: string;
+      }) {
+        const paths = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS);
+        const result = yield* ssh.exec(
+          input.host,
+          `printf 'candidate=%s\\n' $(test -e ${shellPath(paths.staticFilesCandidate)} && printf 1 || printf 0); ` +
+            `printf 'final=%s\\n' $(test -e ${shellPath(paths.staticFiles)} && printf 1 || printf 0)`,
+          SVC_USER,
+        );
+        return {
+          candidate: result.includes("candidate=1"),
+          final: result.includes("final=1"),
+        };
+      }),
       publish: Effect.fnUntraced(function* (input: {
         stage: string;
         domain: string;

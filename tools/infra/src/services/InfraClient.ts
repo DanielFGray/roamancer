@@ -2,6 +2,7 @@ import { Effect, Schema as S } from "effect";
 import * as HttpClient from "@effect/platform/HttpClient";
 import * as HttpClientRequest from "@effect/platform/HttpClientRequest";
 import { INFRA_SERVER_URL, API_TOKEN } from "../lib/config.ts";
+import { OperationalReportSchema } from "./OperationalReport.ts";
 
 // ---------------------------------------------------------------------------
 // Error
@@ -172,7 +173,7 @@ const make = (client: HttpClient.HttpClient) => ({
   getStages: (name: string) =>
     request(client, "GET", `/projects/${encodeURIComponent(name)}/stages`, StageListResult),
 
-  status: () => request(client, "GET", "/status", StubResponse),
+  status: () => request(client, "GET", "/status", OperationalReportSchema),
 
   backups: () => request(client, "GET", "/backups", BackupStatusResponse),
 

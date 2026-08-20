@@ -7,6 +7,7 @@ import {
   HttpApiSecurity,
 } from "@effect/platform";
 import { Context, Schema } from "effect";
+import { OperationalReportSchema } from "../src/services/OperationalReport.ts";
 
 // ---------------------------------------------------------------------------
 // Webhook error schemas
@@ -195,7 +196,7 @@ const BackupStatusResponse = Schema.Struct({
 const CaddyRouteSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown });
 
 const statusGroup = HttpApiGroup.make("status")
-  .add(HttpApiEndpoint.get("getStatus", "/status").addSuccess(StubResponse))
+  .add(HttpApiEndpoint.get("getStatus", "/status").addSuccess(OperationalReportSchema))
   .add(HttpApiEndpoint.get("getBackups", "/backups").addSuccess(BackupStatusResponse))
   .add(HttpApiEndpoint.get("getRoutes", "/routes").addSuccess(Schema.Array(CaddyRouteSchema)))
   .add(HttpApiEndpoint.post("syncRoutes", "/sync").addSuccess(StubResponse))

@@ -13,6 +13,7 @@ import {
   NotFoundError,
   Unauthorized,
 } from "./api.ts";
+import { OperationalReportService } from "../src/services/OperationalReport.ts";
 import { WebhooksGroupLive } from "./webhook.ts";
 import { AgentSecrets } from "./secrets.ts";
 import { SchedulerLive, BackupStatus, BackupStatusLive } from "./scheduler.ts";
@@ -39,8 +40,6 @@ import {
 // ---------------------------------------------------------------------------
 // Stub response helper (status endpoint only)
 // ---------------------------------------------------------------------------
-
-const stub = (message: string) => Effect.succeed({ status: "ok" as const, message });
 
 const tokenEquals = (actual: string, expected: string) => {
   const actualBuf = Buffer.from(actual);
@@ -132,7 +131,12 @@ const ProjectsGroupLive = HttpApiBuilder.group(InfraApi, "projects", (handlers) 
 
 const StatusGroupLive = HttpApiBuilder.group(InfraApi, "status", (handlers) =>
   handlers
-    .handle("getStatus", () => stub("system status: healthy"))
+    .handle("getStatus", () =>
+      Effect.gen(function* () {
+        const report = yield* OperationalReportService;
+        return yield* report();
+      }),
+    )
     .handle(
       "getBackups",
       Effect.fnUntraced(function* () {
@@ -266,6 +270,12 @@ const Leaves = Layer.mergeAll(
 
 const DeployRunnerLive = DeployRunner.Default.pipe(Layer.provideMerge(Leaves));
 
+const OperationalReportLive = OperationalReportService.Default.pipe(
+  Layer.provideMerge(DeployRunnerLive),
+  Layer.provideMerge(CaddyManager.Default),
+  Layer.provide(BunContext.layer),
+);
+
 const CaddySyncLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const caddy = yield* CaddyManager;
@@ -280,6 +290,7 @@ const CaddySyncLive = Layer.effectDiscard(
 
 const ServiceDeps = Layer.mergeAll(
   DeployRunnerLive,
+  OperationalReportLive,
   BackupStatusLive,
   CaddySyncLive,
   CaddyManager.Default,

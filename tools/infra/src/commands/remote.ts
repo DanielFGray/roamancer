@@ -128,7 +128,26 @@ export const statusCommand = Command.make("status").pipe(
     Effect.fnUntraced(function* () {
       const client = yield* InfraClient;
       const result = yield* client.status();
-      yield* Console.log(result.message);
+      yield* Console.log(`Status: ${result.status}`);
+      for (const project of result.projects) {
+        yield* Console.log(`  ${project.project}: ${project.status}`);
+        for (const item of project.checks) {
+          if (item.status !== "healthy") {
+            yield* Console.log(`    ${item.name}: ${item.status} (${item.message})`);
+          }
+        }
+        for (const stage of project.stages) {
+          yield* Console.log(`    ${stage.stage}: ${stage.status}`);
+          for (const item of stage.checks) {
+            if (item.status !== "healthy") {
+              yield* Console.log(`      ${item.name}: ${item.status} (${item.message})`);
+            }
+          }
+        }
+      }
+      for (const item of result.checks) {
+        yield* Console.log(`  ${item.name}: ${item.status} (${item.message})`);
+      }
     }),
   ),
   Command.withDescription("System status"),

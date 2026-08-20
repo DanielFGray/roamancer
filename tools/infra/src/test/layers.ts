@@ -11,6 +11,7 @@ import { HealthCheckError } from "../services/HealthCheck.ts";
 import { OpenBaoClient, type OpenBaoClientShape } from "../services/OpenBaoClient.ts";
 import { SshClient, SshError } from "../services/SshClient.ts";
 import { SystemdManager } from "../services/SystemdManager.ts";
+import { deploymentPaths } from "../lib/deployment.ts";
 
 export interface TestCalls {
   readonly ssh: Array<{ host: string; command: string }>;
@@ -30,6 +31,8 @@ export interface TestServices {
   failSshCommand?: string;
   failSystemdAction?: string;
   failCaddySync?: boolean;
+  failCaddyRoutes?: boolean;
+  caddyRoutes?: ReadonlyArray<{ file: string; content: string }>;
   failOpenBaoPut?: boolean;
   failMetaSave?: boolean;
   failMetaDelete?: boolean;
@@ -250,7 +253,10 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
   });
   const caddy = Layer.succeed(CaddyManager, {
     _tag: "infra/CaddyManager",
-    listRoutes: () => Effect.succeed([]),
+    listRoutes: () =>
+      state.failCaddyRoutes
+        ? Effect.fail(new CaddyError({ message: "route inspection failed" }))
+        : Effect.succeed([...(state.caddyRoutes ?? [])]),
     sync: () => {
       state.calls.events.push("caddy.sync");
       state.calls.trace.push("caddy.sync");
@@ -328,7 +334,7 @@ export const seedProject = (state: TestServices, name: string, project?: Partial
     state.finalArtifact = true;
     if (value.stages.main.port !== null) state.finalPort = value.stages.main.port;
     state.finalUnit = true;
-    state.finalWorkingDirectory = "/srv/projects/demo/stages/main";
+    state.finalWorkingDirectory = deploymentPaths(name, "main").service;
     state.finalActive = true;
   }
   return state;
