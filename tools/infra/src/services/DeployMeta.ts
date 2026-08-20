@@ -27,6 +27,13 @@ export const ProjectMeta = S.Struct({
 export type StageInfo = typeof StageInfo.Type;
 export type ProjectMeta = typeof ProjectMeta.Type;
 
+export const nextAvailablePort = (used: ReadonlySet<number>): number | null => {
+  const PORT_MAX = 65535;
+  let port = PORT_RANGE_START;
+  while (used.has(port)) port++;
+  return port <= PORT_MAX ? port : null;
+};
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -146,13 +153,9 @@ export class DeployMeta extends Effect.Service<DeployMeta>()("infra/DeployMeta",
       allocatePort: () =>
         Effect.try({
           try: () => {
-            const PORT_MAX = 65535;
             const usedRows = usedPortsStmt.all() as Array<{ port: number }>;
             const used = new Set(usedRows.map((r) => r.port));
-
-            let port = PORT_RANGE_START;
-            while (used.has(port)) port++;
-            return port <= PORT_MAX ? port : null;
+            return nextAvailablePort(used);
           },
           catch: (error) =>
             new DeployMetaError({
@@ -169,8 +172,6 @@ export class DeployMeta extends Effect.Service<DeployMeta>()("infra/DeployMeta",
               : Effect.succeed(port),
           ),
         ),
-
-      releasePort: (_port: number) => Effect.void,
     };
   }),
   dependencies: [StateDb.Default],

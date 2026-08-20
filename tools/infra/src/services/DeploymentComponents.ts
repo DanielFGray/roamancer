@@ -1,0 +1,159 @@
+import { Console, Effect } from "effect";
+import * as FileSystem from "@effect/platform/FileSystem";
+import * as Path from "@effect/platform/Path";
+import { BunContext } from "@effect/platform-bun";
+import { OpenBaoClient } from "./OpenBaoClient.ts";
+import { SecretResolver } from "./SecretResolver.ts";
+import { SshClient } from "./SshClient.ts";
+import { SystemdManager } from "./SystemdManager.ts";
+import { formatEnv, parseEnvExample } from "../lib/env-parser.ts";
+import { DEPLOYMENT_ROOTS, SVC_USER } from "../lib/config.ts";
+import { deploymentNames, deploymentPaths } from "../lib/deployment.ts";
+
+export type ServiceTarget = "final" | "candidate";
+
+const servicePath = (name: string, stage: string, target: ServiceTarget) => {
+  const paths = deploymentPaths(name, stage, DEPLOYMENT_ROOTS);
+  return target === "final" ? paths.service : paths.serviceCandidate;
+};
+
+const serviceUnit = (name: string, stage: string, target: ServiceTarget) => {
+  const names = deploymentNames(name, stage);
+  return target === "final" ? names.serviceUnit : names.candidateUnit;
+};
+
+export const makeDeploymentComponents = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const bao = yield* OpenBaoClient;
+  const resolver = yield* SecretResolver;
+  const ssh = yield* SshClient;
+  const systemd = yield* SystemdManager;
+
+  return {
+    secrets: {
+      resolve: Effect.fnUntraced(function* (name: string, worktreePath: string) {
+        const envPath = path.join(worktreePath, ".env.example");
+        if (!(yield* fs.exists(envPath))) return {} as Record<string, string>;
+
+        const fields = parseEnvExample(yield* fs.readFileString(envPath));
+        if (fields.length === 0) return {} as Record<string, string>;
+
+        const existing = yield* bao.kvGet(name).pipe(Effect.orElseSucceed(() => null));
+        if (existing && Object.keys(existing).length > 0) {
+          yield* Console.log("  secrets: using vault values");
+          return existing;
+        }
+
+        yield* Console.log("  secrets: seeding to vault...");
+        const resolved = yield* resolver.resolve(fields);
+        yield* bao.kvPut(name, resolved);
+        return resolved;
+      }),
+    },
+
+    staticArtifacts: {
+      publish: Effect.fnUntraced(function* (input: {
+        stage: string;
+        domain: string;
+        host: string;
+        worktreePath: string;
+        dist: string;
+      }) {
+        const remotePath = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS).staticFiles;
+        yield* ssh.exec(input.host, `mkdir -p ${remotePath}`, SVC_USER);
+        yield* ssh.rsync(`${input.worktreePath}/${input.dist}/`, remotePath, input.host, SVC_USER);
+      }),
+
+      remove: Effect.fnUntraced(function* (input: { stage: string; domain: string; host: string }) {
+        const remotePath = deploymentPaths(input.domain, input.stage, DEPLOYMENT_ROOTS).staticFiles;
+        yield* ssh.exec(input.host, `rm -rf ${remotePath}`, SVC_USER);
+      }),
+    },
+
+    serviceArtifacts: {
+      publish: Effect.fnUntraced(function* (input: {
+        name: string;
+        stage: string;
+        host: string;
+        worktreePath: string;
+        target: ServiceTarget;
+        secrets: Readonly<Record<string, string>>;
+        port: number;
+      }) {
+        const remotePath = servicePath(input.name, input.stage, input.target);
+        yield* ssh.exec(input.host, `mkdir -p ${remotePath}`, SVC_USER);
+        yield* ssh.rsync(`${input.worktreePath}/`, remotePath, input.host, SVC_USER);
+        yield* ssh.writeFile(
+          input.host,
+          `${remotePath}/.env`,
+          formatEnv({
+            ...input.secrets,
+            PORT: String(input.port),
+          }),
+          { mode: "600", user: SVC_USER },
+        );
+        yield* ssh.exec(input.host, `cd ${remotePath} && bun install --frozen-lockfile`, SVC_USER);
+      }),
+
+      remove: Effect.fnUntraced(function* (input: {
+        name: string;
+        stage: string;
+        host: string;
+        target: ServiceTarget;
+      }) {
+        yield* ssh.exec(
+          input.host,
+          `rm -rf ${servicePath(input.name, input.stage, input.target)}`,
+          SVC_USER,
+        );
+      }),
+
+      finalize: Effect.fnUntraced(function* (input: { name: string; stage: string; host: string }) {
+        const candidate = servicePath(input.name, input.stage, "candidate");
+        const final = servicePath(input.name, input.stage, "final");
+        yield* ssh.exec(input.host, `mv ${candidate} ${final}`, SVC_USER);
+      }),
+    },
+
+    serviceInstances: {
+      install: Effect.fnUntraced(function* (input: {
+        name: string;
+        stage: string;
+        host: string;
+        target: ServiceTarget;
+      }) {
+        const unit = serviceUnit(input.name, input.stage, input.target);
+        const workingDirectory = servicePath(input.name, input.stage, input.target);
+        yield* systemd.install(input.host, unit, {
+          description: `${input.name} (${input.stage})${input.target === "candidate" ? " [new]" : ""}`,
+          workingDirectory,
+          execStart: "/usr/bin/env bun run start",
+        });
+      }),
+
+      start: (input: { name: string; stage: string; host: string; target: ServiceTarget }) =>
+        systemd.start(input.host, serviceUnit(input.name, input.stage, input.target)),
+
+      stop: (input: { name: string; stage: string; host: string; target: ServiceTarget }) =>
+        systemd.stop(input.host, serviceUnit(input.name, input.stage, input.target)),
+
+      remove: (input: { name: string; stage: string; host: string; target: ServiceTarget }) =>
+        systemd.remove(input.host, serviceUnit(input.name, input.stage, input.target)),
+    },
+  };
+});
+
+export class DeploymentComponents extends Effect.Service<DeploymentComponents>()(
+  "infra/DeploymentComponents",
+  {
+    effect: makeDeploymentComponents,
+    dependencies: [
+      SecretResolver.Default,
+      SshClient.Default,
+      SystemdManager.Default,
+      BunContext.layer,
+      Path.layer,
+    ],
+  },
+) {}

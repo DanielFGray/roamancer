@@ -1,13 +1,15 @@
 import { Effect, Layer } from "effect";
 import * as FileSystem from "@effect/platform/FileSystem";
 import * as Path from "@effect/platform/Path";
-import { CaddyManager } from "../services/CaddyManager.ts";
+import * as HttpClientError from "@effect/platform/HttpClientError";
+import * as HttpClientRequest from "@effect/platform/HttpClientRequest";
+import { CaddyError, CaddyManager } from "../services/CaddyManager.ts";
 import { DeployMeta, type ProjectMeta } from "../services/DeployMeta.ts";
 import { GitManager } from "../services/GitManager.ts";
 import { HealthCheck } from "../services/HealthCheck.ts";
 import { HealthCheckError } from "../services/HealthCheck.ts";
 import { OpenBaoClient, type OpenBaoClientShape } from "../services/OpenBaoClient.ts";
-import { SshClient } from "../services/SshClient.ts";
+import { SshClient, SshError } from "../services/SshClient.ts";
 import { SystemdManager } from "../services/SystemdManager.ts";
 
 export interface TestCalls {
@@ -23,6 +25,11 @@ export interface TestServices {
   readonly files: Map<string, string>;
   readonly openBao: Map<string, Record<string, string>>;
   healthError?: HealthCheckError;
+  failSshCommand?: string;
+  failSystemdAction?: string;
+  failCaddySync?: boolean;
+  failOpenBaoPut?: boolean;
+  nextPort?: number;
 }
 
 const emptyMeta = (name: string): ProjectMeta => ({
@@ -38,6 +45,9 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     _tag: "infra/SshClient",
     exec: (host, command) => {
       state.calls.ssh.push({ host, command });
+      if (state.failSshCommand && command.includes(state.failSshCommand)) {
+        return Effect.fail(new SshError({ code: 1, signal: null, message: `failed: ${command}` }));
+      }
       return Effect.succeed("");
     },
     writeFile: (host, remotePath, content) => {
@@ -57,25 +67,29 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
 
   const git = Layer.succeed(GitManager, {
     _tag: "infra/GitManager",
-    ensureRepo: (name) =>
-      Effect.sync(() => {
-        state.calls.git.push(`ensureRepo ${name}`);
-      }),
-    fetch: (name) =>
-      Effect.sync(() => {
-        state.calls.git.push(`fetch ${name}`);
-      }),
-    addWorktree: (name, stage) =>
-      Effect.sync(() => {
-        state.calls.git.push(`addWorktree ${name} ${stage}`);
-        return `/test/worktrees/${name}/${stage}`;
-      }),
-    removeWorktree: (name, stage) =>
-      Effect.sync(() => {
-        state.calls.git.push(`removeWorktree ${name} ${stage}`);
-      }),
-    resolveRef: (_name, ref) => Effect.succeed(`hash-${ref}`),
-    defaultBranch: () => Effect.succeed("main"),
+    repository: {
+      ensure: (name) =>
+        Effect.sync(() => {
+          state.calls.git.push(`ensureRepo ${name}`);
+        }),
+      fetch: (name) =>
+        Effect.sync(() => {
+          state.calls.git.push(`fetch ${name}`);
+        }),
+      resolveRef: (_name, ref) => Effect.succeed(`hash-${ref}`),
+      defaultBranch: () => Effect.succeed("main"),
+    },
+    worktrees: {
+      add: (name, stage) =>
+        Effect.sync(() => {
+          state.calls.git.push(`addWorktree ${name} ${stage}`);
+          return `/test/worktrees/${name}/${stage}`;
+        }),
+      remove: (name, stage) =>
+        Effect.sync(() => {
+          state.calls.git.push(`removeWorktree ${name} ${stage}`);
+        }),
+    },
   });
 
   const meta = Layer.succeed(DeployMeta, {
@@ -91,8 +105,7 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
       Effect.sync(() => {
         state.projects.delete(name);
       }),
-    allocatePort: () => Effect.succeed(3001),
-    releasePort: () => Effect.void,
+    allocatePort: () => Effect.succeed(state.nextPort ?? 3001),
   });
 
   const systemd = Layer.succeed(SystemdManager, {
@@ -100,11 +113,23 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     install: (host, unit) =>
       Effect.sync(() => {
         state.calls.systemd.push({ action: "install", host, unit });
-      }),
+      }).pipe(
+        Effect.flatMap(() =>
+          state.failSystemdAction === "install"
+            ? Effect.fail(new SshError({ code: 1, signal: null, message: "install failed" }))
+            : Effect.void,
+        ),
+      ),
     start: (host, unit) =>
       Effect.sync(() => {
         state.calls.systemd.push({ action: "start", host, unit });
-      }),
+      }).pipe(
+        Effect.flatMap(() =>
+          state.failSystemdAction === "start"
+            ? Effect.fail(new SshError({ code: 1, signal: null, message: "start failed" }))
+            : Effect.void,
+        ),
+      ),
     stop: (host, unit) =>
       Effect.sync(() => {
         state.calls.systemd.push({ action: "stop", host, unit });
@@ -132,7 +157,9 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     listRoutes: () => Effect.succeed([]),
     sync: () => {
       state.calls.events.push("caddy.sync");
-      return Effect.void;
+      return state.failCaddySync
+        ? Effect.fail(new CaddyError({ message: "caddy sync failed" }))
+        : Effect.void;
     },
   });
   const openBao: OpenBaoClientShape = {
@@ -140,9 +167,17 @@ export const testLayers = (state: TestServices = makeTestServices()) => {
     unseal: () => Effect.void,
     enableSecretsEngine: () => Effect.void,
     kvPut: (path, data) =>
-      Effect.sync(() => {
-        state.openBao.set(path, data);
-      }),
+      state.failOpenBaoPut
+        ? Effect.fail(
+            new HttpClientError.RequestError({
+              request: HttpClientRequest.put(`https://openbao.test/v1/secret/data/${path}`),
+              reason: "Transport",
+              description: "OpenBao seed failed",
+            }),
+          )
+        : Effect.sync(() => {
+            state.openBao.set(path, data);
+          }),
     kvGet: (path) => Effect.succeed(state.openBao.get(path) ?? {}),
     kvList: () => Effect.succeed([]),
     createPolicy: () => Effect.void,

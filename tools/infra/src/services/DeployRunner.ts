@@ -7,20 +7,15 @@ import * as Path from "@effect/platform/Path";
 import { GitManager, sanitizeRef } from "./GitManager.ts";
 import { DeployMeta, type StageInfo } from "./DeployMeta.ts";
 import { CaddyManager } from "./CaddyManager.ts";
-import { OpenBaoClient } from "./OpenBaoClient.ts";
-import { SecretResolver } from "./SecretResolver.ts";
-import { SshClient } from "./SshClient.ts";
-import { SystemdManager } from "./SystemdManager.ts";
 import { HealthCheck } from "./HealthCheck.ts";
+import { DeploymentComponents } from "./DeploymentComponents.ts";
 import { PromotionService, StageNotFoundError } from "./PromotionService.ts";
-import { parseEnvExample, formatEnv } from "../lib/env-parser.ts";
 import {
   CADDY_HOST,
   DEPLOYMENT_ROOTS,
   ENVIRONMENT,
   HOME_DIR,
   RETIRE_GRACE_SECONDS,
-  SVC_USER,
 } from "../lib/config.ts";
 import { deploymentNames, deploymentPaths, previewUrl } from "../lib/deployment.ts";
 
@@ -144,147 +139,158 @@ const runLocal = Effect.fnUntraced(function* (
 // Service
 // ---------------------------------------------------------------------------
 
-export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRunner", {
-  effect: Effect.gen(function* () {
-    const gitMgr = yield* GitManager;
-    const meta = yield* DeployMeta;
-    const caddy = yield* CaddyManager;
-    const ssh = yield* SshClient;
-    const systemd = yield* SystemdManager;
-    const healthCheck = yield* HealthCheck;
-    const promotion = yield* PromotionService;
-    const bao = yield* OpenBaoClient;
-    const resolver = yield* SecretResolver;
-    const fs = yield* FileSystem.FileSystem;
-    const pathSvc = yield* Path.Path;
+export const makeDeployRunner = Effect.gen(function* () {
+  const gitMgr = yield* GitManager;
+  const meta = yield* DeployMeta;
+  const caddy = yield* CaddyManager;
+  const components = yield* DeploymentComponents;
+  const healthCheck = yield* HealthCheck;
+  const promotion = yield* PromotionService;
+  const fs = yield* FileSystem.FileSystem;
+  const pathSvc = yield* Path.Path;
 
-    // Per-project mutex: prevents concurrent deploys to the same project
-    // from corrupting state (e.g. two rapid webhook pushes)
-    const projectLocks = new Map<string, Effect.Semaphore>();
-    const withProjectLock = <A, E, R>(name: string, effect: Effect.Effect<A, E, R>) => {
-      if (!projectLocks.has(name)) {
-        projectLocks.set(name, Effect.unsafeMakeSemaphore(1));
-      }
-      return projectLocks.get(name)!.withPermits(1)(effect);
-    };
+  // Per-project mutex: prevents concurrent deploys to the same project
+  // from corrupting state (e.g. two rapid webhook pushes)
+  const projectLocks = new Map<string, Effect.Semaphore>();
+  const withProjectLock = <A, E, R>(name: string, effect: Effect.Effect<A, E, R>) => {
+    if (!projectLocks.has(name)) {
+      projectLocks.set(name, Effect.unsafeMakeSemaphore(1));
+    }
+    return projectLocks.get(name)!.withPermits(1)(effect);
+  };
 
-    // Closures that capture pre-resolved services (no leaked R requirements)
-    const readProjectConfig = Effect.fnUntraced(function* (worktreePath: string, name: string) {
-      const pkgPath = pathSvc.join(worktreePath, "package.json");
-      const exists = yield* fs.exists(pkgPath);
-      if (!exists) {
-        return yield* new ProjectConfigError({
-          message: `No package.json found in ${worktreePath}`,
-        });
-      }
-      const content = yield* fs.readFileString(pkgPath);
-      const pkg = yield* S.decodeUnknown(S.parseJson(PackageJson))(content);
-      const hasDeployScript = pkg.scripts?.deploy !== undefined;
-      const hasBuildScript = pkg.scripts?.build !== undefined;
-      if (!hasDeployScript && !hasBuildScript) {
-        return yield* new ProjectConfigError({
-          message: `${name}: package.json needs a "build" or "deploy" script`,
-        });
-      }
-      const infra = pkg.infra ?? {};
-      return {
-        type: hasDeployScript ? "service" : "static",
-        domain: infra.domain ?? name,
-        dist: infra.dist ?? "dist",
-        host: infra.host ?? CADDY_HOST,
-        healthcheckPath: infra.healthcheck?.path ?? "/health",
-        autoPromote: infra.autoPromote,
-      } satisfies ProjectConfig;
-    });
+  // Closures that capture pre-resolved services (no leaked R requirements)
+  const readProjectConfig = Effect.fnUntraced(function* (worktreePath: string, name: string) {
+    const pkgPath = pathSvc.join(worktreePath, "package.json");
+    const exists = yield* fs.exists(pkgPath);
+    if (!exists) {
+      return yield* new ProjectConfigError({
+        message: `No package.json found in ${worktreePath}`,
+      });
+    }
+    const content = yield* fs.readFileString(pkgPath);
+    const pkg = yield* S.decodeUnknown(S.parseJson(PackageJson))(content);
+    const hasDeployScript = pkg.scripts?.deploy !== undefined;
+    const hasBuildScript = pkg.scripts?.build !== undefined;
+    if (!hasDeployScript && !hasBuildScript) {
+      return yield* new ProjectConfigError({
+        message: `${name}: package.json needs a "build" or "deploy" script`,
+      });
+    }
+    const infra = pkg.infra ?? {};
+    return {
+      type: hasDeployScript ? "service" : "static",
+      domain: infra.domain ?? name,
+      dist: infra.dist ?? "dist",
+      host: infra.host ?? CADDY_HOST,
+      healthcheckPath: infra.healthcheck?.path ?? "/health",
+      autoPromote: infra.autoPromote,
+    } satisfies ProjectConfig;
+  });
 
-    const provisionSecrets = Effect.fnUntraced(function* (name: string, worktreePath: string) {
-      const envPath = pathSvc.join(worktreePath, ".env.example");
-      const exists = yield* fs.exists(envPath);
-      if (!exists) return {} as Record<string, string>;
-      const content = yield* fs.readFileString(envPath);
-      const fields = parseEnvExample(content);
-      if (fields.length === 0) return {} as Record<string, string>;
-      const existing = yield* bao.kvGet(name).pipe(Effect.orElseSucceed(() => null));
-      if (existing) {
-        yield* Console.log("  secrets: using vault values");
-        return existing;
-      }
-      yield* Console.log("  secrets: seeding to vault...");
-      const resolved = yield* resolver.resolve(fields);
-      yield* bao.kvPut(name, resolved);
-      return resolved;
-    });
+  // -------------------------------------------------------------------
+  // deploy
+  // -------------------------------------------------------------------
 
-    // -------------------------------------------------------------------
-    // deploy
-    // -------------------------------------------------------------------
+  const deploy = (params: {
+    name: string;
+    ref?: string | undefined;
+    stage?: string | undefined;
+    repo?: string | undefined;
+  }) =>
+    withProjectLock(
+      params.name,
+      Effect.gen(function* () {
+        const { name, repo } = params;
 
-    const deploy = (params: {
-      name: string;
-      ref?: string | undefined;
-      stage?: string | undefined;
-      repo?: string | undefined;
-    }) =>
-      withProjectLock(
-        params.name,
-        Effect.gen(function* () {
-          const { name, repo } = params;
+        yield* Console.log(`Deploying ${name}...`);
 
-          yield* Console.log(`Deploying ${name}...`);
+        // 1. Ensure bare repo + fetch
+        yield* gitMgr.repository.ensure(name, repo);
+        yield* gitMgr.repository.fetch(name);
 
-          // 1. Ensure bare repo + fetch
-          yield* gitMgr.ensureRepo(name, repo);
-          yield* gitMgr.fetch(name);
+        // 2. Resolve ref and stage name
+        const actualRef =
+          !params.ref || params.ref === ""
+            ? yield* gitMgr.repository.defaultBranch(name)
+            : params.ref;
+        const hash = yield* gitMgr.repository.resolveRef(name, actualRef);
+        const stage = params.stage ?? sanitizeRef(actualRef);
 
-          // 2. Resolve ref and stage name
-          const actualRef =
-            !params.ref || params.ref === "" ? yield* gitMgr.defaultBranch(name) : params.ref;
-          const hash = yield* gitMgr.resolveRef(name, actualRef);
-          const stage = params.stage ?? sanitizeRef(actualRef);
+        yield* Console.log(`  ref: ${actualRef} (${hash})`);
+        yield* Console.log(`  stage: ${stage}`);
 
-          yield* Console.log(`  ref: ${actualRef} (${hash})`);
-          yield* Console.log(`  stage: ${stage}`);
+        // 3. Create worktree
+        const wt = yield* gitMgr.worktrees.add(name, stage, actualRef);
 
-          // 3. Create worktree
-          const wt = yield* gitMgr.addWorktree(name, stage, actualRef);
+        const cleanupWorktree = gitMgr.worktrees.remove(name, stage).pipe(
+          Effect.catchAll(() => Effect.void),
+          Effect.asVoid,
+        );
 
-          // 4. Read project config (clean up worktree on failure)
-          const config = yield* readProjectConfig(wt, name).pipe(
-            Effect.tapError(() =>
-              gitMgr.removeWorktree(name, stage).pipe(Effect.catchAll(() => Effect.void)),
-            ),
-          );
+        // Preparation owns only the worktree. Artifact cleanup starts later, after its owner exists.
+        const prepared = yield* Effect.gen(function* () {
+          const config = yield* readProjectConfig(wt, name);
 
           yield* Console.log(`  type: ${config.type}`);
           yield* Console.log(`  domain: ${config.domain}`);
 
-          // 5. Provision secrets
-          const secrets = yield* provisionSecrets(name, wt);
+          const secrets = yield* components.secrets.resolve(name, wt);
 
-          // 6. Check existing stage
           const existing = yield* meta.getProject(name);
           const existingStage = existing?.stages[stage];
           const isZeroDowntime = existingStage?.type === "service" && existingStage.port !== null;
 
-          // 7. Allocate port for service
           const port =
             config.type === "service"
               ? isZeroDowntime
                 ? yield* meta.allocatePort() // always fresh port for zero-downtime
                 : (existingStage?.port ?? (yield* meta.allocatePort()))
               : null;
-          const portIsNew =
-            config.type === "service" && port !== null && port !== existingStage?.port;
 
-          // Cleanup helper for failed deploys
-          const cleanup = Effect.all([
-            gitMgr.removeWorktree(name, stage).pipe(Effect.catchAll(() => Effect.void)),
-            portIsNew && port !== null ? meta.releasePort(port) : Effect.void,
-          ]).pipe(Effect.asVoid);
+          return { config, secrets, existing, existingStage, isZeroDowntime, port };
+        }).pipe(Effect.onError(() => cleanupWorktree));
 
-          // 8. Build and deploy
-          const stageInfo = yield* Effect.gen(function* () {
-            if (config.type === "static") {
+        const { config, secrets, existing, existingStage, isZeroDowntime, port } = prepared;
+
+        // Persistent cleanup is explicit and only removes paths this attempt owns.
+        const cleanup = Effect.gen(function* () {
+          yield* cleanupWorktree;
+
+          if (config.type === "static") {
+            if (!existingStage) {
+              yield* components.staticArtifacts
+                .remove({ stage, domain: config.domain, host: config.host })
+                .pipe(Effect.catchAll(() => Effect.void));
+            }
+            return;
+          }
+
+          const target = existingStage ? null : "final";
+          if (target) {
+            yield* components.serviceInstances
+              .remove({ name, stage, host: config.host, target })
+              .pipe(Effect.catchAll(() => Effect.void));
+            yield* components.serviceArtifacts
+              .remove({ name, stage, host: config.host, target })
+              .pipe(Effect.catchAll(() => Effect.void));
+          }
+        }).pipe(Effect.asVoid);
+
+        const cleanupCandidate = Effect.gen(function* () {
+          yield* cleanupWorktree;
+          yield* components.serviceInstances
+            .remove({ name, stage, host: config.host, target: "candidate" })
+            .pipe(Effect.catchAll(() => Effect.void));
+          yield* components.serviceArtifacts
+            .remove({ name, stage, host: config.host, target: "candidate" })
+            .pipe(Effect.catchAll(() => Effect.void));
+        }).pipe(Effect.asVoid);
+
+        // 8. Build and deploy
+        const stageInfo = yield* Effect.gen(function* () {
+          if (config.type === "static") {
+            return yield* Effect.gen(function* () {
               yield* Console.log("  installing deps...");
               yield* runLocal(wt, "bun", ["install", "--frozen-lockfile"]);
 
@@ -293,8 +299,13 @@ export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRu
 
               const remoteDir = deploymentPaths(config.domain, stage, DEPLOYMENT_ROOTS).staticFiles;
               yield* Console.log(`  syncing -> ${config.host}:${remoteDir}`);
-              yield* ssh.exec(config.host, `mkdir -p ${remoteDir}`, SVC_USER);
-              yield* ssh.rsync(`${wt}/${config.dist}/`, remoteDir, config.host, SVC_USER);
+              yield* components.staticArtifacts.publish({
+                stage,
+                domain: config.domain,
+                host: config.host,
+                worktreePath: wt,
+                dist: config.dist,
+              });
 
               return {
                 type: "static",
@@ -306,60 +317,56 @@ export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRu
                 deployed_at: DateTime.formatIso(yield* DateTime.now),
                 healthcheck_path: config.healthcheckPath,
               } as StageInfo;
-            }
+            }).pipe(Effect.onError(() => cleanup));
+          }
 
-            yield* Console.log(`  port: ${port}`);
+          yield* Console.log(`  port: ${port}`);
 
-            const paths = deploymentPaths(name, stage, DEPLOYMENT_ROOTS);
-            const names = deploymentNames(name, stage);
-            const unitName = names.serviceUnit;
+          const paths = deploymentPaths(name, stage, DEPLOYMENT_ROOTS);
+          const names = deploymentNames(name, stage);
+          const unitName = names.serviceUnit;
 
-            // ---------------------------------------------------------------
-            // Zero-downtime deploy: old service keeps running while new starts
-            // ---------------------------------------------------------------
-            if (isZeroDowntime) {
-              const oldPort = existingStage.port!;
-              const oldDir = paths.service;
-              const newDir = paths.serviceCandidate;
-              const newUnitName = names.candidateUnit;
+          // ---------------------------------------------------------------
+          // Zero-downtime deploy: old service keeps running while new starts
+          // ---------------------------------------------------------------
+          if (isZeroDowntime) {
+            const oldPort = existingStage!.port!;
+            const newDir = paths.serviceCandidate;
+            const newUnitName = names.candidateUnit;
 
-              yield* Console.log("  zero-downtime deploy");
-              yield* Console.log(`  old port: ${oldPort} -> new port: ${port}`);
+            yield* Console.log("  zero-downtime deploy");
+            yield* Console.log(`  old port: ${oldPort} -> new port: ${port}`);
 
+            const newStageInfo = yield* Effect.gen(function* () {
               // a. Rsync to new directory
               yield* Console.log(`  syncing -> ${config.host}:${newDir}`);
-              yield* ssh.exec(config.host, `mkdir -p ${newDir}`, SVC_USER);
-              yield* ssh.rsync(`${wt}/`, newDir, config.host, SVC_USER);
-
-              // b. Write .env with new port
-              const envWithPort = { ...secrets, PORT: String(port) };
-              yield* Console.log("  writing .env...");
-              yield* ssh.writeFile(config.host, `${newDir}/.env`, formatEnv(envWithPort), {
-                mode: "600",
-                user: SVC_USER,
+              yield* components.serviceArtifacts.publish({
+                name,
+                stage,
+                host: config.host,
+                worktreePath: wt,
+                target: "candidate",
+                secrets,
+                port: port!,
               });
 
-              // c. Install deps on remote
-              yield* Console.log("  installing remote deps...");
-              yield* ssh.exec(
-                config.host,
-                `cd ${newDir} && bun install --frozen-lockfile`,
-                SVC_USER,
-              );
-
-              // d. Install + start new systemd unit
               yield* Console.log(`  installing systemd unit: ${newUnitName}`);
-              yield* systemd.install(config.host, newUnitName, {
-                description: `${name} (${stage}) [new]`,
-                workingDirectory: newDir,
-                execStart: `/usr/bin/env bun run start`,
+              yield* components.serviceInstances.install({
+                name,
+                stage,
+                host: config.host,
+                target: "candidate",
               });
-
               yield* Console.log("  starting new service...");
-              yield* systemd.start(config.host, newUnitName);
+              yield* components.serviceInstances.start({
+                name,
+                stage,
+                host: config.host,
+                target: "candidate",
+              });
 
               // e. Health check the new instance
-              const newStageInfo: StageInfo = {
+              const candidateInfo: StageInfo = {
                 type: "service",
                 ref: actualRef,
                 hash,
@@ -371,18 +378,11 @@ export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRu
               };
 
               yield* Console.log("  checking health of new instance...");
-              yield* healthCheck.check(newStageInfo, stage).pipe(
+              yield* healthCheck.check(candidateInfo, stage).pipe(
                 Effect.catchAll((err) =>
-                  // Unhealthy — rollback: stop new, clean up, keep old running
                   Effect.gen(function* () {
                     yield* Console.error(`  health check failed: ${err.reason}`);
                     yield* Console.log("  rolling back — stopping new instance...");
-                    yield* systemd
-                      .remove(config.host, newUnitName)
-                      .pipe(Effect.catchAll(() => Effect.void));
-                    yield* ssh
-                      .exec(config.host, `rm -rf ${newDir}`, SVC_USER)
-                      .pipe(Effect.catchAll(() => Effect.void));
                     return yield* new BuildError({
                       command: "health-check",
                       message: `New instance unhealthy, old service still running on port ${oldPort}. ${err.reason}`,
@@ -390,90 +390,100 @@ export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRu
                   }),
                 ),
               );
+              return candidateInfo;
+            }).pipe(Effect.onError(() => cleanupCandidate));
 
-              yield* Console.log("  healthy — switching traffic");
+            yield* Console.log("  healthy — switching traffic");
 
-              // f. Update metadata to new port, sync Caddy
-              const base = existing ?? {
-                repo: name,
-                promoted: null,
-                promoted_previous: null,
-                stages: {},
-              };
-              yield* meta.saveProject(name, {
-                ...base,
-                stages: { ...base.stages, [stage]: newStageInfo },
-              });
-
-              yield* Console.log("  syncing routes...");
-              yield* caddy.sync();
-
-              // Stop old service
-              yield* Console.log("  stopping old service...");
-              yield* systemd.stop(config.host, unitName).pipe(Effect.catchAll(() => Effect.void));
-
-              // Grace period for in-flight requests to drain
-              yield* Console.log(`  grace period: ${RETIRE_GRACE_SECONDS}s`);
-              yield* Effect.sleep(Duration.seconds(RETIRE_GRACE_SECONDS));
-
-              // Cleanup: remove old unit + old directory, rename new to final
-              yield* Console.log("  cleaning up old deployment...");
-              yield* systemd.remove(config.host, unitName).pipe(Effect.catchAll(() => Effect.void));
-              yield* ssh
-                .exec(config.host, `rm -rf ${oldDir}`, SVC_USER)
-                .pipe(Effect.catchAll(() => Effect.void));
-
-              // Rename new directory -> final, reinstall systemd unit at final name
-              yield* ssh.exec(config.host, `mv ${newDir} ${oldDir}`, SVC_USER);
-              yield* systemd
-                .remove(config.host, newUnitName)
-                .pipe(Effect.catchAll(() => Effect.void));
-              yield* systemd.install(config.host, unitName, {
-                description: `${name} (${stage})`,
-                workingDirectory: oldDir,
-                execStart: `/usr/bin/env bun run start`,
-              });
-              yield* systemd.start(config.host, unitName);
-
-              return newStageInfo;
-            }
-
-            // ---------------------------------------------------------------
-            // Fresh deploy (no existing service)
-            // ---------------------------------------------------------------
-            const remoteDir = paths.service;
-
-            // Rsync source (no local install — remote handles its own deps)
-            yield* Console.log(`  syncing -> ${config.host}:${remoteDir}`);
-            yield* ssh.exec(config.host, `mkdir -p ${remoteDir}`, SVC_USER);
-            yield* ssh.rsync(`${wt}/`, remoteDir, config.host, SVC_USER);
-
-            // Write .env AFTER rsync (rsync --delete would clobber it)
-            const envWithPort = { ...secrets, PORT: String(port) };
-            yield* Console.log("  writing .env...");
-            yield* ssh.writeFile(config.host, `${remoteDir}/.env`, formatEnv(envWithPort), {
-              mode: "600",
-              user: SVC_USER,
+            // f. Update metadata to new port, sync Caddy
+            const base = existing ?? {
+              repo: name,
+              promoted: null,
+              promoted_previous: null,
+              stages: {},
+            };
+            yield* meta.saveProject(name, {
+              ...base,
+              stages: { ...base.stages, [stage]: newStageInfo },
             });
 
-            // Install deps on remote
-            yield* Console.log("  installing remote deps...");
-            yield* ssh.exec(
-              config.host,
-              `cd ${remoteDir} && bun install --frozen-lockfile`,
-              SVC_USER,
-            );
+            yield* Console.log("  syncing routes...");
+            yield* caddy.sync();
+
+            // Stop old service
+            yield* Console.log("  stopping old service...");
+            yield* components.serviceInstances
+              .stop({ name, stage, host: config.host, target: "final" })
+              .pipe(Effect.catchAll(() => Effect.void));
+
+            // Grace period for in-flight requests to drain
+            yield* Console.log(`  grace period: ${RETIRE_GRACE_SECONDS}s`);
+            yield* Effect.sleep(Duration.seconds(RETIRE_GRACE_SECONDS));
+
+            // Cleanup: remove old unit + old directory, rename new to final
+            yield* Console.log("  cleaning up old deployment...");
+            yield* components.serviceInstances
+              .remove({ name, stage, host: config.host, target: "final" })
+              .pipe(Effect.catchAll(() => Effect.void));
+            yield* components.serviceArtifacts
+              .remove({ name, stage, host: config.host, target: "final" })
+              .pipe(Effect.catchAll(() => Effect.void));
+
+            // Rename new directory -> final, reinstall systemd unit at final name
+            yield* components.serviceArtifacts.finalize({ name, stage, host: config.host });
+            yield* components.serviceInstances
+              .remove({ name, stage, host: config.host, target: "candidate" })
+              .pipe(Effect.catchAll(() => Effect.void));
+            yield* components.serviceInstances.install({
+              name,
+              stage,
+              host: config.host,
+              target: "final",
+            });
+            yield* components.serviceInstances.start({
+              name,
+              stage,
+              host: config.host,
+              target: "final",
+            });
+
+            return newStageInfo;
+          }
+
+          // ---------------------------------------------------------------
+          // Fresh deploy (no existing service)
+          // ---------------------------------------------------------------
+          const remoteDir = paths.service;
+
+          return yield* Effect.gen(function* () {
+            // Rsync source (no local install — remote handles its own deps)
+            yield* Console.log(`  syncing -> ${config.host}:${remoteDir}`);
+            yield* components.serviceArtifacts.publish({
+              name,
+              stage,
+              host: config.host,
+              worktreePath: wt,
+              target: "final",
+              secrets,
+              port: port!,
+            });
 
             // Install + start systemd unit
             yield* Console.log(`  installing systemd unit: ${unitName}`);
-            yield* systemd.install(config.host, unitName, {
-              description: `${name} (${stage})`,
-              workingDirectory: remoteDir,
-              execStart: `/usr/bin/env bun run start`,
+            yield* components.serviceInstances.install({
+              name,
+              stage,
+              host: config.host,
+              target: "final",
             });
 
             yield* Console.log("  starting service...");
-            yield* systemd.start(config.host, unitName);
+            yield* components.serviceInstances.start({
+              name,
+              stage,
+              host: config.host,
+              target: "final",
+            });
 
             const freshStageInfo: StageInfo = {
               type: "service",
@@ -489,173 +499,166 @@ export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRu
             // Health check before exposing to Caddy
             yield* Console.log("  checking health...");
             yield* healthCheck.check(freshStageInfo, stage);
-
             return freshStageInfo;
           }).pipe(Effect.onError(() => cleanup));
+        });
 
-          // 9. Save metadata + sync routes (skip if zero-downtime already handled it)
-          if (!isZeroDowntime) {
-            const base = existing ?? {
-              repo: name,
-              promoted: null,
-              promoted_previous: null,
-              stages: {},
-            };
-            yield* meta.saveProject(name, {
-              ...base,
-              stages: { ...base.stages, [stage]: stageInfo },
-            });
-
-            yield* Console.log("  syncing routes...");
-            yield* caddy.sync();
-          }
-
-          return {
-            name,
-            stage,
-            hash,
-            type: stageInfo.type,
-            previewUrl: previewUrl(hash, config.domain),
-            autoPromote: config.autoPromote,
-          } satisfies DeployResult;
-        }),
-      );
-
-    // Promotion and rollback stay locked here so every project operation uses
-    // the same orchestration boundary.
-    const promote = (params: { name: string; stage: string; force?: boolean }) =>
-      withProjectLock(params.name, promotion.promote(params));
-
-    const rollback = (params: { name: string }) =>
-      withProjectLock(params.name, promotion.rollback(params));
-
-    // -------------------------------------------------------------------
-    // teardown
-    // -------------------------------------------------------------------
-
-    const teardown = (params: { name: string; stage: string }) =>
-      withProjectLock(
-        params.name,
-        Effect.gen(function* () {
-          const { name, stage } = params;
-
-          const project = yield* meta.getProject(name);
-          if (!project || !project.stages[stage]) {
-            return yield* new StageNotFoundError({ name, stage });
-          }
-
-          const info = project.stages[stage]!;
-
-          if (info.type === "service") {
-            const paths = deploymentPaths(name, stage, DEPLOYMENT_ROOTS);
-            const unitName = deploymentNames(name, stage).serviceUnit;
-            yield* Console.log("  removing systemd unit...");
-            yield* systemd.remove(info.host, unitName).pipe(Effect.catchAll(() => Effect.void));
-
-            yield* Console.log("  removing project files...");
-            yield* ssh
-              .exec(info.host, `rm -rf ${paths.service}`, SVC_USER)
-              .pipe(Effect.catchAll(() => Effect.void));
-
-            if (info.port !== null) {
-              yield* meta.releasePort(info.port);
-            }
-          } else {
-            yield* Console.log("  removing static files...");
-            yield* ssh
-              .exec(
-                info.host,
-                `rm -rf ${deploymentPaths(info.domain, stage, DEPLOYMENT_ROOTS).staticFiles}`,
-                SVC_USER,
-              )
-              .pipe(Effect.catchAll(() => Effect.void));
-          }
-
-          // Remove worktree
-          yield* Console.log("  removing worktree...");
-          yield* gitMgr.removeWorktree(name, stage).pipe(Effect.catchAll(() => Effect.void));
-
-          // Update metadata
-          const remainingStages = Object.fromEntries(
-            Object.entries(project.stages).filter(([key]) => key !== stage),
-          );
-          const promoted = project.promoted === stage ? null : project.promoted;
-          const promotedPrevious =
-            project.promoted_previous === stage ? null : project.promoted_previous;
-
+        // 9. Save metadata + sync routes (skip if zero-downtime already handled it)
+        if (!isZeroDowntime) {
+          const base = existing ?? {
+            repo: name,
+            promoted: null,
+            promoted_previous: null,
+            stages: {},
+          };
           yield* meta.saveProject(name, {
-            ...project,
-            promoted,
-            promoted_previous: promotedPrevious,
-            stages: remainingStages,
+            ...base,
+            stages: { ...base.stages, [stage]: stageInfo },
           });
 
+          yield* Console.log("  syncing routes...");
           yield* caddy.sync();
+        }
 
-          return { name, stage } satisfies TeardownResult;
-        }),
-      );
+        return {
+          name,
+          stage,
+          hash,
+          type: stageInfo.type,
+          previewUrl: previewUrl(hash, config.domain),
+          autoPromote: config.autoPromote,
+        } satisfies DeployResult;
+      }),
+    );
 
-    // -------------------------------------------------------------------
-    // listProjects
-    // -------------------------------------------------------------------
+  // Promotion and rollback stay locked here so every project operation uses
+  // the same orchestration boundary.
+  const promote = (params: { name: string; stage: string; force?: boolean }) =>
+    withProjectLock(params.name, promotion.promote(params));
 
-    const listProjects = Effect.fnUntraced(function* () {
-      const names = yield* meta.listProjects();
-      return yield* Effect.forEach(
-        names,
-        Effect.fnUntraced(function* (name) {
-          const project = yield* meta.getProject(name);
-          return {
-            name,
-            stageCount: project ? Object.keys(project.stages).length : 0,
-            promoted: project?.promoted ?? null,
-          } satisfies ProjectInfo;
-        }),
-      );
-    });
+  const rollback = (params: { name: string }) =>
+    withProjectLock(params.name, promotion.rollback(params));
 
-    // -------------------------------------------------------------------
-    // getStages
-    // -------------------------------------------------------------------
+  // -------------------------------------------------------------------
+  // teardown
+  // -------------------------------------------------------------------
 
-    const getStages = Effect.fnUntraced(function* (name: string) {
-      const project = yield* meta.getProject(name);
-      if (!project || Object.keys(project.stages).length === 0) {
-        return null;
-      }
+  const teardown = (params: { name: string; stage: string }) =>
+    withProjectLock(
+      params.name,
+      Effect.gen(function* () {
+        const { name, stage } = params;
 
-      const stages = Object.entries(project.stages).map(
-        ([stage, info]) =>
-          ({
-            stage,
-            promoted: project.promoted === stage,
-            type: info.type,
-            port: info.port,
-            domain: info.domain,
-            ref: info.ref,
-            hash: info.hash,
-            deployed_at: info.deployed_at,
-            previewUrl: previewUrl(info.hash, info.domain),
-          }) satisfies StageDetail,
-      );
+        const project = yield* meta.getProject(name);
+        if (!project || !project.stages[stage]) {
+          return yield* new StageNotFoundError({ name, stage });
+        }
 
-      return {
-        name,
-        stages,
-        production: project.promoted ? (project.stages[project.promoted]?.domain ?? null) : null,
-      } satisfies StageListResult;
-    });
+        const info = project.stages[stage]!;
 
-    return { deploy, promote, rollback, teardown, listProjects, getStages };
-  }),
+        if (info.type === "service") {
+          yield* Console.log("  removing systemd unit...");
+          yield* components.serviceInstances
+            .remove({ name, stage, host: info.host, target: "final" })
+            .pipe(Effect.catchAll(() => Effect.void));
+
+          yield* Console.log("  removing project files...");
+          yield* components.serviceArtifacts
+            .remove({ name, stage, host: info.host, target: "final" })
+            .pipe(Effect.catchAll(() => Effect.void));
+        } else {
+          yield* Console.log("  removing static files...");
+          yield* components.staticArtifacts
+            .remove({ stage, domain: info.domain, host: info.host })
+            .pipe(Effect.catchAll(() => Effect.void));
+        }
+
+        // Remove worktree
+        yield* Console.log("  removing worktree...");
+        yield* gitMgr.worktrees.remove(name, stage).pipe(Effect.catchAll(() => Effect.void));
+
+        // Update metadata
+        const remainingStages = Object.fromEntries(
+          Object.entries(project.stages).filter(([key]) => key !== stage),
+        );
+        const promoted = project.promoted === stage ? null : project.promoted;
+        const promotedPrevious =
+          project.promoted_previous === stage ? null : project.promoted_previous;
+
+        yield* meta.saveProject(name, {
+          ...project,
+          promoted,
+          promoted_previous: promotedPrevious,
+          stages: remainingStages,
+        });
+
+        yield* caddy.sync();
+
+        return { name, stage } satisfies TeardownResult;
+      }),
+    );
+
+  // -------------------------------------------------------------------
+  // listProjects
+  // -------------------------------------------------------------------
+
+  const listProjects = Effect.fnUntraced(function* () {
+    const names = yield* meta.listProjects();
+    return yield* Effect.forEach(
+      names,
+      Effect.fnUntraced(function* (name) {
+        const project = yield* meta.getProject(name);
+        return {
+          name,
+          stageCount: project ? Object.keys(project.stages).length : 0,
+          promoted: project?.promoted ?? null,
+        } satisfies ProjectInfo;
+      }),
+    );
+  });
+
+  // -------------------------------------------------------------------
+  // getStages
+  // -------------------------------------------------------------------
+
+  const getStages = Effect.fnUntraced(function* (name: string) {
+    const project = yield* meta.getProject(name);
+    if (!project || Object.keys(project.stages).length === 0) {
+      return null;
+    }
+
+    const stages = Object.entries(project.stages).map(
+      ([stage, info]) =>
+        ({
+          stage,
+          promoted: project.promoted === stage,
+          type: info.type,
+          port: info.port,
+          domain: info.domain,
+          ref: info.ref,
+          hash: info.hash,
+          deployed_at: info.deployed_at,
+          previewUrl: previewUrl(info.hash, info.domain),
+        }) satisfies StageDetail,
+    );
+
+    return {
+      name,
+      stages,
+      production: project.promoted ? (project.stages[project.promoted]?.domain ?? null) : null,
+    } satisfies StageListResult;
+  });
+
+  return { deploy, promote, rollback, teardown, listProjects, getStages };
+});
+
+export class DeployRunner extends Effect.Service<DeployRunner>()("infra/DeployRunner", {
+  effect: makeDeployRunner,
   dependencies: [
     GitManager.Default,
+    DeploymentComponents.Default,
     DeployMeta.Default,
     CaddyManager.Default,
-    SecretResolver.Default,
-    SshClient.Default,
-    SystemdManager.Default,
     HealthCheck.Default,
     PromotionService.Default,
     BunContext.layer,

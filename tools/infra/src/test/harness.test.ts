@@ -9,6 +9,7 @@ import {
   worktreeParent,
 } from "../lib/deployment.ts";
 import { SshClient } from "../services/SshClient.ts";
+import { removeWorktreeArgs } from "../services/GitManager.ts";
 import { makeTestServices, testLayers } from "./layers.ts";
 
 it.effect("provides replaceable deployment boundaries", () => {
@@ -38,6 +39,22 @@ it("keeps worktrees separate from service artifacts", () => {
   expect(paths.service).toBe("/tmp/projects/demo/stages/main");
   expect(paths.serviceCandidate).toBe("/tmp/projects/demo/stages/main.new");
   expect(paths.worktree).not.toBe(paths.service);
+});
+
+it("makes GitManager worktree removal address only the worktree path", () => {
+  const args = removeWorktreeArgs("demo", "main");
+  const paths = deploymentPaths("demo", "main");
+
+  expect(args).toEqual([
+    "-C",
+    "/srv/projects/demo.git",
+    "worktree",
+    "remove",
+    "--force",
+    paths.worktree,
+  ]);
+  expect(args).not.toContain(paths.service);
+  expect(args).not.toContain(paths.serviceCandidate);
 });
 
 it("derives deployment names and preview addresses from stage identity", () => {
