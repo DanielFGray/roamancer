@@ -1,0 +1,18 @@
+<!--
+  The subnet is not a choice. roles/common writes /etc/hosts with these exact
+  addresses, so a testground on any other network proves an edited playbook
+  rather than the one that ships.
+-->
+<network>
+  <name>dlab-tg</name>
+  <forward mode='nat'/>
+  <bridge name='virbr-dlabtg' stp='on' delay='0'/>
+  <domain name="dlab-tg" localOnly="yes"/>
+  <ip address='10.13.38.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='10.13.38.100' end='10.13.38.180'/>
+      <host mac='52:54:00:13:37:c9' name='cynic' ip='10.13.38.196'/>
+      <host mac='52:54:00:13:37:a7' name='atheist' ip='10.13.38.83'/>
+    </dhcp>
+  </ip>
+</network>
