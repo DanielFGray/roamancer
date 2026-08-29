@@ -88,5 +88,10 @@
   hosts: web
   become: true
   tags: [infra-agent]
+  vars:
+    # A fresh OpenBao bootstrapped earlier in this same run (see roles/vault)
+    # mints its own root token; fall back to that when the operator hasn't
+    # supplied one explicitly. An extra-var still always wins over this.
+    infra_openbao_token: "{{ hostvars[groups['obs'][0]].vault_bootstrap_root_token | default('') }}"
   roles:
     - infra-agent

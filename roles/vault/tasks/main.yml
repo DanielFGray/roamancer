@@ -62,3 +62,127 @@
     state: started
     enabled: true
     daemon_reload: true
+
+# Restarting OpenBao reseals it -- unsealing is in-memory state, not
+# persisted. A config change earlier in this play left "restart openbao"
+# queued; if it fired after the bootstrap block below via the normal
+# end-of-play handler flush, it would reseal the vault right after
+# initializing it. Flush it here, before anything cares whether the vault
+# is sealed.
+- meta: flush_handlers
+
+- name: Wait for OpenBao API to answer
+  uri:
+    url: "{{ vault_local_url }}/v1/sys/seal-status"
+    validate_certs: false
+    status_code: 200
+  register: vault_seal_status
+  retries: 10
+  delay: 2
+  until: vault_seal_status.status == 200
+
+# A fresh OpenBao is useless until it's initialized (generates its root
+# token and unseal key), unsealed, and has the KV engines this cluster's
+# roles write to actually mounted -- `bao operator init` alone stops short
+# of that. This block does the whole thing in one shot, the same sequence
+# tools/infra's own `vault init` subcommand runs by hand.
+- name: Bootstrap OpenBao (first run only)
+  when: not vault_seal_status.json.initialized
+  block:
+    - name: Initialize OpenBao
+      uri:
+        url: "{{ vault_local_url }}/v1/sys/init"
+        method: PUT
+        validate_certs: false
+        body_format: json
+        body:
+          secret_shares: 1
+          secret_threshold: 1
+        status_code: 200
+      register: vault_init_result
+      no_log: true
+
+    - name: Unseal OpenBao
+      uri:
+        url: "{{ vault_local_url }}/v1/sys/unseal"
+        method: PUT
+        validate_certs: false
+        body_format: json
+        body:
+          key: "{{ vault_init_result.json.keys_base64[0] }}"
+        status_code: 200
+      no_log: true
+
+    - name: Enable KV-v2 secrets engines
+      uri:
+        url: "{{ vault_local_url }}/v1/sys/mounts/{{ item }}"
+        method: POST
+        validate_certs: false
+        headers:
+          X-Vault-Token: "{{ vault_init_result.json.root_token }}"
+        body_format: json
+        body:
+          type: kv-v2
+        status_code: 204
+      loop:
+        - secret
+        - meta
+      no_log: true
+
+    - name: Write backups policy
+      uri:
+        url: "{{ vault_local_url }}/v1/sys/policies/acl/backups"
+        method: PUT
+        validate_certs: false
+        headers:
+          X-Vault-Token: "{{ vault_init_result.json.root_token }}"
+        body_format: json
+        body:
+          policy: "{{ lookup('file', 'backups-policy.hcl') }}"
+        status_code: 204
+      no_log: true
+
+    - name: Ensure local infra config directory exists
+      file:
+        path: "{{ lookup('env', 'HOME') }}/.config/infra"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Save unseal key and root token locally
+      copy:
+        content: "{{ {'unseal_key': vault_init_result.json.keys_base64[0], 'root_token': vault_init_result.json.root_token} | to_nice_json }}\n"
+        dest: "{{ lookup('env', 'HOME') }}/.config/infra/vault-init.json"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # Downstream plays in this same run (infra-agent) need this token too --
+    # a reboot never hits this block again, since init only happens once,
+    # so there's no ongoing auto-unseal behavior hiding in here.
+    - name: Make root token available to later plays in this run
+      set_fact:
+        vault_bootstrap_root_token: "{{ vault_init_result.json.root_token }}"
+      no_log: true
+
+    - name: Report bootstrap result
+      debug:
+        msg: >-
+          OpenBao initialized and unsealed. Unseal key and root token saved to
+          {{ lookup('env', 'HOME') }}/.config/infra/vault-init.json on the control
+          machine -- back that file up somewhere durable now. A future reboot of
+          this node leaves OpenBao sealed; that file is what you'll unseal it with.
+
+- name: Fail loudly if OpenBao is initialized but sealed
+  fail:
+    msg: >-
+      OpenBao is initialized but sealed, and auto-unseal is intentionally not
+      automated. Unseal it with the key from vault-init.json (wherever it was
+      bootstrapped from), e.g.:
+      ansible -i <inventory> {{ inventory_hostname }} -m shell -a
+      "BAO_ADDR={{ vault_local_url }} bao operator unseal <unseal_key>"
+  when:
+    - vault_seal_status.json.initialized
+    - vault_seal_status.json.sealed

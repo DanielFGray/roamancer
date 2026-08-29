@@ -1,0 +1,2 @@
+---
+vault_local_url: "{{ 'http' if (vault_tls_disable | default(false) | bool) else 'https' }}://127.0.0.1:8200"

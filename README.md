@@ -107,6 +107,32 @@ Override via inventory vars:
 
 Playbook now asserts these files exist when TLS is enabled.
 
+## OpenBao bootstrap and unsealing
+
+The `vault` role bootstraps a fresh OpenBao automatically the first time it
+finds one uninitialized: `operator init` (single key share), unseal, mount
+the `secret` and `meta` KV-v2 engines, and write the `backups` policy — the
+same sequence `tools/infra`'s own `vault init` subcommand runs by hand. The
+resulting unseal key and root token are saved to
+`~/.config/infra/vault-init.json` (mode 0600) **on the control machine that
+ran the playbook** — back that file up somewhere durable immediately, it's
+the only copy. The root token it mints also flows automatically to the
+infra-agent play in the same run, so `infra_openbao_token` only needs to be
+passed as an extra-var when you're re-running against an OpenBao that was
+bootstrapped in some earlier run (an extra-var always overrides the
+generated one).
+
+Unsealing is deliberately **not** automated past first bootstrap. OpenBao's
+unsealed state is in-memory only — any restart of the `openbao` service, or
+a reboot of the node, reseals it, and the playbook fails loudly rather than
+silently leaving a sealed vault. Unseal it by hand from the same
+`vault-init.json`:
+
+```bash
+ansible -i <inventory> obs01 -m shell -a \
+  "BAO_ADDR=http://127.0.0.1:8200 bao operator unseal <unseal_key>"
+```
+
 ## Infra agent secret bootstrap
 
 The infra agent now expects:
