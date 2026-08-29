@@ -1,0 +1,6 @@
+---
+# Real certs via Cloudflare DNS-01 by default. Off switches every managed
+# domain to Caddy's built-in local CA (`tls internal`) instead -- no token,
+# no ACME, no public reachability required. For the testground, where none
+# of those exist.
+caddy_tls_enabled: true

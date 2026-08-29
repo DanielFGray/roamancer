@@ -17,6 +17,7 @@
         firewall_allow:
           - { port: "80", comment: HTTP }
           - { port: "443", comment: HTTPS }
+          - { port: "8200", comment: "OpenBao (web)", src: "{{ web_addr }}" }
 
 - name: Firewall on web node
   hosts: web
@@ -42,8 +43,7 @@
         caddy_template: Caddyfile-proxy.j2
         caddy_plugins:
           - github.com/caddy-dns/cloudflare
-        caddy_env:
-          CF_API_TOKEN: "{{ cloudflare_api_token }}"
+        caddy_env: "{{ {'CF_API_TOKEN': cloudflare_api_token} if caddy_tls_enabled | default(true) else {} }}"
         caddy_managed_domains:
           - dfg.rocks
           - danielfgray.com

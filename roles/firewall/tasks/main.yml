@@ -33,6 +33,7 @@
     rule: allow
     port: "{{ item.port }}"
     proto: "{{ item.proto | default('tcp') }}"
+    src: "{{ item.src | default('any') }}"
     comment: "{{ item.comment | default(omit) }}"
   loop: "{{ firewall_allow | default([]) }}"
 

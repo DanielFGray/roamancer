@@ -6,22 +6,17 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/infra
+Environment=OPENBAO_ADDR={{ vault_addr }}
+{% if infra_allow_insecure_http | default(false) %}
+Environment=INFRA_ALLOW_INSECURE_HTTP=true
+{% endif %}
 ExecStart=/home/prod/.bun/bin/bun run /opt/infra/server/main.ts
 Restart=on-failure
 RestartSec=5
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
-PrivateDevices=yes
-ProtectSystem=strict
 ProtectHome=read-only
-ProtectControlGroups=yes
-ProtectKernelModules=yes
-ProtectKernelTunables=yes
-RestrictSUIDSGID=yes
-LockPersonality=yes
-RestrictRealtime=yes
-SystemCallArchitectures=native
 ReadWritePaths=/opt/infra /srv/projects /etc/caddy/sites-enabled /home/prod/.ssh /home/prod/.config/infra
 
 [Install]

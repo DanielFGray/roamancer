@@ -116,6 +116,7 @@
     OPENBAO_TOKEN={{ infra_openbao_token | quote }}
     INFRA_API_TOKEN={{ infra_api_token | quote }}
     {% if infra_webhook_secret is defined and (infra_webhook_secret | trim | length > 0) %}INFRA_WEBHOOK_SECRET={{ infra_webhook_secret | quote }} {% endif %}
+    {% if infra_allow_insecure_http | default(false) %}INFRA_ALLOW_INSECURE_HTTP=true {% endif %}
     /home/prod/.bun/bin/bun run /opt/infra/src/main.ts vault seed-agent-secrets
   args:
     chdir: /opt/infra

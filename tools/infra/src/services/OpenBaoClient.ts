@@ -86,6 +86,7 @@ export const make = Effect.fnUntraced(function* (config: OpenBaoConfig) {
         : req;
       return withHeaders;
     }),
+    HttpClient.filterStatusOk,
   );
 
   const url = (path: string) => `${config.addr}${path}`;

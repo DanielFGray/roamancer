@@ -55,8 +55,12 @@ git.danielfgray.com {
 # ─── All managed domains: wildcard TLS via Cloudflare ────
 
 {% for domain in caddy_managed_domains | default([]) %}*.{{ domain }}, {{ domain }}{% if not loop.last %}, {% endif %}{% endfor %} {
+{% if caddy_tls_enabled %}
 	tls {
 		dns cloudflare {env.CF_API_TOKEN}
 	}
+{% else %}
+	tls internal
+{% endif %}
 	reverse_proxy {{ web_addr }}:80
 }

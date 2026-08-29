@@ -32,10 +32,18 @@ all:
   vars:
     ansible_user: dan
     ansible_python_interpreter: /usr/bin/python3
+    # Every down.sh/up.sh cycle reimages both nodes at the same addresses with
+    # fresh host keys, so strict checking here would just fail on stale keys
+    # from the previous ground rather than catch anything real. Production
+    # keeps default (strict) checking -- only this inventory turns it off.
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
     obs_addr: "{{ hostvars['obs01']['dlab_ip'] }}"
     web_addr: "{{ hostvars['web01']['dlab_ip'] }}"
-    # No public DNS and no Cloudflare here, so OpenBao gets no real certificate.
+    # No public DNS and no Cloudflare here, so OpenBao gets no real certificate,
+    # and Caddy uses its built-in local CA instead of Cloudflare DNS-01 ACME.
     vault_tls_disable: true
+    caddy_tls_enabled: false
+    infra_allow_insecure_http: true
     vault_addr: "http://{{ obs_addr }}:8200"
     vault_version: "2.5.1"
     vault_checksum: "a7cc2207e6e0a262127e4a0b00f3553526778266be80796c811f4a57677089a2"

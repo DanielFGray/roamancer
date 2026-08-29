@@ -104,12 +104,35 @@ EOF
 instance-id: $name-0
 local-hostname: $name
 EOF
-  cloud-localds "$seed" "$POOL/$name-user-data" "$POOL/$name-meta-data"
+  # Static, not DHCP: up.sh already knows this node's address -- it's the
+  # same $ip the inventory hardcodes -- so asking a DHCP server to hand back
+  # the address we already picked is a redundant hop, and on q35 it's also an
+  # unreliable one (the image's built-in fallback network config matches
+  # ens3-style names; q35's PCIe topology names the NIC enp1s0, so nothing
+  # ever requests a lease). Matched by glob rather than the exact interface
+  # name, since that name is an artifact of device ordering, not a contract.
+  cat > "$POOL/$name-network-config" <<EOF
+version: 2
+ethernets:
+  en0:
+    match:
+      name: "en*"
+    addresses: [$ip/24]
+    gateway4: 10.13.38.1
+    nameservers:
+      addresses: [10.13.38.1]
+EOF
+  cloud-localds -N "$POOL/$name-network-config" "$seed" "$POOL/$name-user-data" "$POOL/$name-meta-data"
 
+  # Seed ISO rides virtio as a plain disk, not the virt-install default SATA
+  # cdrom: Debian's cloud-optimized kernel ships no AHCI driver, so a SATA
+  # cdrom is invisible to the guest and cloud-init never finds its datasource.
+  # (virtio has no "ejectable" media flag, so device=cdrom is not an option --
+  # NoCloud only needs a block device with an iso9660 cidata filesystem on it.)
   virt-install --connect "$URI" --name "$name" \
     --memory "$mem" --vcpus "$cpus" --cpu host-passthrough \
     --disk "path=$disk,format=qcow2,bus=virtio" \
-    --disk "path=$seed,device=cdrom" \
+    --disk "path=$seed,device=disk,bus=virtio" \
     --network "network=dlab-tg,mac=$mac,model=virtio" \
     --os-variant "debian${VERSION}" \
     --serial "file,path=$POOL/$name-console.log" \
