@@ -4,18 +4,29 @@ import { BuildError, makeBuildRunner } from "./BuildRunner.ts";
 
 it.effect("maps process launch failures to BuildError", () =>
   Effect.gen(function* () {
-    const runner = makeBuildRunner(() => {
-      throw new Error("spawn failed");
-    });
-    const result = yield* Effect.either(runner.run("/tmp/project", "bun", ["run", "build"]));
+    const runner = makeBuildRunner();
+    const result = yield* Effect.either(
+      runner.run("/tmp/project", "infra-buildrunner-test-nonexistent-binary", ["run", "build"]),
+    );
 
     expect(result._tag).toBe("Left");
     if (result._tag === "Left") {
       expect(result.left).toBeInstanceOf(BuildError);
-      expect(result.left).toMatchObject({
-        command: "bun run build",
-        message: "Failed to start process: Error: spawn failed",
-      });
+      expect(result.left.command).toBe("infra-buildrunner-test-nonexistent-binary run build");
+      expect(result.left.message).toContain("Failed to start process");
+    }
+  }),
+);
+
+it.effect("maps a non-zero exit code to BuildError", () =>
+  Effect.gen(function* () {
+    const runner = makeBuildRunner();
+    const result = yield* Effect.either(runner.run("/tmp", "sh", ["-c", "exit 3"]));
+
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(BuildError);
+      expect(result.left.message).toBe("Exit code: 3");
     }
   }),
 );

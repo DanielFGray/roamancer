@@ -1,5 +1,6 @@
-import { Effect, Schema as S } from "effect";
-import { spawn } from "bun";
+import { Effect, Schema as S, Stream } from "effect";
+import * as Command from "@effect/platform/Command";
+import { BunContext } from "@effect/platform-bun";
 import { PROJECTS_DIR, GIT_HOST } from "../lib/config.ts";
 import { deploymentPaths, worktreeParent } from "../lib/deployment.ts";
 import { DEPLOYMENT_ROOTS } from "../lib/config.ts";
@@ -39,38 +40,61 @@ export const sanitizeRef = (ref: string): string =>
     .replace(/-{2,}/g, "-")
     .replace(/^-|-$/g, "");
 
-const git = Effect.fnUntraced(function* (args: string[], cwd?: string) {
-  const proc = yield* Effect.try({
-    try: () =>
-      spawn({
-        cmd: ["git", ...args],
-        ...(cwd !== undefined ? { cwd } : {}),
-        stdout: "pipe",
-        stderr: "pipe",
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-      }),
-    catch: (err) =>
-      new GitError({
+const mkdirp = (dir: string) =>
+  Command.make("mkdir", "-p", dir).pipe(
+    Command.exitCode,
+    Effect.scoped,
+    Effect.provide(BunContext.layer),
+    Effect.mapError(
+      (error) => new GitError({ command: `mkdir -p ${dir}`, message: error.message, code: null }),
+    ),
+    Effect.filterOrFail(
+      (exitCode) => exitCode === 0,
+      () =>
+        new GitError({
+          command: `mkdir -p ${dir}`,
+          message: "Failed to create directory",
+          code: null,
+        }),
+    ),
+    Effect.asVoid,
+  );
+
+const readAll = (stream: Stream.Stream<Uint8Array, unknown>) =>
+  Stream.decodeText(stream).pipe(
+    Stream.runFold("", (acc, chunk) => acc + chunk),
+    Effect.orElseSucceed(() => ""),
+  );
+
+const git = (args: ReadonlyArray<string>, cwd?: string) =>
+  Effect.gen(function* () {
+    const process = yield* Command.make("git", ...args).pipe(
+      cwd !== undefined ? Command.workingDirectory(cwd) : (c) => c,
+      Command.env({ GIT_TERMINAL_PROMPT: "0" }),
+      Command.start,
+    );
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [readAll(process.stdout), readAll(process.stderr), process.exitCode],
+      { concurrency: "unbounded" },
+    );
+    if (exitCode !== 0) {
+      return yield* new GitError({
         command: `git ${args.join(" ")}`,
-        message: String(err),
-        code: null,
-      }),
-  });
-
-  const stdout = yield* Effect.promise(() => proc.stdout.text());
-  const exitCode = yield* Effect.promise(() => proc.exited);
-
-  if (exitCode !== 0) {
-    const stderr = yield* Effect.promise(() => proc.stderr.text());
-    return yield* new GitError({
-      command: `git ${args.join(" ")}`,
-      message: stderr.trim(),
-      code: exitCode,
-    });
-  }
-
-  return stdout.trim();
-});
+        message: stderr.trim(),
+        code: exitCode,
+      });
+    }
+    return stdout.trim();
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      SystemError: (error) =>
+        new GitError({ command: `git ${args.join(" ")}`, message: error.message, code: null }),
+      BadArgument: (error) =>
+        new GitError({ command: `git ${args.join(" ")}`, message: error.message, code: null }),
+    }),
+    Effect.provide(BunContext.layer),
+  );
 
 // ---------------------------------------------------------------------------
 // Service
@@ -89,26 +113,7 @@ export class GitManager extends Effect.Service<GitManager>()("infra/GitManager",
         if (exists) return;
 
         const url = repoUrl ?? `${GIT_HOST}/${name}.git`;
-        yield* Effect.try({
-          try: () => Bun.spawnSync(["mkdir", "-p", PROJECTS_DIR]),
-          catch: (error) =>
-            new GitError({
-              command: `mkdir -p ${PROJECTS_DIR}`,
-              message: String(error),
-              code: null,
-            }),
-        }).pipe(
-          Effect.filterOrFail(
-            (proc) => proc.exitCode === 0,
-            () =>
-              new GitError({
-                command: `mkdir -p ${PROJECTS_DIR}`,
-                message: "Failed to create projects dir",
-                code: null,
-              }),
-          ),
-          Effect.asVoid,
-        );
+        yield* mkdirp(PROJECTS_DIR);
         yield* git(["clone", "--bare", url, repo]);
         // bare clones lack a fetch refspec — add one so `fetch --all` updates local refs
         yield* git(["-C", repo, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"]);
@@ -144,9 +149,7 @@ export class GitManager extends Effect.Service<GitManager>()("infra/GitManager",
           Effect.catchAll(() => Effect.void),
         );
 
-        yield* Effect.sync(() => {
-          Bun.spawnSync(["mkdir", "-p", worktreeParent(name, DEPLOYMENT_ROOTS)]);
-        });
+        yield* mkdirp(worktreeParent(name, DEPLOYMENT_ROOTS));
 
         yield* git(["-C", barePath(name), "worktree", "add", "--detach", wt, ref]);
         return wt;

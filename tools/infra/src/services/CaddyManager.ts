@@ -1,8 +1,8 @@
-import { Effect, Schema as S } from "effect";
+import { Effect, Schema as S, Stream } from "effect";
 import { BunContext } from "@effect/platform-bun";
+import * as Command from "@effect/platform/Command";
 import * as FileSystem from "@effect/platform/FileSystem";
 import * as Path from "@effect/platform/Path";
-import { spawn } from "bun";
 import { DeployMeta, type DeployMetaErr } from "./DeployMeta.ts";
 import { CADDY_SITES_DIR, DEPLOYMENT_ROOTS } from "../lib/config.ts";
 import { deploymentNames, deploymentPaths, previewHost } from "../lib/deployment.ts";
@@ -51,23 +51,37 @@ const proxySnippet = (host: string, port: number) =>
 // Caddy reload
 // ---------------------------------------------------------------------------
 
-const reloadCaddy = Effect.fnUntraced(function* () {
-  const proc = spawn({
-    cmd: ["caddy", "reload", "--config", "/etc/caddy/Caddyfile"],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const exitCode = yield* Effect.promise(() => proc.exited);
-  if (exitCode !== 0) {
-    const stderr = yield* Effect.promise(() => proc.stderr.text());
-    return yield* new CaddyError({
-      message: `caddy reload failed (exit ${exitCode}): ${stderr.trim()}`,
-    });
-  }
-});
+const reloadCaddy = Effect.fnUntraced(
+  function* () {
+    const process = yield* Command.start(
+      Command.make("caddy", "reload", "--config", "/etc/caddy/Caddyfile").pipe(
+        Command.stderr("pipe"),
+      ),
+    );
+    const stderr = yield* Stream.decodeText(process.stderr).pipe(
+      Stream.runFold("", (acc, chunk) => acc + chunk),
+    );
+    const exitCode = yield* process.exitCode;
+    if (exitCode !== 0) {
+      return yield* new CaddyError({
+        message: `caddy reload failed (exit ${exitCode}): ${stderr.trim()}`,
+      });
+    }
+  },
+  Effect.scoped,
+  Effect.catchTags({
+    SystemError: (error) =>
+      new CaddyError({ message: `Failed to start caddy reload: ${error.message}` }),
+    BadArgument: (error) =>
+      new CaddyError({ message: `Failed to start caddy reload: ${error.message}` }),
+  }),
+);
 
 export class CaddyReload extends Effect.Service<CaddyReload>()("infra/CaddyReload", {
-  effect: Effect.succeed({ _tag: "infra/CaddyReload" as const, reload: reloadCaddy }),
+  effect: Effect.succeed({
+    _tag: "infra/CaddyReload" as const,
+    reload: () => reloadCaddy().pipe(Effect.provide(BunContext.layer)),
+  }),
 }) {}
 
 export const makeCaddyManager = (

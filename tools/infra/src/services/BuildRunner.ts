@@ -1,5 +1,5 @@
 import { Effect, Schema as S } from "effect";
-import { spawn } from "bun";
+import * as Command from "@effect/platform/Command";
 import { BunContext } from "@effect/platform-bun";
 import { ENVIRONMENT, HOME_DIR } from "../lib/config.ts";
 
@@ -20,26 +20,24 @@ export interface BuildRunnerShape {
 
 const BUN_PATH = `${HOME_DIR}/.bun/bin`;
 
-export const makeBuildRunner = (createProcess: typeof spawn = spawn): BuildRunnerShape => ({
+export const makeBuildRunner = (): BuildRunnerShape => ({
   _tag: "infra/BuildRunner",
-  run: (cwd, command, args, env) => {
-    const process = Effect.try({
-      try: () =>
-        createProcess({
-          cmd: [command, ...args],
-          cwd,
-          stdout: "inherit",
-          stderr: "inherit",
-          env: { ...ENVIRONMENT, PATH: `${BUN_PATH}:${ENVIRONMENT.PATH ?? ""}`, ...env },
-        }),
-      catch: (error) =>
-        new BuildError({
-          command: `${command} ${args.join(" ")}`,
-          message: `Failed to start process: ${String(error)}`,
-        }),
-    });
-    return process.pipe(
-      Effect.flatMap((proc) => Effect.promise(() => proc.exited)),
+  run: (cwd, command, args, env) =>
+    Command.make(command, ...args).pipe(
+      Command.workingDirectory(cwd),
+      Command.env({ ...ENVIRONMENT, PATH: `${BUN_PATH}:${ENVIRONMENT.PATH ?? ""}`, ...env }),
+      Command.stdout("inherit"),
+      Command.stderr("inherit"),
+      Command.exitCode,
+      Effect.scoped,
+      Effect.provide(BunContext.layer),
+      Effect.mapError(
+        (error) =>
+          new BuildError({
+            command: `${command} ${args.join(" ")}`,
+            message: `Failed to start process: ${error.message}`,
+          }),
+      ),
       Effect.flatMap((exitCode) =>
         exitCode === 0
           ? Effect.void
@@ -50,11 +48,9 @@ export const makeBuildRunner = (createProcess: typeof spawn = spawn): BuildRunne
               }),
             ),
       ),
-    );
-  },
+    ),
 });
 
 export class BuildRunner extends Effect.Service<BuildRunner>()("infra/BuildRunner", {
   effect: Effect.succeed(makeBuildRunner()),
-  dependencies: [BunContext.layer],
 }) {}
