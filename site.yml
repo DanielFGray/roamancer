@@ -25,6 +25,11 @@
   tags: [firewall]
   roles:
     - role: firewall
+      vars:
+        # cynic has no public IP; only atheist's reverse proxy may reach it,
+        # over the WireGuard mesh -- never the open internet.
+        firewall_allow:
+          - { port: "80", comment: "Caddy (from atheist proxy only)", src: "{{ obs_addr }}" }
 
 - name: OpenBao on obs node
   hosts: obs
