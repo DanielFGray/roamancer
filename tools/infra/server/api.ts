@@ -191,6 +191,10 @@ const BackupJobStatusSchema = Schema.Struct({
 const BackupStatusResponse = Schema.Struct({
   postgres: BackupJobStatusSchema,
   vault: BackupJobStatusSchema,
+  clickhouse: BackupJobStatusSchema,
+  valkey: BackupJobStatusSchema,
+  zookeeper: BackupJobStatusSchema,
+  signoz: BackupJobStatusSchema,
 });
 
 const CaddyRouteSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown });

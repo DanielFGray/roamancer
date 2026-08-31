@@ -21,6 +21,7 @@ import { DeployRunner } from "../src/services/DeployRunner.ts";
 import { CaddyManager } from "../src/services/CaddyManager.ts";
 import { SshClient } from "../src/services/SshClient.ts";
 import { OpenBaoClient, OpenBaoClientLive } from "../src/services/OpenBaoClient.ts";
+import { ConsulClientLive } from "../src/services/ConsulClient.ts";
 import { PasswordGenerator } from "../src/services/PasswordGenerator.ts";
 import { GitManager } from "../src/services/GitManager.ts";
 import {
@@ -33,6 +34,7 @@ import {
   INFRA_AGENT_WEBHOOK_SECRET_KEY,
   OPENBAO_ADDR,
   OPENBAO_TOKEN,
+  CONSUL_ADDR,
   WEBHOOK_SECRET_FILE,
   WEBHOOK_SECRET,
 } from "../src/lib/config.ts";
@@ -230,6 +232,11 @@ const OpenBaoLive = OpenBaoClientLive({
   token: OPENBAO_TOKEN,
 }).pipe(Layer.provide(FetchHttpClient.layer));
 
+const ConsulLive = ConsulClientLive({ addr: CONSUL_ADDR }).pipe(
+  Layer.provide(FetchHttpClient.layer),
+  Layer.provide(SshClient.Default),
+);
+
 const AgentSecretOverridesLive = Layer.effect(
   AgentSecrets,
   Effect.gen(function* () {
@@ -266,6 +273,7 @@ const Leaves = Layer.mergeAll(
   SshClient.Default,
   GitManager.Default,
   OpenBaoLive,
+  ConsulLive,
 );
 
 const DeployRunnerLive = DeployRunner.Default.pipe(Layer.provideMerge(Leaves));

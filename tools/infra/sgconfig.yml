@@ -1,2 +1,2 @@
 ruleDirs:
-- /home/dan/build/server-ansible/tools/infra/rules
+  - /home/dan/build/server-ansible/tools/infra/rules

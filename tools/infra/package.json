@@ -27,11 +27,11 @@
     "npm-run-all": "latest"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.36.5",
+    "@effect/tsgo": "0.38.0",
     "@effect/vitest": "^0.30.0",
     "@types/bun": "latest",
     "oxfmt": "^0.64.0",
-    "oxlint": "1.78.0",
+    "oxlint": "1.80.0",
     "oxlint-tsgolint": "7.0.2001",
     "typescript": "7.0.2",
     "vitest": "^3.2.0"

@@ -1,6 +1,20 @@
 import { Context, DateTime, Effect, Layer, Ref, Schedule } from "effect";
-import { backupPostgres, backupVault } from "../src/services/BackupRunner.ts";
-import { BACKUP_POSTGRES_CRON, BACKUP_VAULT_CRON } from "../src/lib/config.ts";
+import {
+  backupClickhouse,
+  backupPostgres,
+  backupSignoz,
+  backupValkey,
+  backupVault,
+  backupZookeeper,
+} from "../src/services/BackupRunner.ts";
+import {
+  BACKUP_CLICKHOUSE_CRON,
+  BACKUP_POSTGRES_CRON,
+  BACKUP_SIGNOZ_CRON,
+  BACKUP_VALKEY_CRON,
+  BACKUP_VAULT_CRON,
+  BACKUP_ZOOKEEPER_CRON,
+} from "../src/lib/config.ts";
 
 // ---------------------------------------------------------------------------
 // Backup status -- shared in-memory state
@@ -16,6 +30,10 @@ export interface BackupJobStatus {
 export interface BackupStatusState {
   readonly postgres: BackupJobStatus;
   readonly vault: BackupJobStatus;
+  readonly clickhouse: BackupJobStatus;
+  readonly valkey: BackupJobStatus;
+  readonly zookeeper: BackupJobStatus;
+  readonly signoz: BackupJobStatus;
 }
 
 const emptyJob: BackupJobStatus = {
@@ -28,6 +46,10 @@ const emptyJob: BackupJobStatus = {
 const initialState: BackupStatusState = {
   postgres: emptyJob,
   vault: emptyJob,
+  clickhouse: emptyJob,
+  valkey: emptyJob,
+  zookeeper: emptyJob,
+  signoz: emptyJob,
 };
 
 export class BackupStatus extends Context.Tag("BackupStatus")<
@@ -42,7 +64,7 @@ export const BackupStatusLive = Layer.effect(BackupStatus, Ref.make(initialState
 // ---------------------------------------------------------------------------
 
 const runJob = <E, R>(
-  name: "postgres" | "vault",
+  name: keyof BackupStatusState,
   job: Effect.Effect<{ file: string; size: string }, E, R>,
   cron: string,
 ) =>
@@ -100,6 +122,10 @@ export const SchedulerLive = Layer.scopedDiscard(
     yield* Effect.log("Backup scheduler: starting");
     yield* runJob("postgres", backupPostgres, BACKUP_POSTGRES_CRON);
     yield* runJob("vault", backupVault, BACKUP_VAULT_CRON);
+    yield* runJob("clickhouse", backupClickhouse, BACKUP_CLICKHOUSE_CRON);
+    yield* runJob("valkey", backupValkey, BACKUP_VALKEY_CRON);
+    yield* runJob("zookeeper", backupZookeeper, BACKUP_ZOOKEEPER_CRON);
+    yield* runJob("signoz", backupSignoz, BACKUP_SIGNOZ_CRON);
     yield* Effect.log("Backup scheduler: all jobs registered");
   }),
 );

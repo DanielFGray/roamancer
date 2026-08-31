@@ -1,12 +1,7 @@
 import { Command } from "@effect/cli";
 import { Console, Effect } from "effect";
-import {
-  backupPostgres,
-  backupVault,
-  listBackups,
-  POSTGRES_HOST,
-  VAULT_HOST,
-} from "../services/BackupRunner.ts";
+import { backupPostgres, backupVault, listBackups } from "../services/BackupRunner.ts";
+import { ConsulClient } from "../services/ConsulClient.ts";
 
 // ---------------------------------------------------------------------------
 // Subcommands
@@ -39,8 +34,12 @@ const backupVaultCmd = Command.make("vault").pipe(
 const backupListCmd = Command.make("list").pipe(
   Command.withHandler(
     Effect.fnUntraced(function* () {
+      const consul = yield* ConsulClient;
+      const postgresHost = yield* consul.resolveServiceHost("postgres");
+      const vaultHost = yield* consul.resolveServiceHost("vault");
+
       yield* Console.log("Postgres backups:");
-      const pgFiles = yield* listBackups(POSTGRES_HOST, "/opt/backups/postgres");
+      const pgFiles = yield* listBackups(postgresHost, "/opt/backups/postgres");
       if (pgFiles.length === 0) {
         yield* Console.log("  (none)");
       } else {
@@ -50,7 +49,7 @@ const backupListCmd = Command.make("list").pipe(
       yield* Console.log("");
 
       yield* Console.log("Vault backups:");
-      const vaultFiles = yield* listBackups(VAULT_HOST, "/opt/backups/vault");
+      const vaultFiles = yield* listBackups(vaultHost, "/opt/backups/vault");
       if (vaultFiles.length === 0) {
         yield* Console.log("  (none)");
       } else {

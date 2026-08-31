@@ -29,6 +29,7 @@ import {
   directCommand,
 } from "./commands/remote.ts";
 import { OpenBaoClientLive, type OpenBaoConfig } from "./services/OpenBaoClient.ts";
+import { ConsulClientLive } from "./services/ConsulClient.ts";
 import { PasswordGenerator } from "./services/PasswordGenerator.ts";
 import { SecretResolver } from "./services/SecretResolver.ts";
 import { SshClient } from "./services/SshClient.ts";
@@ -39,7 +40,7 @@ import { HealthCheck } from "./services/HealthCheck.ts";
 import { SystemdManager } from "./services/SystemdManager.ts";
 import { InfraClient } from "./services/InfraClient.ts";
 import { DeployRunner } from "./services/DeployRunner.ts";
-import { HOME_DIR, OPENBAO_ADDR, OPENBAO_TOKEN } from "./lib/config.ts";
+import { CONSUL_ADDR, HOME_DIR, OPENBAO_ADDR, OPENBAO_TOKEN } from "./lib/config.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -74,6 +75,10 @@ const loadConfig = Effect.gen(function* () {
 const OpenBaoLive = Layer.unwrapEffect(
   loadConfig.pipe(Effect.map((config) => OpenBaoClientLive(config))),
 ).pipe(Layer.provide(FetchHttpClient.layer));
+const ConsulLive = ConsulClientLive({ addr: CONSUL_ADDR }).pipe(
+  Layer.provide(FetchHttpClient.layer),
+  Layer.provide(SshClient.Default),
+);
 
 // Dependency graph:
 //   Level 0 (leaves)  : PasswordGenerator, SshClient, GitManager, OpenBaoClient, StateDb
@@ -88,6 +93,7 @@ const Leaves = Layer.mergeAll(
   SshClient.Default,
   GitManager.Default,
   OpenBaoLive,
+  ConsulLive,
 );
 
 const AppLayer = Layer.mergeAll(

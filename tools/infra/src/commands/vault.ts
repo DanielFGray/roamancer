@@ -13,7 +13,7 @@ import {
   API_TOKEN,
   HOME_DIR,
   PROJECTS_DIR,
-  REPO_ROOT,
+  SERVICES_DIR,
   WEBHOOK_SECRET,
 } from "../lib/config.ts";
 
@@ -62,7 +62,7 @@ const findEnvExampleContent = Effect.fnUntraced(function* (name: string) {
 
   const candidates = [
     pathSvc.join(PROJECTS_DIR, name, ".env.example"),
-    pathSvc.join(REPO_ROOT, "services", name, ".env.example"),
+    pathSvc.join(SERVICES_DIR, name, ".env.example"),
   ];
 
   const found = yield* Effect.reduce(candidates, null as string | null, (acc, candidate) =>
@@ -181,7 +181,6 @@ const vaultStatus = Command.make("status").pipe(
   Command.withHandler(
     Effect.fnUntraced(function* () {
       const bao = yield* OpenBaoClient;
-      const pathSvc = yield* Path.Path;
 
       yield* Console.log("Checking vault status...");
       const status = yield* bao.sealStatus();
@@ -191,7 +190,7 @@ const vaultStatus = Command.make("status").pipe(
       if (status.sealed || !status.initialized) return;
 
       const projectNames = yield* scanForEnvExamples(PROJECTS_DIR);
-      const serviceNames = yield* scanForEnvExamples(pathSvc.join(REPO_ROOT, "services"));
+      const serviceNames = yield* scanForEnvExamples(SERVICES_DIR);
       const names = [...projectNames, ...serviceNames];
 
       yield* Console.log("");

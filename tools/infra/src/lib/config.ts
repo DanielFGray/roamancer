@@ -122,7 +122,49 @@ export const OPENBAO_ADDR = requireSafeUrl(
   "OPENBAO_ADDR",
   await cfg("OPENBAO_ADDR", "openbao_addr", "https://atheist.dlab:8200"),
 );
+export const CONSUL_ADDR = requireSafeUrl(
+  "CONSUL_ADDR",
+  await cfg("CONSUL_ADDR", "consul_addr", "http://127.0.0.1:8500"),
+);
 export const REPO_ROOT = new URL("../../../..", import.meta.url).pathname.replace(/\/$/, "");
+
+// The deployed agent (roles/infra-agent) only ever rsyncs tools/infra/ to the
+// target host -- REPO_ROOT's "4 dirs up from this file" math only lands on a
+// real monorepo root in local dev, where the file sits at
+// tools/infra/src/lib/config.ts. On a deployed host it resolves to "/", so
+// anything under services/ must be resolved through this instead, with the
+// role responsible for shipping services/ to wherever this points.
+export const SERVICES_DIR = await cfg(
+  "INFRA_SERVICES_DIR",
+  "services_dir",
+  `${REPO_ROOT}/services`,
+);
+
+// Production hosts all listen on 22. Non-production environments (e.g. the
+// local testground) deliberately use other ports so that a tool with no
+// environment awareness can never cross-target them by accident -- so the
+// override is opt-in, per host, rather than a single blanket port.
+const SSH_PORT_MAP: Record<string, number> = (() => {
+  const raw = ENVIRONMENT.INFRA_SSH_PORT_MAP ?? configFile.ssh_port_map;
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([host, port]) => [host, Number(port)] as const)
+        .filter(([, port]) => Number.isInteger(port) && port > 0),
+    );
+  } catch {
+    return {};
+  }
+})();
+export const resolveSshPort = (host: string): number => SSH_PORT_MAP[host] ?? 22;
+
+// Escape hatch for pointing every ssh/rsync invocation at an explicit,
+// reviewable OpenSSH config file (via `ssh -F`) instead of the operator's
+// own ~/.ssh/config -- e.g. to safely re-target production hostnames at a
+// local test environment without touching real, ambient SSH state.
+export const SSH_CONFIG_FILE = ENVIRONMENT.INFRA_SSH_CONFIG_FILE;
 export const GIT_HOST = await cfg("INFRA_GIT_HOST", "git_host", "git@forgejo:dan");
 export const CADDY_HOST = await cfg("INFRA_CADDY_HOST", "caddy_host", "cynic.dlab");
 export const CADDY_SITES_DIR = await cfg(
@@ -190,3 +232,7 @@ export const INFRA_SERVER_URL = requireSafeUrl(
 
 export const BACKUP_POSTGRES_CRON = ENVIRONMENT.BACKUP_POSTGRES_CRON ?? "0 2 * * *";
 export const BACKUP_VAULT_CRON = ENVIRONMENT.BACKUP_VAULT_CRON ?? "0 3 * * *";
+export const BACKUP_CLICKHOUSE_CRON = ENVIRONMENT.BACKUP_CLICKHOUSE_CRON ?? "0 4 * * *";
+export const BACKUP_VALKEY_CRON = ENVIRONMENT.BACKUP_VALKEY_CRON ?? "0 5 * * *";
+export const BACKUP_ZOOKEEPER_CRON = ENVIRONMENT.BACKUP_ZOOKEEPER_CRON ?? "0 6 * * *";
+export const BACKUP_SIGNOZ_CRON = ENVIRONMENT.BACKUP_SIGNOZ_CRON ?? "0 7 * * *";
