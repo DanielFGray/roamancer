@@ -5,7 +5,7 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - /srv/data/postgres:/var/lib/postgresql/data
     environment:
       POSTGRES_USER: "${POSTGRES_USER}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
@@ -20,21 +20,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - infra
 
-  valkey:
-    image: valkey/valkey:8-alpine
-    restart: always
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - valkey-data:/data
-    command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning"]
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  postgres-data:
-  valkey-data:
+networks:
+  infra:
+    external: true

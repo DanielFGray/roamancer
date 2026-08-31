@@ -1,0 +1,19 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.5.6
+    restart: always
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - /srv/data/clickhouse:/var/lib/clickhouse
+      - /opt/services/clickhouse/backups.xml:/etc/clickhouse-server/config.d/backups.xml:ro
+      - /opt/backups/clickhouse:/backups
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    networks:
+      - infra
+
+networks:
+  infra:
+    external: true

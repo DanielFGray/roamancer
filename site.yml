@@ -18,6 +18,12 @@
           - { port: "80", comment: HTTP }
           - { port: "443", comment: HTTPS }
           - { port: "8200", comment: "OpenBao (web)", src: "{{ web_addr }}" }
+          - { port: "8300", comment: "Consul server RPC (web)", src: "{{ web_addr }}" }
+          - { port: "8301", proto: tcp, comment: "Consul LAN gossip (web)", src: "{{ web_addr }}" }
+          - { port: "8301", proto: udp, comment: "Consul LAN gossip (web)", src: "{{ web_addr }}" }
+          - { port: "8500", comment: "Consul HTTP API (web)", src: "{{ web_addr }}" }
+          - { port: "8600", proto: tcp, comment: "Consul DNS (web)", src: "{{ web_addr }}" }
+          - { port: "8600", proto: udp, comment: "Consul DNS (web)", src: "{{ web_addr }}" }
 
 - name: Firewall on web node
   hosts: web
@@ -30,6 +36,11 @@
         # over the WireGuard mesh -- never the open internet.
         firewall_allow:
           - { port: "80", comment: "Caddy (from atheist proxy only)", src: "{{ obs_addr }}" }
+          - { port: "8301", proto: tcp, comment: "Consul LAN gossip (obs)", src: "{{ obs_addr }}" }
+          - { port: "8301", proto: udp, comment: "Consul LAN gossip (obs)", src: "{{ obs_addr }}" }
+          - { port: "8500", comment: "Consul HTTP API (obs)", src: "{{ obs_addr }}" }
+          - { port: "8600", proto: tcp, comment: "Consul DNS (obs)", src: "{{ obs_addr }}" }
+          - { port: "8600", proto: udp, comment: "Consul DNS (obs)", src: "{{ obs_addr }}" }
 
 - name: OpenBao on obs node
   hosts: obs
@@ -37,6 +48,13 @@
   tags: [vault]
   roles:
     - vault
+
+- name: Consul agents on all nodes
+  hosts: all
+  become: true
+  tags: [consul]
+  roles:
+    - consul
 
 - name: Caddy reverse proxy on obs node
   hosts: obs
@@ -69,10 +87,25 @@
     - role: compose
       vars:
         compose_stacks:
-          - name: infra
-            src: services/infra/compose.yml
-            dest: /opt/services/infra/compose.yml
+          - name: postgres
+            src: services/postgres/compose.yml
+            dest: /opt/services/postgres/compose.yml
             env_template: ../../roles/compose/templates/infra-env.j2
+            migrate_from_volume: postgres-data
+            migrate_from_dir: /opt/services/infra
+            data_path: /srv/data/postgres
+            data_owner: "70"
+            data_group: "70"
+            data_mode: "0750"
+          - name: valkey
+            src: services/valkey/compose.yml
+            dest: /opt/services/valkey/compose.yml
+            migrate_from_volume: valkey-data
+            migrate_from_dir: /opt/services/infra
+            data_path: /srv/data/valkey
+            data_owner: "999"
+            data_group: "1000"
+            data_mode: "0750"
 
 - name: SigNoz on obs node
   hosts: obs
@@ -82,10 +115,47 @@
     - role: compose
       vars:
         compose_stacks:
+          - name: zookeeper
+            src: services/zookeeper/compose.yml
+            dest: /opt/services/zookeeper/compose.yml
+            migrate_from_volume: zookeeper-data
+            migrate_from_dir: /opt/services/signoz
+            data_path: /srv/data/zookeeper
+            data_owner: "1001"
+            data_group: "0"
+            data_mode: "0775"
+          - name: clickhouse
+            src: services/clickhouse/compose.yml
+            dest: /opt/services/clickhouse/compose.yml
+            migrate_from_volume: clickhouse-data
+            migrate_from_dir: /opt/services/signoz
+            data_path: /srv/data/clickhouse
+            data_owner: "101"
+            data_group: "101"
+            data_mode: "0750"
+            # Other split services (signoz, otel-collector) reach clickhouse
+            # by this fixed address via extra_hosts rather than by name --
+            # see roles/compose's "Pin clickhouse's address" task.
+            network_ip: 10.89.3.10
+            # ClickHouse's entrypoint also chowns this second bind mount
+            # (its own BACKUP TABLE destination) at container startup --
+            # needs the same rootless-namespace ownership remap as data_path.
+            extra_data_paths:
+              - path: /opt/backups/clickhouse
+                owner: "101"
+                group: "101"
           - name: signoz
             src: services/signoz/compose.yml
             dest: /opt/services/signoz/compose.yml
+            migrate_from_volume: signoz-data
+            migrate_from_dir: /opt/services/signoz
+            data_path: /srv/data/signoz
+            data_owner: "0"
+            data_group: "0"
+            data_mode: "0750"
         compose_extra_files:
+          - src: services/clickhouse/backups.xml
+            dest: /opt/services/clickhouse/backups.xml
           - src: services/signoz/otel-collector-config.yaml
             dest: /opt/services/signoz/otel-collector-config.yaml
 

@@ -26,36 +26,6 @@
     group: web
     mode: "0700"
 
-- name: Create prod SSH directory
-  file:
-    path: /home/prod/.ssh
-    state: directory
-    owner: prod
-    group: web
-    mode: "0700"
-
-- name: Generate SSH key for prod user
-  community.crypto.openssh_keypair:
-    path: /home/prod/.ssh/id_ed25519
-    type: ed25519
-    owner: prod
-    group: web
-  register: prod_ssh_key
-
-- name: Authorize prod key for self-SSH
-  authorized_key:
-    user: prod
-    key: "{{ prod_ssh_key.public_key }}"
-    state: present
-
-- name: Deploy prod SSH config
-  template:
-    src: ssh-config.j2
-    dest: /home/prod/.ssh/config
-    owner: prod
-    group: web
-    mode: "0600"
-
 - name: Show prod public key for GitHub deploy keys
   debug:
     msg: "prod@{{ inventory_hostname }} public key: {{ prod_ssh_key.public_key }}"
@@ -81,6 +51,20 @@
     -e 'ssh -p {{ ansible_port | default(22) }} -o StrictHostKeyChecking=accept-new -o UpdateHostKeys=yes'
     {{ playbook_dir }}/tools/infra/
     {{ ansible_user }}@{{ ansible_host }}:/opt/infra/
+  delegate_to: localhost
+  become: false
+  notify: restart infra-agent
+
+# `service up/move` deploy each service from here (SERVICES_DIR) -- the agent
+# only ships tools/infra/ above, so without this the CLI's REPO_ROOT-relative
+# path math has nothing to resolve against once it's running off-repo.
+- name: Rsync service compose bundles
+  command: >
+    rsync -rlD --delete
+    --chmod=Dg+rwx,Fg+rw
+    -e 'ssh -p {{ ansible_port | default(22) }} -o StrictHostKeyChecking=accept-new -o UpdateHostKeys=yes'
+    {{ playbook_dir }}/services/
+    {{ ansible_user }}@{{ ansible_host }}:/opt/infra/services/
   delegate_to: localhost
   become: false
   notify: restart infra-agent

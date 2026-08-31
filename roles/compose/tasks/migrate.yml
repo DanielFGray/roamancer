@@ -1,0 +1,165 @@
+---
+# Ownership is set below via `podman unshare chown`, not here: containers
+# run under prod's rootless podman, so a container-internal UID like 70
+# doesn't mean host UID 70 -- it's remapped through prod's subuid range
+# (165536:65536). `podman unshare` runs the chown inside that same user
+# namespace, where "70" means what the container expects it to mean.
+- name: Create bind-mount data directory
+  file:
+    path: "{{ compose_stack.data_path }}"
+    state: directory
+    owner: prod
+    group: prod
+    mode: "{{ compose_stack.data_mode }}"
+
+# `podman unshare chown` below can only remap ownership of files prod
+# already owns as itself (its real host UID maps to UID 0 inside the
+# namespace, which is what gives it authority to reassign to any UID in its
+# subuid range) -- it has no permission over files still owned by whatever
+# actually wrote them (root's old rootful podman-compose, or a fresh host
+# that never ran this migration). This is a one-time, genuinely privileged
+# handoff, so it stays here in Ansible rather than moving into the CLI's
+# deployFiles, which only ever touches already-rootless-owned data.
+- name: Take real ownership of bind-mount data before namespace remap
+  file:
+    path: "{{ compose_stack.data_path }}"
+    state: directory
+    owner: prod
+    group: prod
+    recurse: true
+
+- name: Set bind-mount ownership for rootless container namespace
+  command: "podman unshare chown -R {{ compose_stack.data_owner }}:{{ compose_stack.data_group }} {{ compose_stack.data_path }}"
+  become_user: prod
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ prod_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ prod_uid.stdout }}/bus"
+  changed_when: true
+
+- name: Check old compose project directory
+  stat:
+    path: "{{ compose_stack.migrate_from_dir }}"
+  register: compose_old_project_dir
+
+- name: Inspect existing target data
+  find:
+    paths: "{{ compose_stack.data_path }}"
+    file_type: any
+    hidden: true
+    recurse: false
+  register: compose_target_data
+
+- name: List Podman volumes
+  command:
+    argv:
+      - podman
+      - volume
+      - ls
+      - --format
+      - "{{ '{{.Name}}' }}"
+  register: compose_volume_list
+  changed_when: false
+
+- name: Find volumes matching the old compose volume name
+  set_fact:
+    compose_matching_volumes: >-
+      {{ compose_volume_list.stdout_lines
+         | select('search', '(^|_)' ~ (compose_stack.migrate_from_volume | regex_escape) ~ '$')
+         | list }}
+
+- name: Refuse to guess between multiple matching volumes
+  assert:
+    that: compose_matching_volumes | length < 2
+    fail_msg: >-
+      More than one Podman volume matches {{ compose_stack.migrate_from_volume }}:
+      {{ compose_matching_volumes | join(', ') }}. Refusing to choose one.
+
+- name: Select matching Podman volume
+  set_fact:
+    compose_source_volume_name: "{{ compose_matching_volumes | first | default('') }}"
+
+# An old project directory existing but no matching volume is ambiguous: it
+# could mean the volume was already migrated/removed by hand, or it could
+# mean the match pattern missed a real volume under a name we didn't expect.
+# The empty-target check alone can't tell those apart -- and if we're wrong,
+# main.yml starts a fresh container against this empty directory right after
+# this file runs, which then auto-initializes state that permanently poisons
+# this same guard on every future re-run (the target is no longer empty, so
+# it reads as "already migrated" forever after). Fail loudly here instead so
+# a bad match pattern is caught before a fresh start can silently diverge
+# from data that may still exist under a differently-named volume.
+- name: Refuse to start fresh when the old project exists but its volume could not be found
+  assert:
+    that: >-
+      not (compose_old_project_dir.stat.exists
+      and compose_source_volume_name | length == 0
+      and compose_target_data.matched | int == 0)
+    fail_msg: >-
+      {{ compose_stack.name }}: {{ compose_stack.migrate_from_dir }} exists on this host, but no Podman
+      volume matching {{ compose_stack.migrate_from_volume }} was found, and {{ compose_stack.data_path }}
+      is empty. Refusing to start a fresh service here -- investigate with `podman volume ls` before
+      re-running (a real volume may exist under an unexpected name).
+
+- name: Inspect selected Podman volume
+  command:
+    argv:
+      - podman
+      - volume
+      - inspect
+      - "{{ compose_source_volume_name }}"
+      - --format
+      - "{{ '{{.Mountpoint}}' }}"
+  register: compose_source_volume
+  changed_when: false
+  when: compose_source_volume_name | length > 0
+
+- name: Migrate named volume into bind mount directory
+  when:
+    - compose_source_volume_name | length > 0
+    - compose_target_data.matched | int == 0
+  block:
+    # Postgres and Valkey share /opt/services/infra, while ZooKeeper,
+    # ClickHouse, and SigNoz share /opt/services/signoz. The later services
+    # will find the same old directory after the first service has brought
+    # that bundled project down. That is expected and harmless.
+    - name: Stop compose stack before copying its data
+      command: podman-compose down
+      args:
+        chdir: "{{ compose_stack.migrate_from_dir }}"
+      when: compose_old_project_dir.stat.exists
+
+    - name: Copy named volume contents into bind mount directory
+      command:
+        argv:
+          - rsync
+          - -a
+          - "{{ compose_source_volume.stdout | trim }}/"
+          - "{{ compose_stack.data_path }}/"
+
+    # rsync above preserved the old (root podman, unmapped) ownership from
+    # the source volume -- podman unshare chown needs prod to really own
+    # these files first (see the same handoff above the migrate block).
+    - name: Take real ownership of copied data before namespace remap
+      file:
+        path: "{{ compose_stack.data_path }}"
+        state: directory
+        owner: prod
+        group: prod
+        recurse: true
+
+    - name: Re-assert bind mount data ownership after copy
+      command: "podman unshare chown -R {{ compose_stack.data_owner }}:{{ compose_stack.data_group }} {{ compose_stack.data_path }}"
+      become_user: prod
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ prod_uid.stdout }}"
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ prod_uid.stdout }}/bus"
+      changed_when: true
+
+    - name: Assert bind mount data directory mode
+      file:
+        path: "{{ compose_stack.data_path }}"
+        state: directory
+        mode: "{{ compose_stack.data_mode }}"
+
+    # Keep the old named volume as a safety net. The operator can remove it
+    # manually after verifying the bind-mount data.

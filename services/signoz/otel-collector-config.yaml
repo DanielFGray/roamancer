@@ -19,8 +19,8 @@ processors:
 exporters:
   clickhousetraces:
     datasource: tcp://clickhouse:9000
-  clickhousemetricswrite:
-    endpoint: tcp://clickhouse:9000
+  signozclickhousemetrics:
+    dsn: tcp://clickhouse:9000
   clickhouselogsexporter:
     dsn: tcp://clickhouse:9000
 
@@ -33,7 +33,7 @@ service:
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [clickhousemetricswrite]
+      exporters: [signozclickhousemetrics]
     logs:
       receivers: [otlp]
       processors: [batch]

@@ -25,12 +25,33 @@
       - git
       - jq
       - htop
+      - sqlite3
     state: present
 
 - name: Create web group
   group:
     name: web
     state: present
+
+# Ansible's file module applies a directory's own owner/mode to any parent
+# path components it has to create along the way. Left implicit, /srv/data
+# would inherit whichever service's ownership happened to create it first
+# (e.g. postgres's 70:70 0750), locking every other user -- including prod,
+# who deploys services over SSH -- out of the other per-service subdirs.
+#
+# group: prod + 0775 (not just root:root 0755) is required, not cosmetic:
+# `service move`/`service up --to <host>` must be able to mkdir a brand-new
+# /srv/data/<service> directory on a host Ansible never provisioned for that
+# service -- that's the entire point of "movable" services. Each subdir's own
+# narrower mode (e.g. postgres's 0750) still gates real access; this only
+# grants prod permission to create siblings here.
+- name: Create bind-mount data root
+  file:
+    path: /srv/data
+    state: directory
+    owner: root
+    group: prod
+    mode: "0775"
 
 - name: Ensure dan user exists with sudo
   user:
@@ -45,6 +66,73 @@
     groups: web
     append: true
     shell: /bin/bash
+
+- name: Create prod SSH directory
+  file:
+    path: /home/prod/.ssh
+    state: directory
+    owner: prod
+    group: web
+    mode: "0700"
+
+- name: Generate SSH key for prod user
+  community.crypto.openssh_keypair:
+    path: /home/prod/.ssh/id_ed25519
+    type: ed25519
+    owner: prod
+    group: web
+  register: prod_ssh_key
+
+- name: Authorize prod key for self-SSH
+  authorized_key:
+    user: prod
+    key: "{{ prod_ssh_key.public_key }}"
+    state: present
+
+# Each host authorizes every peer's key onto its own prod account. The key
+# generation task above completes on all hosts before this task under Ansible's
+# default linear strategy, so every hostvar peer key is available here.
+- name: Authorize peer prod keys
+  authorized_key:
+    user: prod
+    key: "{{ hostvars[item].prod_ssh_key.public_key }}"
+    state: present
+  loop: "{{ groups['all'] }}"
+  loop_control:
+    label: "{{ item }}"
+  when: item != inventory_hostname
+
+# The infra CLI (service up/move/snapshot) runs as prod on the deployed
+# agent host (/opt/infra, via roles/infra-agent) or from an operator's own
+# monorepo checkout, over SSH as prod either way. Whoever can already SSH in
+# as dan should be able to run it, so prod trusts the same keys dan does
+# rather than tracking a separate list.
+- name: Read dan's authorized keys
+  slurp:
+    src: /home/dan/.ssh/authorized_keys
+  register: dan_authorized_keys
+
+- name: Authorize operator keys for prod
+  authorized_key:
+    user: prod
+    key: "{{ dan_authorized_keys.content | b64decode }}"
+
+- name: Deploy prod SSH config
+  template:
+    src: ssh-config.j2
+    dest: /home/prod/.ssh/config
+    owner: prod
+    group: web
+    mode: "0600"
+
+# Containers run under prod's own rootless podman now (subuid/subgid range
+# below, lingering further down) -- prod no longer needs root for any of
+# this, so the sudoers whitelist that used to grant it a few specific
+# root-owned podman-compose/chown commands is gone.
+- name: Remove obsolete prod sudoers rules
+  file:
+    path: /etc/sudoers.d/prod-infra
+    state: absent
 
 - name: Install bun for prod user
   shell: curl -fsSL https://bun.sh/install | bash
@@ -119,5 +207,20 @@
     state: directory
     owner: prod
     group: web
+    mode: "0775"
+  when: inventory_hostname in groups['obs']
+
+# Real ownership only, not the container-expected 101:101 -- ClickHouse
+# runs under prod's rootless podman, so UID 101 is remapped through prod's
+# subuid range. roles/compose's "Set extra bind-mount ownership for rootless
+# container namespace" does the actual podman unshare chown, which first
+# needs prod to really own this directory (see roles/compose/tasks/migrate.yml
+# for the same two-step handoff on the primary data-dir bind mounts).
+- name: Create ClickHouse backup directory (obs node)
+  file:
+    path: /opt/backups/clickhouse
+    state: directory
+    owner: prod
+    group: prod
     mode: "0775"
   when: inventory_hostname in groups['obs']

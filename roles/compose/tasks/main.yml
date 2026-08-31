@@ -1,10 +1,60 @@
 ---
+# Containers run under prod's own rootless podman -- every podman/
+# podman-compose task below needs prod's user session (XDG_RUNTIME_DIR,
+# DBUS_SESSION_BUS_ADDRESS), not the play's become:true (root).
+- name: Get prod user UID
+  command: id -u prod
+  register: prod_uid
+  changed_when: false
+
+- name: Ensure prod user systemd session is running
+  systemd:
+    name: "user@{{ prod_uid.stdout }}.service"
+    state: started
+
+# Some services bind-mount a second directory their own entrypoint chowns
+# at startup (e.g. ClickHouse's /backups for BACKUP TABLE) -- these aren't
+# part of migrate.yml's named-volume migration, but still need the same
+# real-ownership-then-namespace-remap handoff as the primary data_path.
+- name: Take real ownership of extra bind-mount paths before namespace remap
+  file:
+    path: "{{ item.1.path }}"
+    state: directory
+    owner: prod
+    group: prod
+    recurse: true
+  loop: "{{ compose_stacks | subelements('extra_data_paths', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }}: {{ item.1.path }}"
+
+- name: Set extra bind-mount ownership for rootless container namespace
+  command: "podman unshare chown -R {{ item.1.owner }}:{{ item.1.group }} {{ item.1.path }}"
+  become_user: prod
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ prod_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ prod_uid.stdout }}/bus"
+  loop: "{{ compose_stacks | subelements('extra_data_paths', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }}: {{ item.1.path }}"
+  changed_when: true
+
+- name: Migrate stack data from named Podman volume
+  include_tasks: migrate.yml
+  loop: "{{ compose_stacks }}"
+  loop_control:
+    loop_var: compose_stack
+    label: "{{ compose_stack.name }}"
+  when: compose_stack.migrate_from_volume is defined
+
+# prod-owned rather than root-owned: the infra CLI's `service up/move` push
+# these same files over plain rsync as prod (no sudo), so it needs write
+# access here on every subsequent redeploy, not just this first one.
 - name: Ensure compose stack directory exists
   file:
     path: "{{ item.dest | dirname }}"
     state: directory
-    owner: root
-    group: root
+    owner: prod
+    group: web
     mode: "0755"
   loop: "{{ compose_stacks }}"
   loop_control:
@@ -14,8 +64,8 @@
   copy:
     src: "{{ item.src }}"
     dest: "{{ item.dest }}"
-    owner: root
-    group: root
+    owner: prod
+    group: web
     mode: "0644"
   loop: "{{ compose_stacks }}"
   loop_control:
@@ -25,8 +75,8 @@
   copy:
     src: "{{ item.src }}"
     dest: "{{ item.dest }}"
-    owner: root
-    group: root
+    owner: prod
+    group: web
     mode: "0644"
   loop: "{{ compose_extra_files | default([]) }}"
   loop_control:
@@ -37,8 +87,8 @@
   template:
     src: "{{ item.env_template }}"
     dest: "{{ item.dest | dirname }}/.env"
-    owner: root
-    group: root
+    owner: prod
+    group: web
     mode: "0600"
   loop: "{{ compose_stacks }}"
   loop_control:
@@ -46,12 +96,53 @@
   when: item.env_template is defined
   no_log: true
 
+# --force-recreate: podman-compose does not diff a stack's current config
+# against compose.yml before deciding whether to recreate a container --
+# without this flag, "up -d" on an already-running stack is a no-op even
+# when compose.yml has changed (image, env, networks, volumes, ...).
 - name: Start compose stacks
-  command: podman-compose up -d
+  command: podman-compose up -d --force-recreate
   args:
     chdir: "{{ item.dest | dirname }}"
+  become_user: prod
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ prod_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ prod_uid.stdout }}/bus"
   loop: "{{ compose_stacks }}"
   loop_control:
     label: "{{ item.name }}"
   register: compose_result
   changed_when: "'Creating' in compose_result.stdout or 'Recreating' in compose_result.stdout"
+
+# podman-compose 1.0.3 can't parse a service's `networks: infra:
+# ipv4_address: ...` (it stringifies the mapping instead of reading it,
+# then reports the network as "missing") -- so any address another
+# service depends on has to be pinned outside compose, after the fact.
+# --force-recreate means every deploy makes a fresh container attached
+# with a fresh (unpinned) address, so this has to run every time too.
+- name: Unpin previous address before recreated container attaches
+  command: "podman network disconnect infra {{ item.name }}_{{ item.name }}_1"
+  become_user: prod
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ prod_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ prod_uid.stdout }}/bus"
+  loop: "{{ compose_stacks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.network_ip is defined
+  register: unpin_result
+  changed_when: false
+  failed_when: false
+
+- name: Pin cross-service addresses on the shared network
+  command: "podman network connect --ip {{ item.network_ip }} infra {{ item.name }}_{{ item.name }}_1"
+  become_user: prod
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ prod_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ prod_uid.stdout }}/bus"
+  loop: "{{ compose_stacks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.network_ip is defined
+  register: pin_result
+  changed_when: true

@@ -1,36 +1,11 @@
 services:
-  zookeeper:
-    image: signoz/zookeeper:3.7.1
-    restart: always
-    volumes:
-      - zookeeper-data:/bitnami/zookeeper
-    environment:
-      ZOO_SERVER_ID: "1"
-      ALLOW_ANONYMOUS_LOGIN: "yes"
-      ZOO_AUTOPURGE_INTERVAL: "1"
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:25.5.6
-    restart: always
-    depends_on:
-      - zookeeper
-    ports:
-      - "127.0.0.1:8123:8123"
-      - "127.0.0.1:9000:9000"
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-    environment:
-      CLICKHOUSE_SKIP_USER_SETUP: "1"
-
   signoz:
     image: signoz/signoz:v0.111.0
     restart: always
-    depends_on:
-      - clickhouse
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - signoz-data:/var/lib/signoz
+      - /srv/data/signoz:/var/lib/signoz
     environment:
       SIGNOZ_ALERTMANAGER_PROVIDER: signoz
       SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN: "tcp://clickhouse:9000"
@@ -43,12 +18,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - infra
+    # aardvark-dns (Debian bookworm's version) doesn't reliably answer
+    # container-to-container queries, so cross-project hostnames are
+    # pinned by IP here instead of relying on it -- see roles/compose's
+    # "Pin clickhouse's address" task, which is the other half of this.
+    extra_hosts:
+      - "clickhouse:10.89.3.10"
 
   otel-collector:
     image: signoz/signoz-otel-collector:v0.142.0
     restart: always
-    depends_on:
-      - clickhouse
     ports:
       - "127.0.0.1:4317:4317"
       - "127.0.0.1:4318:4318"
@@ -58,8 +39,11 @@ services:
     environment:
       OTEL_RESOURCE_ATTRIBUTES: "host.name=signoz-host,os.type=linux"
       LOW_CARDINAL_EXCEPTION_GROUPING: "false"
+    networks:
+      - infra
+    extra_hosts:
+      - "clickhouse:10.89.3.10"
 
-volumes:
-  zookeeper-data:
-  clickhouse-data:
-  signoz-data:
+networks:
+  infra:
+    external: true
