@@ -7,7 +7,7 @@ import { SecretResolver } from "./SecretResolver.ts";
 import { SshClient } from "./SshClient.ts";
 import { SystemdManager } from "./SystemdManager.ts";
 import { formatEnv, parseEnvExample } from "../lib/env-parser.ts";
-import { DEPLOYMENT_ROOTS, SVC_USER } from "../lib/config.ts";
+import { DEPLOYMENT_ROOTS, HOME_DIR, SVC_USER } from "../lib/config.ts";
 import { deploymentNames, deploymentPaths } from "../lib/deployment.ts";
 
 export type ServiceTarget = "final" | "candidate";
@@ -93,7 +93,17 @@ export const makeDeploymentComponents = Effect.gen(function* () {
         const remotePath =
           input.target === "final" ? paths.staticFiles : paths.staticFilesCandidate;
         yield* ssh.exec(input.host, `mkdir -p ${shellPath(remotePath)}`, SVC_USER);
-        yield* ssh.rsync(`${input.worktreePath}/${input.dist}/`, remotePath, input.host, SVC_USER);
+        // Build output is created locally under the agent's own UMask=0077,
+        // so rsync -a would faithfully preserve owner-only permissions all
+        // the way to the served directory -- override them explicitly, since
+        // these files must stay world-readable for Caddy's file_server.
+        yield* ssh.rsync(
+          `${input.worktreePath}/${input.dist}/`,
+          remotePath,
+          input.host,
+          SVC_USER,
+          "D755,F644",
+        );
       }),
 
       remove: Effect.fnUntraced(function* (input: {
@@ -275,7 +285,9 @@ export const makeDeploymentComponents = Effect.gen(function* () {
         yield* systemd.install(input.host, unit, {
           description: `${input.name} (${input.stage})${input.target === "candidate" ? " [new]" : ""}`,
           workingDirectory,
-          execStart: "/usr/bin/env bun run start",
+          // systemd --user units get a minimal PATH with no ~/.bun/bin --
+          // there's no environment.d entry for it, so "env bun" can't resolve.
+          execStart: `${HOME_DIR}/.bun/bin/bun run start`,
         });
       }),
 

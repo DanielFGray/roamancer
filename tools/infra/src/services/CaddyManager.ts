@@ -33,8 +33,13 @@ export const orphanedManagedSnippets = (
 // Snippet generators
 // ---------------------------------------------------------------------------
 
+// This Caddy instance sits behind the edge proxy (roles/caddy's
+// Caddyfile-proxy.j2 on obs), which terminates real TLS and forwards plain
+// HTTP to it -- the firewall only accepts port 80 here from that proxy. An
+// unscoped "host {" block still binds 443 even with auto_https off, so the
+// scheme must be explicit.
 const staticSnippet = (host: string, root: string) =>
-  `${host} {
+  `http://${host} {
 \troot * ${root}
 \ttry_files {path} /index.html
 \tfile_server
@@ -42,7 +47,7 @@ const staticSnippet = (host: string, root: string) =>
 `;
 
 const proxySnippet = (host: string, port: number) =>
-  `${host} {
+  `http://${host} {
 \treverse_proxy localhost:${port}
 }
 `;
@@ -91,13 +96,18 @@ export const makeCaddyManager = (
   reload: CaddyReload,
 ) => {
   const writeTo = (filename: string, content: string) =>
-    fs
-      .writeFileString(pathSvc.join(CADDY_SITES_DIR, filename), content)
-      .pipe(
-        Effect.mapError(
-          (err) => new CaddyError({ message: `Failed to write ${filename}: ${err}` }),
-        ),
-      );
+    Effect.gen(function* () {
+      const filePath = pathSvc.join(CADDY_SITES_DIR, filename);
+      yield* fs.writeFileString(filePath, content);
+      // The agent's systemd unit sets UMask=0077, which masks the mode passed
+      // to writeFileString's own open() call -- chmod is a separate syscall,
+      // unaffected by umask, so it's the only way to make these snippets
+      // world-readable for caddy (its own dedicated system user, not a member
+      // of prod's group) to actually read them on reload.
+      yield* fs.chmod(filePath, 0o644);
+    }).pipe(
+      Effect.mapError((err) => new CaddyError({ message: `Failed to write ${filename}: ${err}` })),
+    );
 
   const removeFile = (filename: string) =>
     fs

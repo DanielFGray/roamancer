@@ -1,6 +1,7 @@
 import { Effect, Schema as S, Stream } from "effect";
 import * as Command from "@effect/platform/Command";
 import { BunContext } from "@effect/platform-bun";
+import { resolveSshPort, SSH_CONFIG_FILE } from "../lib/config.ts";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -18,6 +19,12 @@ export class SshError extends S.TaggedError<SshError>()("SshError", {
 
 const target = (host: string, user?: string) => (user ? `${user}@${host}` : host);
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+/** Flags shared by every ssh invocation for a given host: port, and an optional `-F` override. */
+const sshFlags = (host: string): ReadonlyArray<string> => [
+  "-p",
+  String(resolveSshPort(host)),
+  ...(SSH_CONFIG_FILE ? ["-F", SSH_CONFIG_FILE] : []),
+];
 
 const readAll = (stream: Stream.Stream<Uint8Array, unknown>) =>
   Stream.decodeText(stream).pipe(
@@ -33,8 +40,18 @@ const asSshError = (describe: string) =>
       new SshError({ code: null, signal: null, message: `${describe}: ${error.message}` }),
   });
 
+/** Narrows any leftover, statically-untyped error into SshError without re-wrapping real ones. */
+const catchAllAsSshError = (describe: string) =>
+  Effect.catchAll((error: unknown) =>
+    Effect.fail(
+      S.is(SshError)(error)
+        ? error
+        : new SshError({ code: null, signal: null, message: `${describe}: ${String(error)}` }),
+    ),
+  );
+
 /** Run a command, capturing stdout/stderr, mapping any failure to SshError. */
-const run = (command: Command.Command, describe: string) =>
+const run = (command: Command.Command, describe: string): Effect.Effect<string, SshError> =>
   Effect.gen(function* () {
     const process = yield* Command.start(command);
     const [stdout, stderr, exitCode] = yield* Effect.all(
@@ -49,10 +66,18 @@ const run = (command: Command.Command, describe: string) =>
       });
     }
     return stdout;
-  }).pipe(Effect.scoped, asSshError(describe), Effect.provide(BunContext.layer));
+  }).pipe(
+    Effect.scoped,
+    asSshError(describe),
+    catchAllAsSshError(describe),
+    Effect.provide(BunContext.layer),
+  );
 
 /** Same as `run`, but streams stdin/stdout/stderr to the parent's TTY (for sudo, etc). */
-const runInteractive = (command: Command.Command, describe: string) =>
+const runInteractive = (
+  command: Command.Command,
+  describe: string,
+): Effect.Effect<void, SshError> =>
   command.pipe(
     Command.stdin("inherit"),
     Command.stdout("inherit"),
@@ -71,6 +96,7 @@ const runInteractive = (command: Command.Command, describe: string) =>
     ),
     Effect.scoped,
     asSshError(describe),
+    catchAllAsSshError(describe),
     Effect.provide(BunContext.layer),
   );
 
@@ -82,7 +108,10 @@ export class SshClient extends Effect.Service<SshClient>()("infra/SshClient", {
   succeed: {
     exec: (host: string, command: string, user?: string) => {
       const dest = target(host, user);
-      return run(Command.make("ssh", dest, `bash -lc ${shellQuote(command)}`), `ssh ${dest}`);
+      return run(
+        Command.make("ssh", ...sshFlags(host), dest, `bash -lc ${shellQuote(command)}`),
+        `ssh ${dest}`,
+      );
     },
 
     /** Write content to a remote file via base64 pipe (immune to heredoc injection) */
@@ -99,7 +128,7 @@ export class SshClient extends Effect.Service<SshClient>()("infra/SshClient", {
       const dest = target(host, opts?.user);
       const cmd = `${write}${chmod}`;
       return run(
-        Command.make("ssh", dest, `bash -lc ${shellQuote(cmd)}`),
+        Command.make("ssh", ...sshFlags(host), dest, `bash -lc ${shellQuote(cmd)}`),
         `ssh ${dest} writeFile`,
       ).pipe(Effect.asVoid);
     },
@@ -108,16 +137,26 @@ export class SshClient extends Effect.Service<SshClient>()("infra/SshClient", {
     execInteractive: (host: string, command: string, user?: string) => {
       const dest = target(host, user);
       return runInteractive(
-        Command.make("ssh", "-t", dest, `bash -lc ${shellQuote(command)}`),
+        Command.make("ssh", "-t", ...sshFlags(host), dest, `bash -lc ${shellQuote(command)}`),
         `ssh ${dest}`,
       );
     },
 
-    rsync: (source: string, dest: string, host: string, user?: string) => {
+    rsync: (source: string, dest: string, host: string, user?: string, chmod?: string) => {
       const remoteDest = `${target(host, user)}:${dest}`;
-      return run(Command.make("rsync", "-a", "--delete", source, remoteDest), "rsync").pipe(
-        Effect.asVoid,
-      );
+      return run(
+        Command.make(
+          "rsync",
+          "-a",
+          "--delete",
+          "-e",
+          `ssh ${sshFlags(host).join(" ")}`,
+          ...(chmod ? [`--chmod=${chmod}`] : []),
+          source,
+          remoteDest,
+        ),
+        "rsync",
+      ).pipe(Effect.asVoid);
     },
   },
 }) {}

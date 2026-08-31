@@ -7,6 +7,16 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/infra
 Environment=OPENBAO_ADDR={{ vault_addr }}
+Environment=INFRA_SERVICES_DIR=/opt/infra/services
+{# The agent runs host-to-host operations (git clone, rsync) against other
+   nodes' dlab_fqdn using its own deployed ~/.ssh/config -- but SshClient
+   always passes an explicit `-p` flag, which overrides that config's Port
+   directive. Without this map it falls back to 22 (correct in production,
+   wrong in testground where nodes use non-standard ports). #}
+{# systemd's Environment= splits unquoted values on whitespace -- to_json's
+   default separators include spaces after ':' and ',', so the value must be
+   single-quoted (JSON itself only uses double quotes, so this doesn't clash). #}
+Environment=INFRA_SSH_PORT_MAP='{{ dict(groups['all'] | map('extract', hostvars, 'dlab_fqdn') | zip(groups['all'] | map('extract', hostvars, 'ansible_port') | map('default', 22))) | to_json }}'
 {% if infra_allow_insecure_http | default(false) %}
 Environment=INFRA_ALLOW_INSECURE_HTTP=true
 {% endif %}
