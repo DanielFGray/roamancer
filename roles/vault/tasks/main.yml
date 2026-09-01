@@ -86,6 +86,13 @@
 # roles write to actually mounted -- `bao operator init` alone stops short
 # of that. This block does the whole thing in one shot, the same sequence
 # tools/infra's own `vault init` subcommand runs by hand.
+#
+# Recovery material is persisted to the control machine immediately after
+# init, before any of the calls below that mutate this OpenBao instance
+# (unseal, mount, policy write). A crash partway through those would leave
+# an initialized-but-not-yet-configured OpenBao; as long as the recovery
+# file made it to disk first, that's recoverable. Persisting it after would
+# mean a crash could leave an initialized OpenBao with no way to unseal it.
 - name: Bootstrap OpenBao (first run only)
   when: not vault_seal_status.json.initialized
   block:
@@ -101,6 +108,82 @@
         status_code: 200
       register: vault_init_result
       no_log: true
+
+    - name: Ensure local OpenBao recovery directory exists
+      file:
+        path: "{{ vault_recovery_dir }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Check for existing recovery material for this cluster
+      stat:
+        path: "{{ vault_recovery_dir }}/{{ inventory_hostname }}.json"
+      register: vault_existing_recovery_file
+      delegate_to: localhost
+      become: false
+
+    # OpenBao just reported itself uninitialized, so this file (if present)
+    # can't belong to the cluster we're about to create -- it's either a
+    # stale leftover from a wiped OpenBao or a second cluster's material
+    # bootstrapped from this same control machine under the same
+    # inventory_hostname. Overwriting it would silently strand whichever
+    # cluster it actually belongs to.
+    - name: Refuse to overwrite existing recovery material
+      assert:
+        that: not vault_existing_recovery_file.stat.exists
+        fail_msg: >-
+          {{ vault_recovery_dir }}/{{ inventory_hostname }}.json already
+          exists, but OpenBao just reported itself as uninitialized. Move
+          the existing file aside first if a genuine re-init is what you
+          want -- overwriting it here would strand whatever it belongs to.
+
+    - name: Save unseal key and root token locally
+      copy:
+        content: "{{ {'unseal_key': vault_init_result.json.keys_base64[0], 'root_token': vault_init_result.json.root_token} | to_nice_json }}\n"
+        dest: "{{ vault_recovery_dir }}/{{ inventory_hostname }}.json"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # The file above is the only copy of what unseals this cluster; losing
+    # it (disk failure, a wiped control machine) strands OpenBao for good --
+    # there's no cloud auto-unseal or Shamir quorum here. Mirroring it into
+    # the operator's own `pass` store piggybacks on whatever durability that
+    # store already has (its own git remote, if any) rather than building
+    # new backup machinery for one file. Best-effort: pass may not be
+    # installed or configured, and that's never a reason to fail a
+    # bootstrap that already wrote the primary copy.
+    - name: Check whether pass (password-store) is available
+      command: which pass
+      register: vault_pass_available
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+
+    - name: Mirror recovery material into pass
+      command: "pass insert -m -f infra/openbao/{{ inventory_hostname }}"
+      args:
+        stdin: "{{ {'unseal_key': vault_init_result.json.keys_base64[0], 'root_token': vault_init_result.json.root_token} | to_nice_json }}"
+      register: vault_pass_mirror
+      delegate_to: localhost
+      become: false
+      no_log: true
+      failed_when: false
+      when: vault_pass_available.rc == 0
+
+    - name: Warn if recovery material could not be mirrored into pass
+      debug:
+        msg: >-
+          Could not mirror OpenBao recovery material into `pass`
+          ({{ 'pass not found on PATH' if vault_pass_available.rc != 0
+              else 'pass insert exited ' + (vault_pass_mirror.rc | default('?') | string) }}).
+          {{ vault_recovery_dir }}/{{ inventory_hostname }}.json is now the
+          only copy -- back it up manually.
+      when: vault_pass_available.rc != 0 or vault_pass_mirror.rc | default(1) != 0
 
     - name: Unseal OpenBao
       uri:
@@ -129,40 +212,11 @@
         - meta
       no_log: true
 
-    - name: Write backups policy
-      uri:
-        url: "{{ vault_local_url }}/v1/sys/policies/acl/backups"
-        method: PUT
-        validate_certs: false
-        headers:
-          X-Vault-Token: "{{ vault_init_result.json.root_token }}"
-        body_format: json
-        body:
-          policy: "{{ lookup('file', 'backups-policy.hcl') }}"
-        status_code: 204
-      no_log: true
-
-    - name: Ensure local infra config directory exists
-      file:
-        path: "{{ lookup('env', 'HOME') }}/.config/infra"
-        state: directory
-        mode: "0700"
-      delegate_to: localhost
-      become: false
-
-    - name: Save unseal key and root token locally
-      copy:
-        content: "{{ {'unseal_key': vault_init_result.json.keys_base64[0], 'root_token': vault_init_result.json.root_token} | to_nice_json }}\n"
-        dest: "{{ lookup('env', 'HOME') }}/.config/infra/vault-init.json"
-        mode: "0600"
-      delegate_to: localhost
-      become: false
-      no_log: true
-
-    # Downstream plays in this same run (infra-agent) need this token too --
-    # a reboot never hits this block again, since init only happens once,
-    # so there's no ongoing auto-unseal behavior hiding in here.
-    - name: Make root token available to later plays in this run
+    # Downstream tasks in this same run (the always-run token block below,
+    # infra-agent) need this token too -- a reboot never hits this block
+    # again, since init only happens once, so there's no ongoing
+    # auto-unseal behavior hiding in here.
+    - name: Make root token available to later tasks in this run
       set_fact:
         vault_bootstrap_root_token: "{{ vault_init_result.json.root_token }}"
       no_log: true
@@ -171,7 +225,7 @@
       debug:
         msg: >-
           OpenBao initialized and unsealed. Unseal key and root token saved to
-          {{ lookup('env', 'HOME') }}/.config/infra/vault-init.json on the control
+          {{ vault_recovery_dir }}/{{ inventory_hostname }}.json on the control
           machine -- back that file up somewhere durable now. A future reboot of
           this node leaves OpenBao sealed; that file is what you'll unseal it with.
 
@@ -179,10 +233,69 @@
   fail:
     msg: >-
       OpenBao is initialized but sealed, and auto-unseal is intentionally not
-      automated. Unseal it with the key from vault-init.json (wherever it was
-      bootstrapped from), e.g.:
+      automated. Unseal it with the key from {{ vault_recovery_dir }}/{{ inventory_hostname }}.json
+      (wherever it was bootstrapped from), e.g.:
       ansible -i <inventory> {{ inventory_hostname }} -m shell -a
       "BAO_ADDR={{ vault_local_url }} bao operator unseal <unseal_key>"
   when:
     - vault_seal_status.json.initialized
     - vault_seal_status.json.sealed
+
+# Everything from here down runs on every apply, not just first bootstrap --
+# this is what keeps the agent's tokens alive (and recoverable) across
+# applies that don't hit the once-only block above.
+
+- name: Determine OpenBao root token for this run (freshly bootstrapped)
+  set_fact:
+    vault_root_token: "{{ vault_bootstrap_root_token }}"
+  no_log: true
+  when: vault_bootstrap_root_token is defined
+
+- name: Read persisted OpenBao recovery material
+  slurp:
+    path: "{{ vault_recovery_dir }}/{{ inventory_hostname }}.json"
+  register: vault_recovery_slurp
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: vault_bootstrap_root_token is not defined
+
+- name: Determine OpenBao root token for this run (from recovery material)
+  set_fact:
+    vault_root_token: "{{ (vault_recovery_slurp.content | b64decode | from_json).root_token }}"
+  no_log: true
+  when: vault_bootstrap_root_token is not defined
+
+- name: Write OpenBao agent policies
+  uri:
+    url: "{{ vault_local_url }}/v1/sys/policies/acl/{{ item.name }}"
+    method: PUT
+    validate_certs: false
+    headers:
+      X-Vault-Token: "{{ vault_root_token }}"
+    body_format: json
+    body:
+      policy: "{{ lookup('file', item.file) }}"
+    status_code: 204
+  loop:
+    - { name: infra-agent-secrets, file: secrets-policy.hcl }
+    - { name: infra-agent-backups, file: backups-policy.hcl }
+  no_log: true
+
+- name: Issue or renew the infra-agent secrets token
+  include_tasks: issue-agent-token.yml
+  vars:
+    token_name: agent-secrets
+    policy_name: infra-agent-secrets
+
+- name: Issue or renew the infra-agent backups token
+  include_tasks: issue-agent-token.yml
+  vars:
+    token_name: agent-backups
+    policy_name: infra-agent-backups
+
+- name: Make agent tokens available to later plays in this run
+  set_fact:
+    vault_agent_secrets_token: "{{ vault_issued_tokens['agent-secrets'] }}"
+    vault_agent_backups_token: "{{ vault_issued_tokens['agent-backups'] }}"
+  no_log: true

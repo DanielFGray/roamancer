@@ -1,9 +1,13 @@
 import { Effect, Schema as S } from "effect";
 import { SshClient } from "./SshClient.ts";
-import { OpenBaoClient } from "./OpenBaoClient.ts";
+import { BackupsOpenBaoClient } from "./OpenBaoClient.ts";
 import { ConsulClient } from "./ConsulClient.ts";
 import { formatTimestamp, formatBytes } from "../lib/format.ts";
-import { OPENBAO_TOKEN, SVC_USER } from "../lib/config.ts";
+import { OPENBAO_ADDR, OPENBAO_BACKUPS_TOKEN, SVC_USER } from "../lib/config.ts";
+
+const POSTGRES_BACKUP_TIMEOUT = "15m";
+const OPENBAO_BACKUP_TIMEOUT_SECONDS = 120;
+const VALKEY_BACKUP_TIMEOUT = "15m";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -72,6 +76,36 @@ const skippedBackup = (service: string): BackupResult => ({
   size: "0 B",
 });
 
+export const openBaoSnapshotCommand = (
+  backupFile: string,
+  token: string,
+  address: string = OPENBAO_ADDR,
+): string => {
+  const b64Token = Buffer.from(token).toString("base64");
+  const b64Address = Buffer.from(address.replace(/\/+$/, "")).toString("base64");
+  const partialFile = `${backupFile}.partial`;
+  return `trap 'rm -f "${partialFile}"' EXIT && curl --fail --silent --show-error --connect-timeout 10 --max-time ${OPENBAO_BACKUP_TIMEOUT_SECONDS} -H "X-Vault-Token: $(echo '${b64Token}' | base64 -d)" "$(echo '${b64Address}' | base64 -d)/v1/sys/storage/raft/snapshot" > "${partialFile}" && test -s "${partialFile}" && gzip -t "${partialFile}" && mv -f "${partialFile}" "${backupFile}"`;
+};
+
+export const postgresBackupCommand = (
+  backupFile: string,
+  user: string,
+  password: string,
+): string => {
+  const partialFile = `${backupFile}.partial`;
+  const b64Pass = Buffer.from(password).toString("base64");
+  const b64User = Buffer.from(user).toString("base64");
+  return `trap 'rm -f "${partialFile}"' EXIT && set -o pipefail && export PGPASSWORD="$(echo '${b64Pass}' | base64 -d)" && timeout ${POSTGRES_BACKUP_TIMEOUT} pg_dumpall -h localhost -U "$(echo '${b64User}' | base64 -d)" | gzip > "${partialFile}" && gzip -t "${partialFile}" && mv -f "${partialFile}" "${backupFile}"`;
+};
+
+export const valkeySnapshotCommand = (): string =>
+  `timeout ${VALKEY_BACKUP_TIMEOUT} bash -c 'before_info=$(podman exec valkey_valkey_1 valkey-cli INFO persistence) || exit 1; before=$(printf "%s\\n" "$before_info" | awk -F: "/^rdb_saves:/{print \\$2}" | tr -d "\\r"); [ -n "$before" ] || exit 1; podman exec valkey_valkey_1 valkey-cli BGSAVE && while :; do info=$(podman exec valkey_valkey_1 valkey-cli INFO persistence) || exit 1; in_progress=$(printf "%s\\n" "$info" | awk -F: "/^rdb_bgsave_in_progress:/{print \\$2}" | tr -d "\\r"); if [ "$in_progress" = "0" ]; then status=$(printf "%s\\n" "$info" | awk -F: "/^rdb_last_bgsave_status:/{print \\$2}" | tr -d "\\r") && saves=$(printf "%s\\n" "$info" | awk -F: "/^rdb_saves:/{print \\$2}" | tr -d "\\r") || exit 1; [ "$status" = "ok" ] && [ "$saves" -gt "$before" ] || exit 1; break; fi; sleep 1; done'`;
+
+export const valkeyCopyCommand = (backupFile: string): string => {
+  const partialFile = `${backupFile}.partial`;
+  return `trap 'rm -f "${partialFile}"' EXIT && podman unshare cp /srv/data/valkey/dump.rdb "${partialFile}" && podman unshare test -s "${partialFile}" && podman unshare cmp -s /srv/data/valkey/dump.rdb "${partialFile}" && mv -f "${partialFile}" "${backupFile}"`;
+};
+
 // ---------------------------------------------------------------------------
 // Backup result type
 // ---------------------------------------------------------------------------
@@ -86,7 +120,7 @@ export interface BackupResult {
 // ---------------------------------------------------------------------------
 
 export const backupPostgres = Effect.gen(function* () {
-  const bao = yield* OpenBaoClient;
+  const bao = yield* BackupsOpenBaoClient;
   const ssh = yield* SshClient;
   const consul = yield* ConsulClient;
   const host = yield* consul.resolveServiceHost("postgres");
@@ -114,14 +148,7 @@ export const backupPostgres = Effect.gen(function* () {
   yield* ssh.exec(host, `mkdir -p /opt/backups/postgres`, SVC_USER);
 
   yield* Effect.log("Dumping all Postgres databases...");
-  // Base64-encode credentials to avoid shell injection
-  const b64Pass = Buffer.from(pgPassword).toString("base64");
-  const b64User = Buffer.from(pgUser).toString("base64");
-  yield* ssh.exec(
-    host,
-    `export PGPASSWORD="$(echo '${b64Pass}' | base64 -d)" && pg_dumpall -h localhost -U "$(echo '${b64User}' | base64 -d)" | gzip > "${backupFile}"`,
-    SVC_USER,
-  );
+  yield* ssh.exec(host, postgresBackupCommand(backupFile, pgUser, pgPassword), SVC_USER);
 
   const size = yield* fileSize(ssh, host, backupFile);
 
@@ -145,12 +172,12 @@ export const backupVault = Effect.gen(function* () {
   const timestamp = formatTimestamp();
   const backupFile = `/opt/backups/vault/vault-${timestamp}.snap`;
 
-  // vault token comes from env -- same token used by the OpenBaoClient
-  const vaultToken = OPENBAO_TOKEN;
+  // vault token comes from env -- same token used by BackupsOpenBaoClient
+  const vaultToken = OPENBAO_BACKUPS_TOKEN;
   if (!vaultToken) {
     return yield* new BackupError({
       target: "vault",
-      message: "OpenBao token not configured -- cannot create vault snapshot",
+      message: "OpenBao backups token not configured -- cannot create vault snapshot",
     });
   }
 
@@ -158,12 +185,7 @@ export const backupVault = Effect.gen(function* () {
   yield* ssh.exec(host, `mkdir -p /opt/backups/vault`, SVC_USER);
 
   yield* Effect.log("Creating Vault snapshot...");
-  const b64Token = Buffer.from(vaultToken).toString("base64");
-  yield* ssh.exec(
-    host,
-    `curl -s -H "X-Vault-Token: $(echo '${b64Token}' | base64 -d)" http://127.0.0.1:8200/v1/sys/storage/raft/snapshot > "${backupFile}"`,
-    SVC_USER,
-  );
+  yield* ssh.exec(host, openBaoSnapshotCommand(backupFile, vaultToken), SVC_USER);
 
   const size = yield* fileSize(ssh, host, backupFile);
 
@@ -221,17 +243,13 @@ export const backupValkey = Effect.gen(function* () {
   yield* ssh.exec(host, "mkdir -p /opt/backups/valkey", SVC_USER);
 
   yield* Effect.log("Starting Valkey background save...");
-  yield* ssh.exec(
-    host,
-    "podman exec valkey_valkey_1 valkey-cli BGSAVE && until [ \"$(podman exec valkey_valkey_1 valkey-cli INFO persistence | awk -F: '/rdb_bgsave_in_progress/{print $2}' | tr -d '\\r')\" = \"0\" ]; do sleep 1; done",
-    SVC_USER,
-  );
+  yield* ssh.exec(host, valkeySnapshotCommand(), SVC_USER);
 
   yield* Effect.log("Copying Valkey snapshot...");
   // /srv/data/valkey is owned inside SVC_USER's rootless podman user
   // namespace (see roles/compose's "podman unshare chown" tasks), so a
   // plain cp as SVC_USER can't read it -- podman unshare re-maps the view.
-  yield* ssh.exec(host, `podman unshare cp /srv/data/valkey/dump.rdb "${backupFile}"`, SVC_USER);
+  yield* ssh.exec(host, valkeyCopyCommand(backupFile), SVC_USER);
 
   const size = yield* fileSize(ssh, host, backupFile);
   yield* Effect.log("Cleaning up old Valkey backups...");
@@ -303,7 +321,7 @@ export const backupSignoz = Effect.gen(function* () {
   return { file: backupFile, size } satisfies BackupResult;
 });
 
-const normalizeBackupError = <R>(service: string, job: Effect.Effect<BackupResult, unknown, R>) =>
+const normalizeBackupError = <E, R>(service: string, job: Effect.Effect<BackupResult, E, R>) =>
   job.pipe(
     Effect.mapError((error) =>
       S.is(MissingCredentialsError)(error)
@@ -317,7 +335,7 @@ export const backupByService: Record<
   Effect.Effect<
     BackupResult,
     BackupError | MissingCredentialsError,
-    SshClient | OpenBaoClient | ConsulClient
+    SshClient | BackupsOpenBaoClient | ConsulClient
   >
 > = {
   postgres: normalizeBackupError("postgres", backupPostgres),

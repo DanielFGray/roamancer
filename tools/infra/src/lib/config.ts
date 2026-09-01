@@ -191,6 +191,30 @@ export const OPENBAO_TOKEN =
   (await resolveConfig("openbao_token")) ??
   (await readTextFile(OPENBAO_TOKEN_FILE)) ??
   (await readInitToken());
+
+// The long-running agent server never uses OPENBAO_TOKEN above (that's the
+// CLI's own operator-admin path, which may fall back to vault-init.json's
+// root token) -- it uses these two narrow, renewable tokens instead, each
+// written only to its own file by roles/vault's bootstrap. Neither falls
+// back to vault-init.json: on a deployed agent host that file never exists,
+// so a missing token file here fails closed instead of silently resolving
+// to root. See ts-42195e.
+export const OPENBAO_SECRETS_TOKEN_FILE =
+  ENVIRONMENT.OPENBAO_SECRETS_TOKEN_FILE ??
+  (await resolveConfig("openbao_secrets_token_file")) ??
+  CONFIG_PATHS.openBaoSecretsTokenFile;
+export const OPENBAO_SECRETS_TOKEN =
+  ENVIRONMENT.OPENBAO_SECRETS_TOKEN ??
+  (await resolveConfig("openbao_secrets_token")) ??
+  (await readTextFile(OPENBAO_SECRETS_TOKEN_FILE));
+export const OPENBAO_BACKUPS_TOKEN_FILE =
+  ENVIRONMENT.OPENBAO_BACKUPS_TOKEN_FILE ??
+  (await resolveConfig("openbao_backups_token_file")) ??
+  CONFIG_PATHS.openBaoBackupsTokenFile;
+export const OPENBAO_BACKUPS_TOKEN =
+  ENVIRONMENT.OPENBAO_BACKUPS_TOKEN ??
+  (await resolveConfig("openbao_backups_token")) ??
+  (await readTextFile(OPENBAO_BACKUPS_TOKEN_FILE));
 export const INFRA_AGENT_SECRET_PATH = await cfg(
   "INFRA_AGENT_SECRET_PATH",
   "infra_agent_secret_path",

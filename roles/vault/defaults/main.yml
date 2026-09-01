@@ -1,2 +1,8 @@
 ---
 vault_local_url: "{{ 'http' if (vault_tls_disable | default(false) | bool) else 'https' }}://127.0.0.1:8200"
+
+# Where OpenBao recovery material and issued agent tokens are persisted on
+# the control machine, one file set per cluster (keyed by inventory_hostname
+# so bootstrapping a second cluster from the same control machine can't
+# clobber the first cluster's recovery material).
+vault_recovery_dir: "{{ lookup('env', 'HOME') }}/.config/infra/vault-init"

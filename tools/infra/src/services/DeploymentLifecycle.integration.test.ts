@@ -78,9 +78,9 @@ it.effect("composes static publication, metadata, runtime artifact, and route ow
     expect(state.calls.events).toEqual(["metadata.save", "caddy.reload"]);
     expect(state.files.get(custom)).toBe("owned elsewhere");
     expect(state.files.has(stale)).toBe(false);
-    expect(
-      state.files.get(`${CADDY_SITES_DIR}/${deploymentNames("demo", "main").stageSnippet}`),
-    ).toContain("hash-main-preview.demo");
+    const snippetPath = `${CADDY_SITES_DIR}/${deploymentNames("demo", "main").stageSnippet}`;
+    expect(state.files.get(snippetPath)).toContain("hash-main-preview.demo");
+    expect(state.fileModes.get(snippetPath)).toBe(0o644);
   });
 });
 

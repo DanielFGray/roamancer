@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect";
 import * as FileSystem from "@effect/platform/FileSystem";
 import * as Path from "@effect/platform/Path";
+import * as PlatformError from "@effect/platform/Error";
 import * as HttpClientError from "@effect/platform/HttpClientError";
 import * as HttpClientRequest from "@effect/platform/HttpClientRequest";
 import { CaddyError, CaddyManager } from "../services/CaddyManager.ts";
@@ -8,7 +9,11 @@ import { DeployMeta, DeployMetaError, type ProjectMeta } from "../services/Deplo
 import { GitManager } from "../services/GitManager.ts";
 import { HealthCheck } from "../services/HealthCheck.ts";
 import { HealthCheckError } from "../services/HealthCheck.ts";
-import { OpenBaoClient, type OpenBaoClientShape } from "../services/OpenBaoClient.ts";
+import {
+  OpenBaoClient,
+  BackupsOpenBaoClient,
+  type OpenBaoClientShape,
+} from "../services/OpenBaoClient.ts";
 import { SshClient, SshError } from "../services/SshClient.ts";
 import { SystemdManager } from "../services/SystemdManager.ts";
 import { deploymentPaths } from "../lib/deployment.ts";
@@ -26,6 +31,7 @@ export interface TestServices {
   readonly calls: TestCalls;
   readonly projects: Map<string, ProjectMeta>;
   readonly files: Map<string, string>;
+  readonly fileModes: Map<string, number>;
   readonly openBao: Map<string, Record<string, string>>;
   healthError?: HealthCheckError;
   failSshCommand?: string;
@@ -317,6 +323,7 @@ export const testLayers = (
     createPolicy: () => Effect.void,
     write: (_path, data) => Effect.succeed(data),
     sealStatus: () => Effect.succeed({ sealed: false, initialized: true }),
+    renewSelf: () => Effect.succeed({ leaseDurationSeconds: 3600 }),
   };
 
   const fs = FileSystem.layerNoop({
@@ -325,7 +332,21 @@ export const testLayers = (
     writeFileString: (path, content) =>
       Effect.sync(() => {
         state.files.set(path, content);
+        state.fileModes.set(path, 0o600);
       }),
+    chmod: (path, mode) =>
+      state.files.has(path)
+        ? Effect.sync(() => {
+            state.fileModes.set(path, mode);
+          })
+        : Effect.fail(
+            new PlatformError.SystemError({
+              module: "FileSystem",
+              method: "chmod",
+              reason: "NotFound",
+              pathOrDescriptor: path,
+            }),
+          ),
     readDirectory: (directory) =>
       Effect.succeed(
         [...state.files.keys()]
@@ -335,6 +356,7 @@ export const testLayers = (
     remove: (path) =>
       Effect.sync(() => {
         state.files.delete(path);
+        state.fileModes.delete(path);
       }),
   });
 
@@ -346,6 +368,7 @@ export const testLayers = (
     health,
     caddyOverride ?? caddy,
     Layer.succeed(OpenBaoClient, openBao),
+    Layer.succeed(BackupsOpenBaoClient, openBao),
     fs,
     Path.layer,
   );
@@ -355,6 +378,7 @@ export const makeTestServices = (): TestServices => ({
   calls: { ssh: [], git: [], systemd: [], events: [], allocations: [], trace: [] },
   projects: new Map(),
   files: new Map(),
+  fileModes: new Map(),
   openBao: new Map(),
 });
 

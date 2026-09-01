@@ -33,6 +33,11 @@
     name: web
     state: present
 
+- name: Create prod group
+  group:
+    name: prod
+    state: present
+
 # Ansible's file module applies a directory's own owner/mode to any parent
 # path components it has to create along the way. Left implicit, /srv/data
 # would inherit whichever service's ownership happened to create it first
@@ -63,7 +68,7 @@
 - name: Ensure prod user exists without sudo
   user:
     name: prod
-    groups: web
+    groups: prod,web
     append: true
     shell: /bin/bash
 

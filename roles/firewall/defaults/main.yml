@@ -1,0 +1,3 @@
+---
+firewall_state_file: /var/lib/ansible/firewall-rules.json
+

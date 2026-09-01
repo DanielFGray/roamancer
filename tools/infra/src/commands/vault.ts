@@ -2,6 +2,7 @@ import { Command, Args } from "@effect/cli";
 import { Console, Effect, Schema as S } from "effect";
 import * as FileSystem from "@effect/platform/FileSystem";
 import * as Path from "@effect/platform/Path";
+import * as ProcessCommand from "@effect/platform/Command";
 import { OpenBaoClient } from "../services/OpenBaoClient.ts";
 import { SecretResolver } from "../services/SecretResolver.ts";
 import { PasswordGenerator } from "../services/PasswordGenerator.ts";
@@ -12,6 +13,7 @@ import {
   INFRA_AGENT_WEBHOOK_SECRET_KEY,
   API_TOKEN,
   HOME_DIR,
+  OPENBAO_ADDR,
   PROJECTS_DIR,
   SERVICES_DIR,
   WEBHOOK_SECRET,
@@ -30,20 +32,65 @@ class EnvExampleNotFoundError extends S.TaggedError<EnvExampleNotFoundError>()(
   }
 }
 
+class VaultInitAlreadyExistsError extends S.TaggedError<VaultInitAlreadyExistsError>()(
+  "VaultInitAlreadyExistsError",
+  { path: S.String },
+) {
+  override get message() {
+    return `${this.path} already exists. Move it aside first if a genuine re-init is what you want -- overwriting it here would strand whatever cluster it belongs to.`;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const CONFIG_DIR = ".config/infra";
-const INIT_FILE = "vault-init.json";
+
+// Keyed by the OpenBao instance's own hostname, mirroring roles/vault's
+// per-cluster recovery file (keyed by inventory_hostname) -- bootstrapping a
+// second cluster from this same machine can't clobber the first cluster's
+// recovery material.
+const CLUSTER_KEY = new URL(OPENBAO_ADDR).hostname;
 
 const configPath = Effect.gen(function* () {
   const path = yield* Path.Path;
-  return path.join(HOME_DIR, CONFIG_DIR, INIT_FILE);
+  return path.join(HOME_DIR, CONFIG_DIR, "vault-init", `${CLUSTER_KEY}.json`);
 });
 
+// The on-disk recovery file above is the only copy of material that
+// unseals this OpenBao and can mint fresh agent tokens -- losing it (disk
+// failure, a wiped laptop) permanently strands the cluster, since there's
+// no cloud auto-unseal and no Shamir quorum here. Mirroring it into the
+// operator's own `pass` store piggybacks on whatever durability that store
+// already has (its own git remote, if any) instead of building new backup
+// machinery for one file. Best-effort: `pass` may not be installed or
+// configured, and that's never a reason to fail a bootstrap that already
+// wrote the primary copy.
+const mirrorRecoveryToPass = (content: string) =>
+  ProcessCommand.make("pass", "insert", "-m", "-f", `infra/openbao/${CLUSTER_KEY}`).pipe(
+    ProcessCommand.feed(content),
+    ProcessCommand.exitCode,
+    Effect.flatMap((code) =>
+      code === 0
+        ? Console.log(`Mirrored recovery material into pass: infra/openbao/${CLUSTER_KEY}`)
+        : Console.log(
+            `Warning: \`pass insert\` exited ${code} -- recovery material was not mirrored. The control-machine copy is now the only one; back it up manually.`,
+          ),
+    ),
+    Effect.catchAll(() =>
+      Console.log(
+        "Warning: `pass` is not available -- recovery material was not mirrored. The control-machine copy is now the only one; back it up manually.",
+      ),
+    ),
+  );
+
+const SECRETS_POLICY = `
+path "secret/data/*" { capabilities = ["create", "read", "update"] }
+`.trim();
+
 const BACKUPS_POLICY = `
-path "secret/data/*" { capabilities = ["read"] }
+path "secret/data/infra" { capabilities = ["read"] }
 path "sys/storage/raft/snapshot" { capabilities = ["read"] }
 `.trim();
 
@@ -108,22 +155,32 @@ const vaultInit = Command.make("init").pipe(
       const fs = yield* FileSystem.FileSystem;
       const initPath = yield* configPath;
 
+      // OpenBao's own /v1/sys/init would refuse a second init anyway, but
+      // check here first so a stale or reused recovery file gets caught
+      // before we mint (and then discard) a second root token nobody keeps.
+      if (yield* fs.exists(initPath)) {
+        return yield* new VaultInitAlreadyExistsError({ path: initPath });
+      }
+
       yield* Console.log("Initializing OpenBao...");
       const result = yield* bao.init();
 
-      yield* Console.log("Unsealing...");
-      yield* bao.unseal(result.unsealKeys[0]!);
+      // Persisted before any mutating call below: a crash here leaves an
+      // initialized-but-unconfigured OpenBao, recoverable from this file.
+      // Persisting after would risk an initialized OpenBao with no way to
+      // unseal it.
+      const recoveryJson = yield* S.encodeUnknown(S.parseJson(VaultInitFile, { space: 2 }))({
+        unseal_key: result.unsealKeys[0]!,
+        root_token: result.rootToken,
+      });
 
       const dir = initPath.replace(/\/[^/]+$/, "");
       yield* fs.makeDirectory(dir, { recursive: true });
-      yield* fs.writeFileString(
-        initPath,
-        yield* S.encodeUnknown(S.parseJson(VaultInitFile, { space: 2 }))({
-          unseal_key: result.unsealKeys[0]!,
-          root_token: result.rootToken,
-        }),
-        { mode: 0o600 },
-      );
+      yield* fs.writeFileString(initPath, recoveryJson, { mode: 0o600 });
+      yield* mirrorRecoveryToPass(recoveryJson);
+
+      yield* Console.log("Unsealing...");
+      yield* bao.unseal(result.unsealKeys[0]!);
 
       yield* Console.log("Enabling KV-v2 secrets engine...");
       yield* bao.enableSecretsEngine("secret", "kv-v2");
@@ -131,8 +188,9 @@ const vaultInit = Command.make("init").pipe(
       yield* Console.log("Enabling KV-v2 meta engine...");
       yield* bao.enableSecretsEngine("meta", "kv-v2");
 
-      yield* Console.log("Creating backups policy...");
-      yield* bao.createPolicy("backups", BACKUPS_POLICY);
+      yield* Console.log("Creating infra-agent policies...");
+      yield* bao.createPolicy("infra-agent-secrets", SECRETS_POLICY);
+      yield* bao.createPolicy("infra-agent-backups", BACKUPS_POLICY);
 
       yield* Console.log("");
       yield* Console.log(`Vault initialized. Credentials saved to: ${initPath}`);

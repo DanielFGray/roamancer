@@ -7,6 +7,11 @@
   register: prod_uid
   changed_when: false
 
+- name: Get prod primary group
+  command: id -gn prod
+  register: prod_primary_group
+  changed_when: false
+
 - name: Ensure prod user systemd session is running
   systemd:
     name: "user@{{ prod_uid.stdout }}.service"
@@ -21,7 +26,7 @@
     path: "{{ item.1.path }}"
     state: directory
     owner: prod
-    group: prod
+    group: "{{ prod_primary_group.stdout }}"
     recurse: true
   loop: "{{ compose_stacks | subelements('extra_data_paths', skip_missing=True) }}"
   loop_control:

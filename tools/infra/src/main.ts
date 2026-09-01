@@ -28,7 +28,11 @@ import {
   logsCommand,
   directCommand,
 } from "./commands/remote.ts";
-import { OpenBaoClientLive, type OpenBaoConfig } from "./services/OpenBaoClient.ts";
+import {
+  OpenBaoClientLive,
+  BackupsOpenBaoClientLive,
+  type OpenBaoConfig,
+} from "./services/OpenBaoClient.ts";
 import { ConsulClientLive } from "./services/ConsulClient.ts";
 import { PasswordGenerator } from "./services/PasswordGenerator.ts";
 import { SecretResolver } from "./services/SecretResolver.ts";
@@ -72,8 +76,14 @@ const loadConfig = Effect.gen(function* () {
 // Layers
 // ---------------------------------------------------------------------------
 
+// The CLI is run by a human operator with the admin-scoped token (never the
+// narrow per-purpose tokens roles/vault mints for the long-running agent --
+// see server/main.ts), so one config satisfies both client tags.
 const OpenBaoLive = Layer.unwrapEffect(
   loadConfig.pipe(Effect.map((config) => OpenBaoClientLive(config))),
+).pipe(Layer.provide(FetchHttpClient.layer));
+const BackupsOpenBaoLive = Layer.unwrapEffect(
+  loadConfig.pipe(Effect.map((config) => BackupsOpenBaoClientLive(config))),
 ).pipe(Layer.provide(FetchHttpClient.layer));
 const ConsulLive = ConsulClientLive({ addr: CONSUL_ADDR }).pipe(
   Layer.provide(FetchHttpClient.layer),
@@ -93,6 +103,7 @@ const Leaves = Layer.mergeAll(
   SshClient.Default,
   GitManager.Default,
   OpenBaoLive,
+  BackupsOpenBaoLive,
   ConsulLive,
 );
 

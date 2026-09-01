@@ -3,7 +3,7 @@ import { HttpApiBuilder, HttpMiddleware, HttpServer } from "@effect/platform";
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun";
 import * as FileSystem from "@effect/platform/FileSystem";
 import * as FetchHttpClient from "@effect/platform/FetchHttpClient";
-import { Effect, Layer, Logger, LogLevel, Redacted, Ref } from "effect";
+import { Context, Effect, Duration, Layer, Logger, LogLevel, Redacted, Ref } from "effect";
 import { timingSafeEqual } from "node:crypto";
 import {
   InfraApi,
@@ -20,7 +20,13 @@ import { SchedulerLive, BackupStatus, BackupStatusLive } from "./scheduler.ts";
 import { DeployRunner } from "../src/services/DeployRunner.ts";
 import { CaddyManager } from "../src/services/CaddyManager.ts";
 import { SshClient } from "../src/services/SshClient.ts";
-import { OpenBaoClient, OpenBaoClientLive } from "../src/services/OpenBaoClient.ts";
+import {
+  OpenBaoClient,
+  OpenBaoClientLive,
+  BackupsOpenBaoClient,
+  BackupsOpenBaoClientLive,
+  type OpenBaoClientShape,
+} from "../src/services/OpenBaoClient.ts";
 import { ConsulClientLive } from "../src/services/ConsulClient.ts";
 import { PasswordGenerator } from "../src/services/PasswordGenerator.ts";
 import { GitManager } from "../src/services/GitManager.ts";
@@ -33,7 +39,8 @@ import {
   INFRA_AGENT_SECRET_PATH,
   INFRA_AGENT_WEBHOOK_SECRET_KEY,
   OPENBAO_ADDR,
-  OPENBAO_TOKEN,
+  OPENBAO_SECRETS_TOKEN,
+  OPENBAO_BACKUPS_TOKEN,
   CONSUL_ADDR,
   WEBHOOK_SECRET_FILE,
   WEBHOOK_SECRET,
@@ -229,7 +236,12 @@ export const InfraApiLive = HttpApiBuilder.api(InfraApi).pipe(
 
 const OpenBaoLive = OpenBaoClientLive({
   addr: OPENBAO_ADDR,
-  token: OPENBAO_TOKEN,
+  token: OPENBAO_SECRETS_TOKEN,
+}).pipe(Layer.provide(FetchHttpClient.layer));
+
+const BackupsOpenBaoLive = BackupsOpenBaoClientLive({
+  addr: OPENBAO_ADDR,
+  token: OPENBAO_BACKUPS_TOKEN,
 }).pipe(Layer.provide(FetchHttpClient.layer));
 
 const ConsulLive = ConsulClientLive({ addr: CONSUL_ADDR }).pipe(
@@ -240,9 +252,9 @@ const ConsulLive = ConsulClientLive({ addr: CONSUL_ADDR }).pipe(
 const AgentSecretOverridesLive = Layer.effect(
   AgentSecrets,
   Effect.gen(function* () {
-    if (!OPENBAO_TOKEN) {
+    if (!OPENBAO_SECRETS_TOKEN) {
       yield* Effect.logWarning(
-        "OPENBAO_TOKEN not configured; infra agent cannot hydrate API/webhook secrets from OpenBao",
+        "OPENBAO_SECRETS_TOKEN not configured; infra agent cannot hydrate API/webhook secrets from OpenBao",
       );
       return { apiToken: API_TOKEN, webhookSecret: WEBHOOK_SECRET };
     }
@@ -273,6 +285,7 @@ const Leaves = Layer.mergeAll(
   SshClient.Default,
   GitManager.Default,
   OpenBaoLive,
+  BackupsOpenBaoLive,
   ConsulLive,
 );
 
@@ -283,6 +296,35 @@ const OperationalReportLive = OperationalReportService.Default.pipe(
   Layer.provideMerge(CaddyManager.Default),
   Layer.provide(BunContext.layer),
 );
+
+// roles/vault mints these as periodic, renewable tokens rather than
+// long-lived ones -- OpenBao expires an unrenewed periodic token at the end
+// of its period, so the agent has to renew both itself rather than rely on
+// the next Ansible apply (which may be days away). Renewing at a third of
+// the granted lease keeps two missed attempts from being fatal.
+const renewLoop = <I>(label: string, tag: Context.Tag<I, OpenBaoClientShape>) =>
+  Effect.gen(function* () {
+    const client = yield* tag;
+    const { leaseDurationSeconds } = yield* client.renewSelf();
+    yield* Effect.log(
+      `Renewed OpenBao ${label} token (next renewal in ~${Math.round(leaseDurationSeconds / 3)}s)`,
+    );
+    yield* Effect.sleep(Duration.seconds(Math.max(leaseDurationSeconds / 3, 60)));
+  }).pipe(
+    Effect.catchAll((err) =>
+      Effect.logError(`Failed to renew OpenBao ${label} token: ${err}`).pipe(
+        Effect.andThen(Effect.sleep(Duration.minutes(5))),
+      ),
+    ),
+    Effect.forever,
+  );
+
+const TokenRenewalLive = Layer.scopedDiscard(
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(renewLoop("secrets", OpenBaoClient));
+    yield* Effect.forkScoped(renewLoop("backups", BackupsOpenBaoClient));
+  }),
+).pipe(Layer.provide(OpenBaoLive), Layer.provide(BackupsOpenBaoLive));
 
 const CaddySyncLive = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -301,6 +343,7 @@ const ServiceDeps = Layer.mergeAll(
   OperationalReportLive,
   BackupStatusLive,
   CaddySyncLive,
+  TokenRenewalLive,
   CaddyManager.Default,
 );
 

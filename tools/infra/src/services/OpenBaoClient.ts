@@ -65,10 +65,24 @@ export interface OpenBaoClientShape {
     },
     OpenBaoError
   >;
+  /** Renews the token used to authenticate this client; returns its new TTL in seconds. */
+  readonly renewSelf: () => Effect.Effect<{ readonly leaseDurationSeconds: number }, OpenBaoError>;
 }
 
 export class OpenBaoClient extends Context.Tag("infra/OpenBaoClient")<
   OpenBaoClient,
+  OpenBaoClientShape
+>() {}
+
+/**
+ * A second OpenBao client tag, scoped to a narrower token than
+ * `OpenBaoClient`. BackupRunner uses this instead of `OpenBaoClient` so that
+ * a leak on the deploy-secrets code path (logs, webhook error responses)
+ * doesn't also hand over backup/snapshot read access, and either credential
+ * can be rotated independently of the other.
+ */
+export class BackupsOpenBaoClient extends Context.Tag("infra/BackupsOpenBaoClient")<
+  BackupsOpenBaoClient,
   OpenBaoClientShape
 >() {}
 
@@ -192,6 +206,16 @@ export const make = Effect.fnUntraced(function* (config: OpenBaoConfig) {
       };
       return { sealed: body.sealed, initialized: body.initialized };
     }),
+
+    // POST /v1/auth/token/renew-self
+    renewSelf: Effect.fnUntraced(function* () {
+      const req = HttpClientRequest.post(url("/v1/auth/token/renew-self"));
+      const res = yield* client.execute(req);
+      const body = (yield* res.json) as {
+        auth: { lease_duration: number };
+      };
+      return { leaseDurationSeconds: body.auth.lease_duration };
+    }),
   };
 });
 
@@ -201,3 +225,6 @@ export const make = Effect.fnUntraced(function* (config: OpenBaoConfig) {
 
 export const OpenBaoClientLive = (config: OpenBaoConfig) =>
   Layer.effect(OpenBaoClient, make(config));
+
+export const BackupsOpenBaoClientLive = (config: OpenBaoConfig) =>
+  Layer.effect(BackupsOpenBaoClient, make(config));

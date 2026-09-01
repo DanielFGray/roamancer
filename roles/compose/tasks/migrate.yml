@@ -9,7 +9,7 @@
     path: "{{ compose_stack.data_path }}"
     state: directory
     owner: prod
-    group: prod
+    group: "{{ prod_primary_group.stdout }}"
     mode: "{{ compose_stack.data_mode }}"
 
 # `podman unshare chown` below can only remap ownership of files prod
@@ -25,7 +25,7 @@
     path: "{{ compose_stack.data_path }}"
     state: directory
     owner: prod
-    group: prod
+    group: "{{ prod_primary_group.stdout }}"
     recurse: true
 
 - name: Set bind-mount ownership for rootless container namespace
@@ -144,7 +144,7 @@
         path: "{{ compose_stack.data_path }}"
         state: directory
         owner: prod
-        group: prod
+        group: "{{ prod_primary_group.stdout }}"
         recurse: true
 
     - name: Re-assert bind mount data ownership after copy

@@ -1,0 +1,90 @@
+---
+# Included once per agent token from main.yml, with token_name and
+# policy_name set by the caller. Runs on every apply, not just first
+# bootstrap: a periodic token still needs *something* to renew it before its
+# period elapses, and an Ansible apply is the only thing that reliably runs
+# often enough to be that something. Tries to renew the token recorded from
+# a previous apply; mints a fresh one if there is no prior record, or
+# OpenBao rejects the renewal (expired, or manually revoked to force
+# rotation). Either way leaves a live token in
+# vault_issued_tokens[token_name] for this run.
+
+- name: "{{ token_name }}: check for a previously issued token"
+  stat:
+    path: "{{ vault_recovery_dir }}/{{ inventory_hostname }}-{{ token_name }}.json"
+  register: vault_prev_token_file
+  delegate_to: localhost
+  become: false
+
+- name: "{{ token_name }}: read the previously issued token"
+  slurp:
+    path: "{{ vault_recovery_dir }}/{{ inventory_hostname }}-{{ token_name }}.json"
+  register: vault_prev_token_slurp
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: vault_prev_token_file.stat.exists
+
+- name: "{{ token_name }}: parse the previously issued token"
+  set_fact:
+    vault_prev_token: "{{ vault_prev_token_slurp.content | b64decode | from_json }}"
+  no_log: true
+  when: vault_prev_token_file.stat.exists
+
+- name: "{{ token_name }}: try to renew the previously issued token"
+  uri:
+    url: "{{ vault_local_url }}/v1/auth/token/renew-accessor"
+    method: POST
+    validate_certs: false
+    headers:
+      X-Vault-Token: "{{ vault_root_token }}"
+    body_format: json
+    body:
+      accessor: "{{ vault_prev_token.accessor }}"
+    status_code: 200
+  register: vault_renew_result
+  failed_when: false
+  no_log: true
+  when: vault_prev_token_file.stat.exists
+
+- name: "{{ token_name }}: mint a fresh token"
+  uri:
+    url: "{{ vault_local_url }}/v1/auth/token/create"
+    method: POST
+    validate_certs: false
+    headers:
+      X-Vault-Token: "{{ vault_root_token }}"
+    body_format: json
+    body:
+      policies:
+        - "{{ policy_name }}"
+      period: "72h"
+      renewable: true
+    status_code: 200
+  register: vault_mint_result
+  no_log: true
+  when: >-
+    not vault_prev_token_file.stat.exists
+    or vault_renew_result.status | default(0) != 200
+
+- name: "{{ token_name }}: persist the issued token"
+  copy:
+    content: >-
+      {{ {'token': vault_mint_result.json.auth.client_token,
+          'accessor': vault_mint_result.json.auth.accessor} | to_nice_json }}
+    dest: "{{ vault_recovery_dir }}/{{ inventory_hostname }}-{{ token_name }}.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: vault_mint_result is not skipped
+
+- name: "{{ token_name }}: record token for this run"
+  set_fact:
+    vault_issued_tokens: >-
+      {{ (vault_issued_tokens | default({})) | combine({
+        token_name: (vault_mint_result.json.auth.client_token
+          if vault_mint_result is not skipped
+          else vault_prev_token.token)
+      }) }}
+  no_log: true

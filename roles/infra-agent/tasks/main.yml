@@ -11,12 +11,14 @@
       - infra_api_token | trim | length > 0
     fail_msg: infra_api_token must be set for the infra agent; refusing to deploy an unauthenticated control plane.
 
-- name: Require OpenBao token for agent
+- name: Require OpenBao tokens for agent
   assert:
     that:
-      - infra_openbao_token is defined
-      - infra_openbao_token | trim | length > 0
-    fail_msg: infra_openbao_token must be set for the infra agent; refusing to deploy an agent without secret access credentials.
+      - infra_openbao_secrets_token is defined
+      - infra_openbao_secrets_token | trim | length > 0
+      - infra_openbao_backups_token is defined
+      - infra_openbao_backups_token | trim | length > 0
+    fail_msg: infra_openbao_secrets_token and infra_openbao_backups_token must be set for the infra agent; refusing to deploy an agent without secret access credentials.
 
 - name: Ensure infra config directory exists
   file:
@@ -47,7 +49,7 @@
   command: >
     rsync -rlD --delete
     --chmod=Dg+rwx,Fg+rw
-    --exclude=node_modules --exclude=.git --exclude=docs --exclude=state.db --exclude=.env --exclude=.config/infra/api-token --exclude=.config/infra/webhook-secret --exclude=.config/infra/openbao-token
+    --exclude=node_modules --exclude=.git --exclude=docs --exclude=state.db --exclude=.env --exclude=.config/infra/api-token --exclude=.config/infra/webhook-secret --exclude=.config/infra/openbao-secrets-token --exclude=.config/infra/openbao-backups-token
     -e 'ssh -p {{ ansible_port | default(22) }} -o StrictHostKeyChecking=accept-new -o UpdateHostKeys=yes'
     {{ playbook_dir }}/tools/infra/
     {{ ansible_user }}@{{ ansible_host }}:/opt/infra/
@@ -84,10 +86,20 @@
   become_user: prod
   changed_when: false
 
-- name: Write OpenBao bootstrap token file
+- name: Write OpenBao secrets token file
   copy:
-    content: "{{ infra_openbao_token | trim }}\n"
-    dest: /home/prod/.config/infra/openbao-token
+    content: "{{ infra_openbao_secrets_token | trim }}\n"
+    dest: /home/prod/.config/infra/openbao-secrets-token
+    owner: prod
+    group: web
+    mode: "0600"
+  no_log: true
+  notify: restart infra-agent
+
+- name: Write OpenBao backups token file
+  copy:
+    content: "{{ infra_openbao_backups_token | trim }}\n"
+    dest: /home/prod/.config/infra/openbao-backups-token
     owner: prod
     group: web
     mode: "0600"
@@ -97,7 +109,7 @@
 - name: Seed infra agent secrets into OpenBao
   command: >
     /usr/bin/env HOME=/home/prod OPENBAO_ADDR={{ vault_addr | quote }}
-    OPENBAO_TOKEN={{ infra_openbao_token | quote }}
+    OPENBAO_TOKEN={{ infra_openbao_secrets_token | quote }}
     INFRA_API_TOKEN={{ infra_api_token | quote }}
     {% if infra_webhook_secret is defined and (infra_webhook_secret | trim | length > 0) %}INFRA_WEBHOOK_SECRET={{ infra_webhook_secret | quote }} {% endif %}
     {% if infra_allow_insecure_http | default(false) %}INFRA_ALLOW_INSECURE_HTTP=true {% endif %}

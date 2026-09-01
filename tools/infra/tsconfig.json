@@ -26,6 +26,7 @@
         "name": "@effect/language-service",
         "diagnosticSeverity": {
           "abortControllerInEffect": "warning",
+          "anyUnknownInErrorContext": "error",
           "asyncFunction": "warning",
           "cryptoRandomUUID": "warning",
           "cryptoRandomUUIDInEffect": "warning",

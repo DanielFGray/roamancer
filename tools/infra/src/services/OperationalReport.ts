@@ -80,8 +80,6 @@ const check = (name: string, status: OperationalState, message: string): Operati
   message,
 });
 
-const probe = <A>(effect: Effect.Effect<A, unknown>) => effect.pipe(Effect.either);
-
 const presence = (name: string, present: boolean, detail: string): OperationalCheck =>
   check(name, present ? "healthy" : "missing", present ? `${detail} present` : `${detail} missing`);
 
@@ -111,19 +109,19 @@ export const makeOperationalReport = Effect.gen(function* () {
   return Effect.fnUntraced(function* () {
     const globalChecks: OperationalCheck[] = [];
     const expectedSnippets = new Set<string>();
-    const routeResult = yield* probe(caddy.listRoutes());
+    const routeResult = yield* Effect.either(caddy.listRoutes());
     const routes = routeResult._tag === "Right" ? routeResult.right : [];
     if (routeResult._tag === "Left") {
       globalChecks.push(check("caddy-routes", "probe-error", String(routeResult.left)));
     }
 
     const projects: ProjectOperationalReport[] = [];
-    const namesResult = yield* probe(meta.listProjects());
+    const namesResult = yield* Effect.either(meta.listProjects());
     if (namesResult._tag === "Left") {
       globalChecks.push(check("metadata-projects", "probe-error", String(namesResult.left)));
     } else {
       for (const project of namesResult.right) {
-        const metaResult = yield* probe(meta.getProject(project));
+        const metaResult = yield* Effect.either(meta.getProject(project));
         if (metaResult._tag === "Left") {
           projects.push({
             project,
@@ -152,7 +150,7 @@ export const makeOperationalReport = Effect.gen(function* () {
           expectedSnippets.add(names.stageSnippet);
           if (value.promoted === stage) expectedSnippets.add(names.productionSnippet);
           const checks: OperationalCheck[] = [];
-          const worktree = yield* probe(fs.exists(projectPaths.worktree));
+          const worktree = yield* Effect.either(fs.exists(projectPaths.worktree));
           checks.push(
             worktree._tag === "Left"
               ? check("worktree", "probe-error", String(worktree.left))
@@ -160,7 +158,7 @@ export const makeOperationalReport = Effect.gen(function* () {
           );
 
           if (info.type === "static") {
-            const artifact = yield* probe(
+            const artifact = yield* Effect.either(
               components.staticArtifacts.inspect({
                 stage,
                 domain: info.domain,
@@ -176,10 +174,10 @@ export const makeOperationalReport = Effect.gen(function* () {
               }
             }
           } else {
-            const artifact = yield* probe(
+            const artifact = yield* Effect.either(
               components.serviceArtifacts.inspect({ name: project, stage, host: info.host }),
             );
-            const instance = yield* probe(
+            const instance = yield* Effect.either(
               components.serviceInstances.inspect({ name: project, stage, host: info.host }),
             );
             if (artifact._tag === "Left") {
@@ -231,7 +229,7 @@ export const makeOperationalReport = Effect.gen(function* () {
             }
           }
 
-          const healthResult = yield* probe(health.check(info, stage));
+          const healthResult = yield* Effect.either(health.check(info, stage));
           checks.push(
             healthResult._tag === "Left"
               ? check(
