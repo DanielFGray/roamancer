@@ -37,6 +37,8 @@ export interface ProjectConfig {
   readonly host: string;
   readonly healthcheckPath: string;
   readonly autoPromote: string | undefined;
+  /** Whether package.json declares a "build" script -- a service isn't required to have one (plain JS, no compile step). */
+  readonly hasBuild: boolean;
 }
 
 export interface StaticDeploymentInput {
@@ -126,6 +128,7 @@ export const makeStageOperations = Effect.gen(function* () {
       host: infra.host ?? CADDY_HOST,
       healthcheckPath: infra.healthcheck?.path ?? "/health",
       autoPromote: infra.autoPromote,
+      hasBuild,
     } satisfies ProjectConfig;
   });
 
@@ -195,6 +198,13 @@ export const makeStageOperations = Effect.gen(function* () {
         target: input.target,
         secrets: input.secrets,
         port: input.port,
+        hasBuild: input.config.hasBuild,
+      });
+      yield* components.serviceArtifacts.runDeployScript({
+        name: input.name,
+        stage: input.stage,
+        host: input.config.host,
+        target: input.target,
       });
       yield* components.serviceInstances.install({
         name: input.name,

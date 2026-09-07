@@ -83,6 +83,7 @@ it.effect("keeps service artifact and instance cleanup on candidate names", () =
       target: "candidate",
       secrets: { TOKEN: "value" },
       port: 3002,
+      hasBuild: false,
     });
     yield* components.serviceInstances.install({
       name: "demo",
@@ -119,6 +120,68 @@ it.effect("keeps service artifact and instance cleanup on candidate names", () =
       { action: "install", host: "test-host", unit: "infra-demo-main-new" },
       { action: "remove", host: "test-host", unit: "infra-demo-main-new" },
     ]);
+  });
+});
+
+it.effect(
+  "builds remotely when the project declares a build script, then runs its deploy script",
+  () => {
+    const state = makeTestServices();
+
+    return Effect.gen(function* () {
+      const components = yield* componentsFromTestLayers(state);
+      yield* components.serviceArtifacts.publish({
+        name: "demo",
+        stage: "main",
+        host: "test-host",
+        worktreePath: "/test/worktrees/demo/main",
+        target: "candidate",
+        secrets: { TOKEN: "value" },
+        port: 3002,
+        hasBuild: true,
+      });
+      yield* components.serviceArtifacts.runDeployScript({
+        name: "demo",
+        stage: "main",
+        host: "test-host",
+        target: "candidate",
+      });
+
+      const commands = state.calls.ssh.map((call) => call.command);
+      const installIndex = commands.indexOf(
+        "cd /srv/projects/demo/stages/main.new && bun install --frozen-lockfile",
+      );
+      const buildIndex = commands.indexOf("cd /srv/projects/demo/stages/main.new && bun run build");
+      const deployIndex = commands.indexOf(
+        "cd /srv/projects/demo/stages/main.new && bun run deploy",
+      );
+
+      expect(installIndex).toBeGreaterThanOrEqual(0);
+      expect(buildIndex).toBeGreaterThan(installIndex);
+      expect(deployIndex).toBeGreaterThan(buildIndex);
+    });
+  },
+);
+
+it.effect("skips the remote build step when the project has no build script", () => {
+  const state = makeTestServices();
+
+  return Effect.gen(function* () {
+    const components = yield* componentsFromTestLayers(state);
+    yield* components.serviceArtifacts.publish({
+      name: "demo",
+      stage: "main",
+      host: "test-host",
+      worktreePath: "/test/worktrees/demo/main",
+      target: "candidate",
+      secrets: { TOKEN: "value" },
+      port: 3002,
+      hasBuild: false,
+    });
+
+    expect(state.calls.ssh.map((call) => call.command)).not.toContainEqual(
+      "cd /srv/projects/demo/stages/main.new && bun run build",
+    );
   });
 });
 

@@ -207,10 +207,14 @@ export const makeDeploymentComponents = Effect.gen(function* () {
         target: ServiceTarget;
         secrets: Readonly<Record<string, string>>;
         port: number;
+        hasBuild: boolean;
       }) {
         const remotePath = servicePath(input.name, input.stage, input.target);
         yield* ssh.exec(input.host, `mkdir -p ${remotePath}`, SVC_USER);
         yield* ssh.rsync(`${input.worktreePath}/`, remotePath, input.host, SVC_USER);
+        // .env lands before install/build so a Vite-style build step -- which
+        // reads .env for its own VITE_* bake-time replacements -- sees the
+        // real resolved secrets, not stale or missing values.
         yield* ssh.writeFile(
           input.host,
           `${remotePath}/.env`,
@@ -221,6 +225,13 @@ export const makeDeploymentComponents = Effect.gen(function* () {
           { mode: "600", user: SVC_USER },
         );
         yield* ssh.exec(input.host, `cd ${remotePath} && bun install --frozen-lockfile`, SVC_USER);
+        // Built on the target host, not the agent's own machine: services
+        // ship full source + node_modules remotely (unlike static, which
+        // builds locally and rsyncs only the output), so native deps and
+        // the bun toolchain match what will actually run it.
+        if (input.hasBuild) {
+          yield* ssh.exec(input.host, `cd ${remotePath} && bun run build`, SVC_USER);
+        }
       }),
 
       remove: Effect.fnUntraced(function* (input: {
@@ -234,6 +245,24 @@ export const makeDeploymentComponents = Effect.gen(function* () {
           `rm -rf ${servicePath(input.name, input.stage, input.target)}`,
           SVC_USER,
         );
+      }),
+
+      // Runs the project's own "deploy" script -- its existence is what
+      // classifies a project as a service in the first place (see
+      // StageOperations.readConfig), so whatever it does (migrate a
+      // database, warm a cache, anything else one-shot) runs once here,
+      // against the freshly-published candidate, before serviceInstances
+      // ever starts it. Deliberately not folded into "start": systemd's
+      // Restart= re-invokes ExecStart on every crash, which must never
+      // replay a one-shot setup step.
+      runDeployScript: Effect.fnUntraced(function* (input: {
+        name: string;
+        stage: string;
+        host: string;
+        target: ServiceTarget;
+      }) {
+        const remotePath = servicePath(input.name, input.stage, input.target);
+        yield* ssh.exec(input.host, `cd ${remotePath} && bun run deploy`, SVC_USER);
       }),
 
       finalize: Effect.fnUntraced(function* (input: { name: string; stage: string; host: string }) {
