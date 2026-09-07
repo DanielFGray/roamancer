@@ -4,9 +4,9 @@ import * as FileSystem from "@effect/platform/FileSystem";
 import * as Path from "@effect/platform/Path";
 import * as ProcessCommand from "@effect/platform/Command";
 import { OpenBaoClient } from "../services/OpenBaoClient.ts";
-import { SecretResolver } from "../services/SecretResolver.ts";
+import { SchemaResolver } from "../services/SchemaResolver.ts";
 import { PasswordGenerator } from "../services/PasswordGenerator.ts";
-import { parseEnvExample } from "../lib/env-parser.ts";
+import { classifySchemaKeys } from "../lib/schema-fields.ts";
 import {
   INFRA_AGENT_API_TOKEN_KEY,
   INFRA_AGENT_SECRET_PATH,
@@ -23,12 +23,12 @@ import {
 // Errors
 // ---------------------------------------------------------------------------
 
-class EnvExampleNotFoundError extends S.TaggedError<EnvExampleNotFoundError>()(
-  "EnvExampleNotFoundError",
+class EnvSchemaNotFoundError extends S.TaggedError<EnvSchemaNotFoundError>()(
+  "EnvSchemaNotFoundError",
   { name: S.String },
 ) {
   override get message() {
-    return `No .env.example found for: ${this.name}`;
+    return `No .env.schema found for: ${this.name}`;
   }
 }
 
@@ -103,13 +103,13 @@ const VaultInitFile = S.Struct({
 // Helpers
 // ---------------------------------------------------------------------------
 
-const findEnvExampleContent = Effect.fnUntraced(function* (name: string) {
+const findEnvSchemaContent = Effect.fnUntraced(function* (name: string) {
   const fs = yield* FileSystem.FileSystem;
   const pathSvc = yield* Path.Path;
 
   const candidates = [
-    pathSvc.join(PROJECTS_DIR, name, ".env.example"),
-    pathSvc.join(SERVICES_DIR, name, ".env.example"),
+    pathSvc.join(PROJECTS_DIR, name, ".env.schema"),
+    pathSvc.join(SERVICES_DIR, name, ".env.schema"),
   ];
 
   const found = yield* Effect.reduce(candidates, null as string | null, (acc, candidate) =>
@@ -125,13 +125,13 @@ const findEnvExampleContent = Effect.fnUntraced(function* (name: string) {
   );
 
   if (found === null) {
-    return yield* new EnvExampleNotFoundError({ name });
+    return yield* new EnvSchemaNotFoundError({ name });
   }
   return found;
 });
 
-/** Scan a directory for subdirectories that contain .env.example */
-const scanForEnvExamples = Effect.fnUntraced(function* (dir: string) {
+/** Scan a directory for subdirectories that contain .env.schema */
+const scanForEnvSchemas = Effect.fnUntraced(function* (dir: string) {
   const fs = yield* FileSystem.FileSystem;
   const pathSvc = yield* Path.Path;
 
@@ -140,7 +140,7 @@ const scanForEnvExamples = Effect.fnUntraced(function* (dir: string) {
 
   const entries = yield* fs.readDirectory(dir);
   return yield* Effect.filter(entries, (entry) =>
-    fs.exists(pathSvc.join(dir, entry, ".env.example")),
+    fs.exists(pathSvc.join(dir, entry, ".env.schema")),
   );
 });
 
@@ -208,28 +208,31 @@ const vaultRotate = Command.make("rotate", { name: rotateNameArg }).pipe(
   Command.withHandler(
     Effect.fnUntraced(function* ({ name }) {
       const bao = yield* OpenBaoClient;
-      const resolver = yield* SecretResolver;
+      const resolver = yield* SchemaResolver;
 
-      const content = yield* findEnvExampleContent(name);
-      const fields = parseEnvExample(content);
+      const content = yield* findEnvSchemaContent(name);
+      const { all, dynamic } = classifySchemaKeys(content);
 
-      if (fields.length === 0) {
-        yield* Console.log(`No fields found in .env.example for: ${name}`);
+      if (all.length === 0) {
+        yield* Console.log(`No fields found in .env.schema for: ${name}`);
         return;
       }
 
       yield* Console.log(`Fetching current values for ${name}...`);
       const current = yield* bao.kvGet(name);
 
-      const resolved = yield* resolver.resolve(fields, current);
+      // Feed only the static keys back as overrides -- a dynamic key
+      // (randomHex(), ref(), concat(), ...) gets no override, so varlock
+      // regenerates it, which is the entire point of rotation.
+      const preserved = Object.fromEntries(
+        Object.entries(current).filter(([key]) => !dynamic.has(key)),
+      );
+
+      const resolved = yield* resolver.resolve(content, preserved);
       yield* bao.kvPut(name, resolved);
 
-      const rotated = fields
-        .filter((f) => f.kind === "generated" || f.kind === "composed")
-        .map((f) => f.key);
-
       yield* Console.log(`Rotated fields in ${name}:`);
-      yield* Effect.forEach(rotated, (key) => Console.log(`  - ${key}`));
+      yield* Effect.forEach([...dynamic], (key) => Console.log(`  - ${key}`));
     }),
   ),
   Command.withDescription("Rotate generated secrets for a project or service"),
@@ -247,8 +250,8 @@ const vaultStatus = Command.make("status").pipe(
 
       if (status.sealed || !status.initialized) return;
 
-      const projectNames = yield* scanForEnvExamples(PROJECTS_DIR);
-      const serviceNames = yield* scanForEnvExamples(SERVICES_DIR);
+      const projectNames = yield* scanForEnvSchemas(PROJECTS_DIR);
+      const serviceNames = yield* scanForEnvSchemas(SERVICES_DIR);
       const names = [...projectNames, ...serviceNames];
 
       yield* Console.log("");

@@ -3,10 +3,10 @@ import * as FileSystem from "@effect/platform/FileSystem";
 import * as Path from "@effect/platform/Path";
 import { BunContext } from "@effect/platform-bun";
 import { OpenBaoClient } from "./OpenBaoClient.ts";
-import { SecretResolver } from "./SecretResolver.ts";
+import { SchemaResolver } from "./SchemaResolver.ts";
 import { SshClient } from "./SshClient.ts";
 import { SystemdManager } from "./SystemdManager.ts";
-import { formatEnv, parseEnvExample } from "../lib/env-parser.ts";
+import { formatEnv } from "../lib/env-format.ts";
 import { DEPLOYMENT_ROOTS, HOME_DIR, SVC_USER } from "../lib/config.ts";
 import { deploymentNames, deploymentPaths } from "../lib/deployment.ts";
 
@@ -37,18 +37,17 @@ export const makeDeploymentComponents = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const bao = yield* OpenBaoClient;
-  const resolver = yield* SecretResolver;
+  const resolver = yield* SchemaResolver;
   const ssh = yield* SshClient;
   const systemd = yield* SystemdManager;
 
   return {
     secrets: {
       resolve: Effect.fnUntraced(function* (name: string, worktreePath: string) {
-        const envPath = path.join(worktreePath, ".env.example");
+        const envPath = path.join(worktreePath, ".env.schema");
         if (!(yield* fs.exists(envPath))) return {} as Record<string, string>;
 
-        const fields = parseEnvExample(yield* fs.readFileString(envPath));
-        if (fields.length === 0) return {} as Record<string, string>;
+        const schemaSource = yield* fs.readFileString(envPath);
 
         const existing = yield* bao.kvGet(name).pipe(Effect.orElseSucceed(() => null));
         if (existing && Object.keys(existing).length > 0) {
@@ -57,7 +56,7 @@ export const makeDeploymentComponents = Effect.gen(function* () {
         }
 
         yield* Console.log("  secrets: seeding to vault...");
-        const resolved = yield* resolver.resolve(fields);
+        const resolved = yield* resolver.resolve(schemaSource);
         yield* bao.kvPut(name, resolved);
         return resolved;
       }),
@@ -308,7 +307,7 @@ export class DeploymentComponents extends Effect.Service<DeploymentComponents>()
   {
     effect: makeDeploymentComponents,
     dependencies: [
-      SecretResolver.Default,
+      SchemaResolver.Default,
       SshClient.Default,
       SystemdManager.Default,
       BunContext.layer,

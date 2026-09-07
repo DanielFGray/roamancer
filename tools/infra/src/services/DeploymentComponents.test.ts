@@ -2,14 +2,14 @@ import { expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { deploymentPaths } from "../lib/deployment.ts";
 import { makeDeploymentComponents } from "./DeploymentComponents.ts";
-import { SecretResolver } from "./SecretResolver.ts";
+import { SchemaResolver } from "./SchemaResolver.ts";
 import { makeTestServices, testLayers } from "../test/layers.ts";
 
 const componentsFromTestLayers = (state: ReturnType<typeof makeTestServices>) =>
   Effect.gen(function* () {
     yield* Effect.void;
     return yield* makeDeploymentComponents;
-  }).pipe(Effect.provide(Layer.mergeAll(testLayers(state), SecretResolver.Default)));
+  }).pipe(Effect.provide(Layer.mergeAll(testLayers(state), SchemaResolver.Default)));
 
 it.effect("publishes and removes static artifacts through their owned path", () => {
   const state = makeTestServices();
@@ -141,7 +141,7 @@ it.effect("finalizes a candidate using only the component-owned paths", () => {
 
 it.effect("seeds deployment secrets and leaves them through artifact cleanup", () => {
   const state = makeTestServices();
-  state.files.set("/test/worktrees/demo/main/.env.example", "TOKEN=seeded\n");
+  state.files.set("/test/worktrees/demo/main/.env.schema", "TOKEN=seeded\n");
 
   return Effect.gen(function* () {
     const components = yield* componentsFromTestLayers(state);

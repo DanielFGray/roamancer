@@ -9,9 +9,9 @@ import {
   type ConsulClientShape,
   type ConsulServiceDefinition,
 } from "../services/ConsulClient.ts";
-import { SecretResolver } from "../services/SecretResolver.ts";
+import { SchemaResolver } from "../services/SchemaResolver.ts";
 import { backupByService } from "../services/BackupRunner.ts";
-import { parseEnvExample, formatEnv } from "../lib/env-parser.ts";
+import { formatEnv } from "../lib/env-format.ts";
 import { SERVICES_DIR, SVC_USER } from "../lib/config.ts";
 
 interface InfraService {
@@ -112,15 +112,14 @@ const provisionServiceSecrets = Effect.fnUntraced(function* (svc: InfraService) 
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const bao = yield* OpenBaoClient;
-  const resolver = yield* SecretResolver;
-  const envPath = path.join(svc.composeDir, ".env.example");
+  const resolver = yield* SchemaResolver;
+  const envPath = path.join(svc.composeDir, ".env.schema");
   if (!(yield* fs.exists(envPath))) return null;
-  const fields = parseEnvExample(yield* fs.readFileString(envPath));
-  if (fields.length === 0) return null;
+  const schemaSource = yield* fs.readFileString(envPath);
   const existing = yield* bao.kvGet(svc.name).pipe(Effect.orElseSucceed(() => null));
   if (existing) return existing;
   yield* Console.log("Seeding secrets to vault...");
-  const resolved = yield* resolver.resolve(fields);
+  const resolved = yield* resolver.resolve(schemaSource);
   yield* bao.kvPut(svc.name, resolved);
   return resolved;
 });

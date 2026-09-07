@@ -361,7 +361,7 @@ it.effect("does not treat an inspection failure as a committed handoff", () => {
 it.effect("removes the worktree when secret seeding fails during preparation", () => {
   const state = makeTestServices();
   state.failOpenBaoPut = true;
-  state.files.set("/test/worktrees/demo/main/.env.example", "TOKEN=seeded\n");
+  state.files.set("/test/worktrees/demo/main/.env.schema", "TOKEN=seeded\n");
 
   return Effect.gen(function* () {
     const runner = yield* runnerFromTestLayers(state);

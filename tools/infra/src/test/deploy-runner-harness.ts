@@ -10,7 +10,7 @@ import { DeployRunner, makeDeployRunner } from "../services/DeployRunner.ts";
 import { makePromotionService, PromotionService } from "../services/PromotionService.ts";
 import { StageOperations, makeStageOperations } from "../services/StageOperations.ts";
 import { BuildError, BuildRunner } from "../services/BuildRunner.ts";
-import { SecretResolver } from "../services/SecretResolver.ts";
+import { SchemaResolver } from "../services/SchemaResolver.ts";
 import { makeTestServices, testLayers } from "./layers.ts";
 
 export const deployRunnerLayerFromTestLayers = (
@@ -24,7 +24,7 @@ export const deployRunnerLayerFromTestLayers = (
       infra: { host: "test-host", domain: "demo" },
     }),
   );
-  const external = Layer.mergeAll(testLayers(state, caddyOverride), SecretResolver.Default);
+  const external = Layer.mergeAll(testLayers(state, caddyOverride), SchemaResolver.Default);
   const components = Layer.effect(
     DeploymentComponents,
     makeDeploymentComponents.pipe(
@@ -90,7 +90,7 @@ export const runnerFromTestLayers = (
 
 /** Component boundary used by service-level tests that do not need DeployRunner. */
 export const deploymentComponentsFromTestLayers = (state: ReturnType<typeof makeTestServices>) => {
-  const external = Layer.mergeAll(testLayers(state), SecretResolver.Default);
+  const external = Layer.mergeAll(testLayers(state), SchemaResolver.Default);
   const components = Layer.effect(
     DeploymentComponents,
     makeDeploymentComponents.pipe(

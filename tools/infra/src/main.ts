@@ -35,7 +35,7 @@ import {
 } from "./services/OpenBaoClient.ts";
 import { ConsulClientLive } from "./services/ConsulClient.ts";
 import { PasswordGenerator } from "./services/PasswordGenerator.ts";
-import { SecretResolver } from "./services/SecretResolver.ts";
+import { SchemaResolver } from "./services/SchemaResolver.ts";
 import { SshClient } from "./services/SshClient.ts";
 import { GitManager } from "./services/GitManager.ts";
 import { DeployMeta } from "./services/DeployMeta.ts";
@@ -92,7 +92,7 @@ const ConsulLive = ConsulClientLive({ addr: CONSUL_ADDR }).pipe(
 
 // Dependency graph:
 //   Level 0 (leaves)  : PasswordGenerator, SshClient, GitManager, OpenBaoClient, StateDb
-//   Level 1 (derived) : SecretResolver <- PasswordGenerator
+//   Level 1 (derived) : SchemaResolver (self-contained, shells out to varlock)
 //                        DeployMeta <- StateDb
 //   Level 2 (composed): CaddyManager <- DeployMeta
 //                        HealthCheck <- SshClient
@@ -108,7 +108,7 @@ const Leaves = Layer.mergeAll(
 );
 
 const AppLayer = Layer.mergeAll(
-  SecretResolver.Default,
+  SchemaResolver.Default,
   DeployMeta.Default,
   CaddyManager.Default,
   HealthCheck.Default,
