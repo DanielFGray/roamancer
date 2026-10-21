@@ -54,6 +54,8 @@ in
     "f /var/lib/systemd/linger/nomad 0644 root root -"
     "d /var/lib/nomad/noneuclid-data 0770 nomad nomad -"
     "d /var/lib/nomad/postgres-data 0770 nomad nomad -"
+    "d /var/lib/nomad/valkey-data 0770 nomad nomad -"
+    "d /var/lib/nomad/openobserve-data 0770 nomad nomad -"
     "d /sbin 0755 root root -"
     "L+ /sbin/ip - - - - ${pkgs.iproute2}/bin/ip"
   ];
@@ -146,6 +148,14 @@ in
         path = "/var/lib/nomad/postgres-data"
         read_only = false
       }
+      host_volume "valkey-data" {
+        path = "/var/lib/nomad/valkey-data"
+        read_only = false
+      }
+      host_volume "openobserve-data" {
+        path = "/var/lib/nomad/openobserve-data"
+        read_only = false
+      }
     }
     plugin "nomad-driver-podman" {
       config {
@@ -171,4 +181,9 @@ in
 
   environment.systemPackages = [ nomad pkgs.iproute2 pkgs.podman pkgs.curl pkgs.jq ];
   services.getty.autologinUser = "root";
+
+  # The disposable VM accepts the same key as cynic, so the proof uses one login path.
+  users.users.root.openssh.authorizedKeys.keys = [
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA4+6wknF8UcGuuWT1U4c0X29YDyRuWuB1b014Hyo57F danielfgray@gmail.com"
+  ];
 }
