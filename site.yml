@@ -1,6 +1,6 @@
 ---
 - name: Base setup for all VMs
-  hosts: all
+  hosts: all:!nixos
   become: true
   tags: [common, podman]
   roles:
@@ -8,7 +8,7 @@
     - podman
 
 - name: Firewall on obs node
-  hosts: obs
+  hosts: obs:!nixos
   become: true
   tags: [firewall]
   roles:
@@ -27,7 +27,7 @@
           - { port: "8600", proto: udp, comment: "Consul DNS (web)", src: "{{ web_dlab_ip }}" }
 
 - name: Firewall on web node
-  hosts: web
+  hosts: web:!nixos
   become: true
   tags: [firewall]
   roles:
@@ -45,14 +45,14 @@
           - { port: "8600", proto: udp, comment: "Consul DNS (obs)", src: "{{ obs_dlab_ip }}" }
 
 - name: OpenBao on obs node
-  hosts: obs
+  hosts: obs:!nixos
   become: true
   tags: [vault]
   roles:
     - vault
 
 - name: Install OpenBao CA trust on all hosts
-  hosts: all
+  hosts: all:!nixos
   become: true
   tags: [vault, trust]
   tasks:
@@ -106,14 +106,14 @@
           when: openbao_ca_installed.changed
 
 - name: Consul agents on all nodes
-  hosts: all
+  hosts: all:!nixos
   become: true
   tags: [consul]
   roles:
     - consul
 
 - name: Caddy reverse proxy on obs node
-  hosts: obs
+  hosts: obs:!nixos
   become: true
   tags: [caddy, caddy-proxy]
   roles:
@@ -129,14 +129,14 @@
           - postgres.garden
 
 - name: Caddy on web node
-  hosts: web
+  hosts: web:!nixos
   become: true
   tags: [caddy, caddy-web]
   roles:
     - caddy
 
 - name: Compose services on web node
-  hosts: web
+  hosts: web:!nixos
   become: true
   tags: [compose, compose-web]
   roles:
@@ -164,7 +164,7 @@
             data_mode: "0750"
 
 - name: SigNoz on obs node
-  hosts: obs
+  hosts: obs:!nixos
   become: true
   tags: [compose, compose-obs]
   roles:
@@ -216,7 +216,7 @@
             dest: /opt/services/signoz/otel-collector-config.yaml
 
 - name: Infra agent on web node
-  hosts: web
+  hosts: web:!nixos
   become: true
   tags: [infra-agent]
   vars:
