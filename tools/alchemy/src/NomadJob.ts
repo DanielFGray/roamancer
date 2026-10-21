@@ -161,7 +161,12 @@ export const NomadJobProvider = () =>
                   });
                   return nomad.register(news, fqn, expectedModifyIndex).pipe(
                     Effect.flatMap((registration) =>
-                      settle(nomad, news.name, (job) => Option.getOrUndefined(ownerOf(job)) === fqn, registration.JobModifyIndex),
+                      settle(
+                        nomad,
+                        news.name,
+                        (job) => Option.getOrUndefined(ownerOf(job)) === fqn,
+                        registration.JobModifyIndex,
+                      ),
                     ),
                     Effect.flatMap((settled) =>
                       settled._tag === "Healthy"

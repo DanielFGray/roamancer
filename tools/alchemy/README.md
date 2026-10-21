@@ -146,8 +146,20 @@ An app declares its needs and refers to them in secrets, without `connections` t
       "environment": [],
       "connections": [],
       "secrets": [
-        { "_tag": "PostgresCredentials", "database": "app_needs", "login": "api", "usernameEnv": "PGUSER", "passwordEnv": "PGPASSWORD", "urlEnv": "DATABASE_URL" },
-        { "_tag": "ValkeyCredentials", "usernameEnv": "VALKEY_USER", "passwordEnv": "VALKEY_PASSWORD", "urlEnv": "VALKEY_URL" }
+        {
+          "_tag": "PostgresCredentials",
+          "database": "app_needs",
+          "login": "api",
+          "usernameEnv": "PGUSER",
+          "passwordEnv": "PGPASSWORD",
+          "urlEnv": "DATABASE_URL"
+        },
+        {
+          "_tag": "ValkeyCredentials",
+          "usernameEnv": "VALKEY_USER",
+          "passwordEnv": "VALKEY_PASSWORD",
+          "urlEnv": "VALKEY_URL"
+        }
       ]
     }
   ]

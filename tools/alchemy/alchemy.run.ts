@@ -8,10 +8,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { NomadJob, NomadJobProvider } from "./src/NomadJob.ts";
 import { PostgresDatabase, PostgresDatabaseProvider } from "./src/PostgresDatabase.ts";
 import { ValkeyAccess, ValkeyAccessProvider } from "./src/ValkeyAccess.ts";
-import {
-  AdminCredential,
-  AdminCredentialProvider,
-} from "./src/AdminCredential.ts";
+import { AdminCredential, AdminCredentialProvider } from "./src/AdminCredential.ts";
 import * as NomadLive from "./src/Nomad.ts";
 import * as Cartridge from "./src/Cartridge.ts";
 import * as OperationHistory from "./src/OperationJournal.ts";

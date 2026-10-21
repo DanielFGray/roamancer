@@ -15,9 +15,7 @@ describe("platform observability cartridge", () => {
 
     const resources = expand(cartridge);
     assert.deepEqual(
-      resources.map((resource) =>
-        "service" in resource ? resource.service.name : resource._tag,
-      ),
+      resources.map((resource) => ("service" in resource ? resource.service.name : resource._tag)),
       ["openobserve", "otel-collector"],
     );
   });

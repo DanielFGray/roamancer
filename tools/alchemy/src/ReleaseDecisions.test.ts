@@ -9,11 +9,7 @@ import {
   ServiceLocationSchema,
 } from "./Nomad.ts";
 import { ReleaseSetProps, toJobSpec } from "./ReleaseJob.ts";
-import {
-  adoptionAttributes,
-  serviceIsReady,
-  validate,
-} from "./ReleaseDecisions.ts";
+import { adoptionAttributes, serviceIsReady, validate } from "./ReleaseDecisions.ts";
 
 const input = {
   name: "probe",

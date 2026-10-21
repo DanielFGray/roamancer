@@ -96,7 +96,10 @@ export const compose = <R>(
         ),
         Match.when({ _tag: "PostgresDatabase" }, ({ database }) =>
           Effect.gen(function* () {
-            const resource = yield* constructors.PostgresDatabase(`postgres-database-${database.name}`, database);
+            const resource = yield* constructors.PostgresDatabase(
+              `postgres-database-${database.name}`,
+              database,
+            );
             return {
               ...state,
               postgresDatabases: Arr.appendAll(state.postgresDatabases, [
@@ -126,10 +129,13 @@ export const compose = <R>(
               declaration._tag === "PostgresServer"
                 ? { engine: "postgres" as const, env: "POSTGRES_PASSWORD", kind: "PostgresServer" }
                 : { engine: "valkey" as const, env: "VALKEY_ADMIN_PASSWORD", kind: "ValkeyServer" };
-            const adminCredential = yield* constructors.AdminCredential(`${service.name}-admin-credential`, {
-              engine: config.engine,
-              server: service.name,
-            });
+            const adminCredential = yield* constructors.AdminCredential(
+              `${service.name}-admin-credential`,
+              {
+                engine: config.engine,
+                server: service.name,
+              },
+            );
             const adminSecret = {
               _tag: "KvSecret" as const,
               path: adminCredential.path,
@@ -141,7 +147,10 @@ export const compose = <R>(
         ),
         Match.when({ _tag: "ValkeyAccess" }, ({ access }) =>
           Effect.gen(function* () {
-            const resource = yield* constructors.ValkeyAccess(`valkey-access-${access.resourceName}`, access);
+            const resource = yield* constructors.ValkeyAccess(
+              `valkey-access-${access.resourceName}`,
+              access,
+            );
             return {
               ...state,
               valkeyAccesses: Arr.append(state.valkeyAccesses, {

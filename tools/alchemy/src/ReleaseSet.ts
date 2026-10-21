@@ -225,22 +225,18 @@ const ensureRelease = Effect.fn(function* (
                   message: `refusing to manage Nomad job '${name}' owned by another Alchemy resource`,
                 }),
               )
-            : nomad
-                .planRelease(name, spec)
-                .pipe(
-                  Effect.flatMap((plan) =>
-                    plan.Diff.Type === "None"
-                      ? Effect.succeed({ index: job.JobModifyIndex, registered: false })
-                      : nomad
-                          .registerRelease(name, spec, job.JobModifyIndex)
-                          .pipe(
-                            Effect.map((result) => ({
-                              index: result.JobModifyIndex,
-                              registered: true,
-                            })),
-                          ),
-                  ),
+            : nomad.planRelease(name, spec).pipe(
+                Effect.flatMap((plan) =>
+                  plan.Diff.Type === "None"
+                    ? Effect.succeed({ index: job.JobModifyIndex, registered: false })
+                    : nomad.registerRelease(name, spec, job.JobModifyIndex).pipe(
+                        Effect.map((result) => ({
+                          index: result.JobModifyIndex,
+                          registered: true,
+                        })),
+                      ),
                 ),
+              ),
       }),
   });
   if (registered) {

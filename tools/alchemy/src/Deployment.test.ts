@@ -32,7 +32,9 @@ const outcome = (current: Option.Option<JobSnapshot>, latest: Option.Option<Depl
 
 describe("deploymentOutcome", () => {
   it("waits while the deployment is running or not yet created", async () => {
-    assert.ok(Option.isNone(await outcome(Option.some(job), Option.some(deployment("running", "")))));
+    assert.ok(
+      Option.isNone(await outcome(Option.some(job), Option.some(deployment("running", "")))),
+    );
     assert.ok(Option.isNone(await outcome(Option.some(job), Option.none())));
     assert.ok(Option.isNone(await outcome(Option.none(), Option.none())));
   });

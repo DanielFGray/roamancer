@@ -1,16 +1,12 @@
 import { Schema as S } from "effect";
 import * as Match from "effect/Match";
 
-export const ResourceName = S.String.check(
-  S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/),
-);
+export const ResourceName = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
 const EnvironmentVariable = S.String.check(S.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/));
 const SecretPath = S.String.check(
   S.isPattern(/^secret\/data\/[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)*$/),
 );
-const DatabaseCredentialPath = S.String.check(
-  S.isPattern(/^database\/creds\/[A-Za-z0-9_.-]+$/),
-);
+const DatabaseCredentialPath = S.String.check(S.isPattern(/^database\/creds\/[A-Za-z0-9_.-]+$/));
 const SecretKey = S.String.check(S.isPattern(/^[A-Za-z0-9_-]+$/));
 export const DatabaseIdentifier = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
 export const ServiceConnection = S.Struct({
@@ -114,17 +110,9 @@ const JobBaseFields = {
   image: S.String,
   hostPort: S.Union([
     S.Literals(["dynamic"]),
-    S.Number.check(
-      S.isInt(),
-      S.isGreaterThan(0),
-      S.isLessThanOrEqualTo(65_535),
-    ),
+    S.Number.check(S.isInt(), S.isGreaterThan(0), S.isLessThanOrEqualTo(65_535)),
   ]),
-  containerPort: S.Number.check(
-    S.isInt(),
-    S.isGreaterThan(0),
-    S.isLessThanOrEqualTo(65_535),
-  ),
+  containerPort: S.Number.check(S.isInt(), S.isGreaterThan(0), S.isLessThanOrEqualTo(65_535)),
   healthCheck: S.optionalKey(HealthCheck),
   cpu: S.Number.check(S.isInt(), S.isGreaterThan(0)),
   memoryMB: S.Number.check(S.isInt(), S.isGreaterThan(0)),
@@ -395,5 +383,7 @@ const toTask = (
     task.secrets.length === 0
       ? undefined
       : { Role: workloadRole(job.name), Env: false, DisableFile: true },
-  Templates: task.templates.concat(task.secrets.length === 0 ? [] : [toSecretTemplate(task.secrets)]),
+  Templates: task.templates.concat(
+    task.secrets.length === 0 ? [] : [toSecretTemplate(task.secrets)],
+  ),
 });

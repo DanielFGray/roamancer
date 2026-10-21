@@ -62,9 +62,7 @@
           "value": "ops@example.com"
         }
       ],
-      "args": [
-        "--config=env:OTEL_CONFIG"
-      ],
+      "args": ["--config=env:OTEL_CONFIG"],
       "connections": [
         {
           "service": "openobserve",

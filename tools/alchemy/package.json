@@ -13,7 +13,8 @@
     "staged:destroy": "./staged-host-runner.sh destroy",
     "staged:controller": "ALCHEMY_HOST_RUNNER=./staged-host-runner.sh bun run staged-controller.run.ts",
     "nix:deps": "./refresh-nix-deps.sh",
-    "history": "node --import ./node_modules/alchemy/bin/register-oxc.js src/history.ts"
+    "history": "node --import ./node_modules/alchemy/bin/register-oxc.js src/history.ts",
+    "format": "oxfmt --check"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.5",

@@ -61,9 +61,7 @@ export const StubResponse = S.Struct({
 const SafeRef = S.String.pipe(S.pattern(/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/));
 
 /** Git remote URL: git@host:path, https://host/path, or ssh://host/path */
-const SafeRepoUrl = S.String.pipe(
-  S.pattern(/^(https?:\/\/|git@|ssh:\/\/)[a-zA-Z0-9._/-]+$/),
-);
+const SafeRepoUrl = S.String.pipe(S.pattern(/^(https?:\/\/|git@|ssh:\/\/)[a-zA-Z0-9._/-]+$/));
 
 const DeployBody = S.Struct({
   name: SafeName,

@@ -219,9 +219,7 @@ export class OpenBao extends Context.Service<
             () => new OpenBaoError({ operation: "decode credentials", target: path }),
           ),
         );
-        const credentials = yield* S.decodeUnknownEffect(ValkeyCredentials)(
-          value.data.data,
-        ).pipe(
+        const credentials = yield* S.decodeUnknownEffect(ValkeyCredentials)(value.data.data).pipe(
           Effect.mapError(
             () => new OpenBaoError({ operation: "decode credentials", target: path }),
           ),
@@ -283,9 +281,7 @@ export class OpenBao extends Context.Service<
             () => new OpenBaoError({ operation: "decode admin credential", target: path }),
           ),
         );
-        const credential = yield* S.decodeUnknownEffect(AdminCredential)(
-          value.data.data,
-        ).pipe(
+        const credential = yield* S.decodeUnknownEffect(AdminCredential)(value.data.data).pipe(
           Effect.mapError(
             () => new OpenBaoError({ operation: "decode admin credential", target: path }),
           ),
