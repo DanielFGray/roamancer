@@ -1,158 +1,95 @@
 # server-ansible
 
-Production-baseline Ansible setup for Nomad/Consul/Vault/Caddy nodes.
+This repository is rebuilding its application deployment platform around three owners:
 
-## What changed (hardening baseline)
+- **NixOS** owns the host, rootless Podman, Nomad, and host volumes.
+- **Nomad** places and runs application containers.
+- **Alchemy** declares and reconciles application state through Nomad.
 
-- Services run as dedicated system users (`consul`, `nomad`, `vault`) with stricter systemd sandboxing.
-- `apt_key` usage removed; APT repos now use keyrings + `signed-by`.
-- Enforced HashiCorp binary checksum verification by default (`enforce_binary_checksums: true`):
-  - `nomad_binary_checksum`
-  - `consul_binary_checksum`
-  - `vault_binary_checksum`
-- Consul hardening defaults enabled:
-  - ACLs enabled (`consul_acl_enabled: true`)
-  - TLS enabled (`consul_tls_enabled: true`)
-  - gossip encryption required (`consul_encrypt_enabled: true`)
-- Nomad hardening defaults enabled:
-  - ACLs enabled (`nomad_acl_enabled: true`)
-  - TLS enabled (`nomad_tls_enabled: true`)
-- Vault TLS is enabled by default (`vault_tls_disable: false`).
-- Vault config now supports explicit TLS file paths and will fail if TLS files are missing.
-- Nomad raw_exec plugin now defaults OFF (`nomad_enable_raw_exec: false`).
-- Mutable deploy paths are now blocked by default:
-  - `scripts/deploy-site.sh` requires `mutable_deploy_ok=true` per site entry.
-  - `postgres-garden.nomad` mutable local prestart build removed in favor of immutable image deploys.
-- Caddy OTEL CORS policy now allows only explicit origins.
-- Vault switched from file storage to Raft storage backend.
-- `site.yml` job deployment play now uses `become: true`.
-- `deploy-site` Nomad job is no longer auto-deployed from Ansible by default.
-- Nomad job rollout is now idempotent (`nomad job plan -detailed-exitcode` + conditional `job run`).
-- Added `alerts.nomad` periodic watchdog job with Vault-backed Slack webhook secret (`secret/data/alerts`).
-- Infra API now fails closed when `INFRA_API_TOKEN` is missing.
-- Webhook-driven auto-promotion is now opt-in via `INFRA_WEBHOOK_AUTO_PROMOTE=true`.
-- Compose-managed data/observability ports now bind to localhost by default.
-- Infra agent SSH now uses TOFU host key verification (`accept-new`) instead of disabling checks.
-- CLI config `*_command` execution is now disabled by default; opt in with `INFRA_ENABLE_CONFIG_COMMANDS=true`.
-- Non-local `OPENBAO_ADDR` / `INFRA_SERVER_URL` values must use HTTPS unless `INFRA_ALLOW_INSECURE_HTTP=true` is explicitly set.
-- Infra agent API/webhook secrets are now seeded into OpenBao and loaded at runtime instead of being templated into `/opt/infra/.env`.
+OpenBao remains the secret store. Application declarations must contain secret references, not secret values. Existing Ansible hosts remain under `tools/infra` until the production host is rebuilt from backup on fresh NixOS. The NixOS testground is a disposable proof environment.
 
-## Required inventory variables
+## Cynic host
 
-Set these in inventory/group vars before production apply:
+`nixos/cynic` pins the NixOS configuration for `10.13.37.196`. Nomad and rootless Podman have passed a disposable container run and a host reboot. Nomad retains its node identity after reboot. Tailscale also returns without a new login.
 
-- `nomad_binary_checksum`
-- `consul_binary_checksum`
-- `vault_binary_checksum`
-- `consul_encrypt_key`
-- `consul_agent_token`
-- `nomad_bootstrap_token`
-- `nomad_consul_token`
+The repository-root flake builds the Alchemy runtime and the host with its
+controller from one pinned Nix package set. Run these commands from the
+repository root on a separate builder. The runtime source must be inside the
+flake source directory. Build application packages outside `cynic`.
 
-Format:
-
-```yaml
-nomad_binary_checksum: "sha256:<hash>"
-consul_encrypt_key: "<base64 gossip key>"
-consul_agent_token: "<consul acl token>"
-nomad_bootstrap_token: "<nomad management/bootstrap token>"
-nomad_consul_token: "<consul acl token for nomad agent>"
+```sh
+nix build .#alchemy-staged
+nix build .#nixosConfigurations.cynic.config.system.build.toplevel
 ```
 
-## Image digest pinning for postgres-garden
+The root configuration includes Nomad ACLs and the host-owned Alchemy
+controller. The controller waits for its credential file. Building does not
+activate this configuration. Follow `nixos/cynic/nomad-acl-operations.md` for
+credential setup. The nested host flake does not include the controller.
 
-`nomad-jobs/postgres-garden.nomad` now expects immutable digests.
-Replace placeholders before apply:
+For a local Docker builder, run `tools/alchemy/build-runtime.sh`. It limits the
+whole build to 2 GiB RAM, no container swap, one CPU, and one Nix build at a
+time. It keeps its Nix store and temporary files under
+`$HOME/.cache/server-ansible-builder`, or `NIX_BUILDER_DIR` when set. The script
+requires at least 2 GiB free disk before starting and stops the container if
+free space falls below 1 GiB. It prints the output path
+inside the builder's Nix store and does not deploy or activate anything.
 
-```hcl
-registry.dfg.rocks/postgresgarden-app@sha256:REPLACE_WITH_REAL_DIGEST
-```
+Traefik is the HTTP entry point on `cynic`, and one Caddy process behind it on loopback serves every static site. Nomad application routes are tags on their Nomad services, which Traefik follows as allocations move. The host firewall allows port 80 only on `ens18`; port 443 is closed. See [Ingress on cynic](nixos/cynic/traefik-operations.md).
 
-Example to get digest from registry (replace host/image/tag):
+Production inventory puts `web01` in the `nixos` group. Every play in `site.yml` excludes that group. Its peer address remains in inventory for the existing `atheist` configuration. The disposable Ansible testground keeps its own inventory and retains its web-node plays.
 
-```bash
-docker build -t registry.dfg.rocks/postgresgarden-app:prod-2026-03-06 .
-docker push registry.dfg.rocks/postgresgarden-app:prod-2026-03-06
-docker inspect --format='{{index .RepoDigests 0}}' registry.dfg.rocks/postgresgarden-app:prod-2026-03-06
-```
+Nomad control-plane listeners use loopback. Operators must use SSH to run Nomad commands or forward port 4646. Application ports still require a tested private routing and firewall policy. The Alchemy controller is not installed on this host yet.
 
-## Alerts job
+A disposable bridge-network web service served a file from `noneuclid-data`. After allocation replacement, the replacement served the same file through the new address and port returned by Nomad service discovery. This proves one-node storage retention and host-local HTTP access only. It does not prove container-to-container access, ingress from `atheist`, multi-node routing, or recovery after disk loss. The job and its test files were removed.
 
-`alerts.nomad` runs every 2 minutes and checks:
+Backups are deferred with the operator's accepted data-loss risk. This is a temporary exception to the planned rebuild-from-backup workflow. No production database has been deployed on this node. OpenBao connectivity and workload secret delivery remain unverified. Public DNS is unchanged.
 
-- postgres.garden (`http://127.0.0.1:3000/`)
-- signoz (`http://{{ obs_addr }}:8080/api/v1/health`)
-- docker registry (`http://127.0.0.1:5000/v2/`)
+## Current proof
 
-On failure it posts to Slack webhook from Vault secret:
+The local QEMU staging VM needs `-enable-kvm -cpu host`. The generic QEMU CPU
+model caused the packaged Bun runtimes to stall or fail with an illegal
+instruction. With host CPU features, both tested runtimes started, and the
+controller reconciled while using little CPU. The current disposable guest
+has 2 GiB RAM and a 12 GiB virtual disk. Its source disk and running process
+are local test artifacts, not a reproducible staging provisioner yet.
 
-```bash
-vault kv put secret/alerts slack_webhook_url="https://hooks.slack.com/services/..."
-```
+The `nixos/testground` flake builds a NixOS QCOW image. This turn built it in the existing rootless Nix store, then booted NixOS 26.11 with Nomad 2.0.7 and rootless Podman 5.8.8 using `crun`. The new image needed ext4 repair on its disposable overlay before it booted. The image build must be investigated before relying on unattended rebuilds. Nomad's Prometheus endpoint returns node and allocation metrics.
 
-## Vault TLS prerequisites
+Alchemy deployed a rootless bridge-network update to the Noneuclid app on the testground VM. After a cartridge update and restoration, Nomad reports a healthy version 4 allocation, the app returns HTTP 200, and Alchemy reports no changes. Noneuclid's working tree contains a versioned JSON deployment file, and the Alchemy runner validates it before planning. See [`tools/alchemy/README.md`](tools/alchemy/README.md) for the deploy commands and current limits.
 
-Default expected paths:
+## Deployment path
 
-- `/etc/vault.d/tls/vault.crt`
-- `/etc/vault.d/tls/vault.key`
-- `/etc/vault.d/tls/ca.crt`
+1. Build and boot the NixOS testground image from [`nixos/testground`](nixos/testground).
+2. Declare the app job in the project's versioned cartridge and point the Alchemy runner under [`tools/alchemy`](tools/alchemy) at that file.
+3. Plan and reconcile the Nomad resources through Alchemy.
+4. Keep secrets in OpenBao and host volume paths in NixOS configuration.
 
-Override via inventory vars:
+The cartridge currently describes one Nomad job with one task. It does not yet build or publish app images, resolve app dependency names to managed resources, deliver OpenBao secrets to workloads, or coordinate durable application state across hosts.
 
-- `vault_tls_cert_file`
-- `vault_tls_key_file`
-- `vault_tls_ca_file`
-- `vault_tls_disable` (set to `true` only for explicitly insecure local/testing setups)
+## Staged releases
 
-Playbook now asserts these files exist when TLS is enabled.
+Target behavior: deploy a candidate beside the live release at a generated preview URL. Test it on a real client, such as a phone, before changing the usual app URL. Promote a healthy candidate, retain the prior release for rollback, and preserve app data. The current proof has local `*.localhost` routes; it does not yet provide phone access or stateful release safety.
 
-## OpenBao bootstrap and unsealing
+Later, support traffic splitting between two releases for A/B testing. Keep this separate from candidate preview and promotion: a preview gets test traffic by its own URL, while an A/B release shares production traffic under an explicit split policy.
 
-The `vault` role bootstraps a fresh OpenBao automatically the first time it
-finds one uninitialized: `operator init` (single key share), unseal, mount
-the `secret` and `meta` KV-v2 engines, and write the `backups` policy — the
-same sequence `tools/infra`'s own `vault init` subcommand runs by hand. The
-resulting unseal key and root token are saved to
-`~/.config/infra/vault-init.json` (mode 0600) **on the control machine that
-ran the playbook** — back that file up somewhere durable immediately, it's
-the only copy. The root token it mints also flows automatically to the
-infra-agent play in the same run, so `infra_openbao_token` only needs to be
-passed as an extra-var when you're re-running against an OpenBao that was
-bootstrapped in some earlier run (an extra-var always overrides the
-generated one).
+`tools/alchemy` now has a stateless `Nomad.ReleaseSet` resource. A manifest declares immutable image digests, a selected release, and an optional candidate. Alchemy creates a separate Nomad job for each release, waits for Nomad's health check, publishes a candidate preview host, and routes the usual host to the selected release. Promotion and rollback change the selected release in the manifest. Each release's routes are Traefik tags on its Nomad service, so a promotion is an in-place Nomad update and a moved allocation keeps its route without an Alchemy run. See the [staged release operator flow](tools/alchemy/README.md#staged-release-proof).
 
-Unsealing is deliberately **not** automated past first bootstrap. OpenBao's
-unsealed state is in-memory only — any restart of the `openbao` service, or
-a reboot of the node, reseals it, and the playbook fails loudly rather than
-silently leaving a sealed vault. Unseal it by hand from the same
-`vault-init.json`:
+The release proof used a disposable single-node NixOS VM, two digest-pinned `whoami` images, Nomad, rootless Podman, and Caddy. Both versions ran together. The preview host returned v2 while the stable host still returned v1. Promotion switched stable traffic to v2; rollback switched it to v1. Candidate cleanup removed its job and preview route, and a repeat plan reported no changes. The stable route survived a Caddy restart. A manual Caddyfile reload removed it; Alchemy detected the missing route and restored it. A Nomad allocation reschedule changed the dynamic port; the stable route returned HTTP 502 until Alchemy detected and repaired it. The VM used `localhost` hostnames and an SSH tunnel to keep Caddy's admin API on loopback; public DNS and TLS are not configured. Restoration after losing Alchemy state remains unverified. See the [staged release design](docs/design/staged-releases.md). That proof used Caddy routes written through its admin API. On 2026-10-21 cynic replaced them with Traefik tags; [Ingress on cynic](nixos/cynic/traefik-operations.md) records the new measurements.
 
-```bash
-ansible -i <inventory> obs01 -m shell -a \
-  "BAO_ADDR=http://127.0.0.1:8200 bao operator unseal <unseal_key>"
-```
+## Current gaps
 
-## Infra agent secret bootstrap
+- Prove and model application stacks with a database, worker, and web service. In the probe, a rootless `pasta` client could not reach the backend through its Nomad node address and published port. Rootless Podman bridge networking plus Nomad's native service template did allow it. This path uses a node address and published port; production must define routable private addresses and firewall rules.
+- Add health-checked traffic cutover for app updates. The current single-allocation job on a fixed host port had about 5.7 seconds of failed HTTP probes during replacement.
+- Avoid in-place updates to a selected release's Nomad job settings during rollout; those changes can replace the running allocation and interrupt traffic.
+- Add controlled traffic splitting for A/B tests. Candidate preview, promotion, and rollback are implemented for stateless services only.
+- Add lifecycle handling for migrations, dependency readiness, stateful updates, and image rollback.
+- Build and publish immutable application images.
+- Resolve narrowly scoped OpenBao references at workload start without storing secret values in Alchemy state.
+- Define backups and restore for host volumes before deploying production databases.
+- Add TLS for public domains to Traefik, durable/shared Alchemy state and operation locking, and a verified service move between nodes. The current provider cannot discover or adopt release sets after Alchemy state is lost.
+- Decide whether the staged allocation controller is still needed. It existed to repair Caddy routes after Nomad replaced an allocation, and Traefik now follows the allocation itself.
+- Repair the Nix image build so a fresh disk boots without a manual filesystem repair.
+- Replace testground firewall and VM defaults with production NixOS policy before reuse.
 
-The infra agent now expects:
-
-- OpenBao bootstrap token at `~/.config/infra/openbao-token`
-- API token cached at `~/.config/infra/api-token`
-- webhook secret cached at `~/.config/infra/webhook-secret`
-
-Ansible seeds `infra-agent` secrets into OpenBao during deploy, then the agent hydrates its local cached token files from OpenBao at runtime.
-This removes API/webhook secrets from `/opt/infra/.env`, but the OpenBao bootstrap token still remains a sensitive local bootstrap credential.
-
-## Validation
-
-Syntax check:
-
-```bash
-ansible-playbook -i inventory/hosts.yml site.yml --syntax-check
-```
-
-## Important note
-
-This is a production **baseline**, not full HA posture yet.
-You still need multi-node quorum, ACL/mTLS rollout for Consul/Nomad/Vault, and offsite encrypted backups + restore drills.
+Use [`docs/research`](docs/research) for current PostgreSQL research. [`docs/hardening`](docs/hardening) tracks `tools/infra` control-plane work for the current hosts; it does not define application deployment on NixOS.
