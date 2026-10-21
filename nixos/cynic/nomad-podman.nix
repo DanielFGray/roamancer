@@ -99,8 +99,8 @@ in
   environment.etc."nomad.d/nomad.hcl".text = ''
     data_dir = "/var/lib/nomad"
     plugin_dir = "${podmanDriver}/bin"
-    # The controller and agent share this host. Remote operators use SSH,
-    # so control-plane listeners need no LAN or tailnet exposure.
+    # Local Alchemy commands and the agent share this host. Remote operators
+    # use SSH, so control-plane listeners need no LAN or tailnet exposure.
     bind_addr = "127.0.0.1"
     advertise {
       http = "127.0.0.1"

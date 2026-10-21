@@ -41,8 +41,6 @@ stdenvNoCC.mkDerivation {
     makeWrapper ${bun}/bin/bun "$out/bin/alchemy-cli" \
       --add-flags "run" \
       --add-flags "$out/lib/server-alchemy/node_modules/alchemy/bin/cli.js"
-    makeWrapper ${bun}/bin/bun "$out/bin/alchemy-controller" \
-      --add-flags "$out/lib/server-alchemy/staged-controller.run.ts"
     makeWrapper ${bash}/bin/bash "$out/bin/alchemy-staged" \
       --add-flags "$out/lib/server-alchemy/staged-host-runner.sh" \
       --prefix PATH : ${util-linux}/bin \

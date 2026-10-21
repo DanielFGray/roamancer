@@ -73,10 +73,12 @@ shell history.
 sudo sh -c 'export NOMAD_TOKEN="$(cat /var/lib/nomad-acl/bootstrap.token)"; exec nomad status'
 ```
 
-## The controller token
+## The staged Alchemy token
 
-The Alchemy controller does not use the management token. It gets a client
-token bound to one policy.
+The staged Alchemy commands do not use the management token. They get a client
+token bound to one policy. The policy, the token, and the files below keep the
+name `controller`: that name is live state on this host. Renaming them is a
+separate operator step; it is tracked as follow-up work.
 
 ```sh
 sudo nomad-acl-issue-controller
@@ -127,20 +129,19 @@ Every capability below is required by a call that `tools/alchemy/src/Nomad.ts`
 makes. The Nomad 2.0.7 source line that checks the capability is named for
 each one.
 
-| Controller call | Capability | Nomad check |
+| Alchemy call | Capability | Nomad check |
 | --- | --- | --- |
 | `GET /v1/jobs?meta=true` | `list-jobs` | `nomad/job_endpoint.go:1417` |
 | `GET /v1/job/:id` | `read-job` | `nomad/job_endpoint.go:1202` |
 | `GET /v1/job/:id/deployment` | `read-job` | `nomad/deployment_endpoint.go:48` |
 | `GET /v1/service/:name` | `read-job` | `nomad/service_registration_endpoint.go:364` |
 | `GET /v1/allocation/:id` | `read-job` | `nomad/alloc_endpoint.go:143` |
-| `GET /v1/event/stream?topic=Allocation` | `read-job` | `nomad/event_endpoint.go:291` |
 | `POST /v1/job/:id/plan` | `submit-job` | `nomad/job_endpoint.go:1794` |
 | `POST /v1/jobs` | `submit-job` | `nomad/job_endpoint.go:154` |
 | `DELETE /v1/job/:id?purge=true` | `submit-job` | `nomad/job_endpoint.go:798` |
 | job with a `host` volume | `mount-readwrite` on that volume | `nomad/job_endpoint.go:168` |
 
-The policy grants nothing else. The controller cannot read nodes
+The policy grants nothing else. The token cannot read nodes
 (`nomad node status` answers `403`), cannot read operator state, cannot read
 allocations of other namespaces, and cannot reach the `default` namespace
 outside the three job capabilities.
@@ -156,23 +157,21 @@ Permission denied
 ## Delivering the token to the runner
 
 The Alchemy code reads `NOMAD_TOKEN` from the environment
-(`tools/alchemy/src/NomadConfig.ts`). Configure
-`services.alchemyStaged.nomadTokenFile = "/var/lib/nomad-acl/controller.env"`
-on a host that imports `nixos/modules/alchemy-staged.nix`. systemd reads this
-file for the controller process. The `staged-host-runner.sh` wrapper reads the
-same file for operator commands because sudo does not pass the operator's
-environment through. The file must be readable by the `alchemy` account for
-those commands; `nomad-acl-issue-controller` sets that mode when the group
-exists.
+(`tools/alchemy/src/NomadConfig.ts`). The `staged-host-runner.sh` wrapper
+reads `/var/lib/nomad-acl/controller.env` by default, or the file named by
+`NOMAD_TOKEN_ENV_FILE` when that is set, because sudo does not pass the
+operator's environment through. The file must be readable by the `alchemy`
+account for those commands; `nomad-acl-issue-controller` sets that mode when
+the group exists.
 
-The repository-root flake enables the Alchemy controller on `cynic`. Its unit
-waits until the credential file exists. After the first token issue, run
-`sudo systemctl start alchemy-staged-controller`. The nested `nixos/cynic`
-flake remains a host-only configuration and does not enable the controller.
+The repository-root flake declares the staged Alchemy runner for `cynic`.
+Nothing starts at boot: an operator runs the command over SSH. The nested
+`nixos/cynic` flake remains a host-only configuration and does not include the
+runner.
 
 ## Recovery
 
-**The controller token is lost.** Run `nomad-acl-issue-controller` again. It
+**The staged Alchemy token is lost.** Run `nomad-acl-issue-controller` again. It
 applies the policy and writes a new token. Revoke the old one:
 
 ```sh
@@ -237,7 +236,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:4646/v1/jobs \
 
 Expect `403`. The response body is `Permission denied`.
 
-**The controller identity may submit.**
+**The `alchemy-controller` token may submit.**
 
 ```sh
 sudo sh -c 'printf "header = \"X-Nomad-Token: %s\"\n" "$(cat /var/lib/nomad-acl/controller.token)" | curl --config - -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:4646/v1/jobs --data-binary @job.json'
@@ -247,19 +246,19 @@ Expect `200`. A job body needs at least one task group; the API rejects an
 empty one with `500 Missing job task groups` before it checks the token, so a
 `500` there proves nothing about the ACL.
 
-**The controller identity is still narrow.**
+**The token is still narrow.**
 
 ```sh
 sudo sh -c 'export NOMAD_TOKEN="$(cat /var/lib/nomad-acl/controller.token)"; exec nomad node status'
 ```
 
-Expect `403 Permission denied`. The controller has no node access.
+Expect `403 Permission denied`. The token has no node access.
 
 **A restart keeps enforcement.** Restart Nomad, then repeat the anonymous
 call. Expect `403` again. The tokens live in files under `/var/lib/nomad-acl`
 and in the Nomad state store, so they survive a restart.
 
-**The controller still works after the restart.** Repeat the authorized
+**The token still works after the restart.** Repeat the authorized
 submission. Expect `200`.
 
 **Recovery works.** Follow *Recovery* above with a scratch token and confirm
@@ -284,5 +283,5 @@ that the runner can authenticate afterwards.
   Alchemy client now calls `/v1/client/allocation/:id/checks`
   (`api/allocations.go:134`). Nomad 2.0.7 also accepts
   `/v1/allocation/:id/checks`; both paths call the same handler in
-  `command/agent/alloc_endpoint.go`. Verify the controller policy permits this request
+  `command/agent/alloc_endpoint.go`. Verify the `alchemy-controller` policy permits this request
   during the authenticated host check.

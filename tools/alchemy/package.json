@@ -8,10 +8,9 @@
     "plan": "alchemy plan",
     "deploy": "alchemy deploy",
     "destroy": "alchemy destroy",
-    "staged:plan": "ALCHEMY_HOST_RUNNER=./staged-host-runner.sh ./staged-host-runner.sh plan",
+    "staged:plan": "./staged-host-runner.sh plan",
     "staged:deploy": "./staged-host-runner.sh deploy",
     "staged:destroy": "./staged-host-runner.sh destroy",
-    "staged:controller": "ALCHEMY_HOST_RUNNER=./staged-host-runner.sh bun run staged-controller.run.ts",
     "nix:deps": "./refresh-nix-deps.sh",
     "history": "node --import ./node_modules/alchemy/bin/register-oxc.js src/history.ts",
     "format": "oxfmt --check"

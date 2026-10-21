@@ -2,14 +2,14 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: alchemy-staged {plan|deploy|destroy|reconcile} [Alchemy arguments...]\n' >&2
+  printf 'Usage: alchemy-staged {plan|deploy|destroy} [Alchemy arguments...]\n' >&2
   exit 2
 }
 
 action="${1:-}"
 if [[ "$#" -gt 0 ]]; then shift; fi
 case "$action" in
-  plan|deploy|destroy|reconcile) ;;
+  plan|deploy|destroy) ;;
   *) usage ;;
 esac
 
@@ -39,22 +39,14 @@ if [[ -n "${NOMAD_TOKEN_ENV_FILE:-}" || -e "$nomad_env_file" ]]; then
   set +a
 fi
 
-manifest=""
-case "$action" in
-  plan|deploy|destroy)
-    manifest="$(mktemp "$state_dir/request.XXXXXXXX.json")"
-    chmod 0600 "$manifest"
-    if [[ -n "${ALCHEMY_RELEASE_SET:-}" ]]; then
-      cp -- "$ALCHEMY_RELEASE_SET" "$manifest"
-    else
-      cat > "$manifest"
-    fi
-    ;;
-esac
-cleanup() {
-  if [[ -n "$manifest" ]]; then rm -f -- "$manifest"; fi
-}
-trap cleanup EXIT
+manifest="$(mktemp "$state_dir/request.XXXXXXXX.json")"
+trap 'rm -f -- "$manifest"' EXIT
+chmod 0600 "$manifest"
+if [[ -n "${ALCHEMY_RELEASE_SET:-}" ]]; then
+  cp -- "$ALCHEMY_RELEASE_SET" "$manifest"
+else
+  cat > "$manifest"
+fi
 
 exec 9>"$state_dir/staged-apply.lock"
 flock -x 9
@@ -96,11 +88,6 @@ case "$action" in
         run_alchemy deploy "$active" --yes || printf 'Recovery reconcile failed\n' >&2
       fi
       exit "$status"
-    fi
-    ;;
-  reconcile)
-    if [[ -f "$active" ]]; then
-      run_alchemy deploy "$active" --yes "$@"
     fi
     ;;
 esac

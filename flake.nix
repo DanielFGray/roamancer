@@ -64,7 +64,6 @@
             services.alchemyStaged = {
               enable = true;
               package = self.packages.${system}.alchemy-staged;
-              nomadTokenFile = "/var/lib/nomad-acl/controller.env";
             };
           }
         ];

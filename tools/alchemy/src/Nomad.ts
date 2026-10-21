@@ -1,5 +1,4 @@
 import { Context, Effect, Layer, Option, Redacted, Schema as S } from "effect";
-import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Job, toJobSpec } from "./Job.ts";
 import type { ReleaseJobSpec } from "./ReleaseJob.ts";
@@ -83,15 +82,6 @@ const AllocationCheck = S.Struct({
 export const AllocationChecksSchema = S.Record(S.String, AllocationCheck);
 export type AllocationChecks = typeof AllocationChecksSchema.Type;
 
-const AllocationEvent = S.Struct({
-  Type: S.String,
-  FilterKeys: S.OptionFromNullOr(S.Array(S.String)),
-});
-
-const AllocationEventBatch = S.Struct({
-  Events: S.Array(AllocationEvent),
-});
-
 type JobRequest = {
   readonly Job: ReturnType<typeof toJobSpec> | ReleaseJobSpec;
   readonly Diff?: boolean;
@@ -127,7 +117,6 @@ export class Nomad extends Context.Service<
     readonly allocationChecks: (
       id: string,
     ) => Effect.Effect<Option.Option<AllocationChecks>, NomadError>;
-    readonly allocationChanges: Stream.Stream<ReadonlyArray<string>, NomadError>;
     readonly stop: (name: string) => Effect.Effect<void, NomadError>;
   }
 >()("alchemy/Nomad") {}
@@ -249,41 +238,6 @@ export const layer = () =>
             `/v1/client/allocation/${encodeURIComponent(id)}/checks`,
             AllocationChecksSchema,
           ),
-        allocationChanges: Stream.unwrap(
-          call(
-            "allocation changes",
-            Effect.succeed(
-              HttpClientRequest.get("/v1/event/stream").pipe(
-                HttpClientRequest.setUrlParam("topic", "Allocation"),
-              ),
-            ),
-          ).pipe(
-            Effect.flatMap((response) =>
-              HttpClientResponse.filterStatusOk(response).pipe(
-                Effect.mapError((cause) => new NomadError({ op: "allocation changes", cause })),
-                Effect.map((ok) => ok.stream),
-              ),
-            ),
-          ),
-        ).pipe(
-          Stream.decodeText(),
-          Stream.splitLines,
-          Stream.filter((line) => line.length > 0 && line !== "{}"),
-          Stream.mapEffect((line) =>
-            S.decodeUnknownEffect(S.fromJsonString(AllocationEventBatch))(line).pipe(
-              Effect.mapError((cause) => new NomadError({ op: "allocation changes", cause })),
-            ),
-          ),
-          Stream.map((batch) =>
-            batch.Events.filter(
-              (event) =>
-                event.Type === "AllocationCreated" ||
-                event.Type === "AllocationUpdated" ||
-                event.Type === "AllocationUpdateDesiredStatus",
-            ).flatMap((event) => Option.getOrElse(event.FilterKeys, () => [])),
-          ),
-          Stream.mapError((cause) => new NomadError({ op: "allocation changes", cause })),
-        ),
         stop: (name) =>
           requestJson("stop", "DELETE", `/v1/job/${encodeURIComponent(name)}?purge=true`).pipe(
             Effect.asVoid,

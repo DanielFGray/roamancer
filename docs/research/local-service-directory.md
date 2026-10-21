@@ -40,7 +40,6 @@ Callers of `nomad.jobs()` (the only live-job inventory):
 - `tools/alchemy/src/ReleaseSet.ts:223` — `ReleaseSetProvider.diff`: inspects live jobs for hasUnexpectedJob.
 - `tools/alchemy/src/ReleaseSet.ts:377` — `ReleaseSetProvider.reconcile`: lists live jobs to clean up owned extra jobs.
 - `tools/alchemy/src/ReleaseSet.ts:425` — `ReleaseSetProvider.read`: adopts via `adoptionAttributes(olds, fqn, yield* nomad.jobs())`.
-- `tools/alchemy/staged-controller.run.ts:62-64` — watches job names changing via allocation events.
 
 There is **no `nomad.allocationLogs` method** and no log retrieval anywhere in `tools/alchemy` or `tools/infra`.
 
@@ -98,7 +97,7 @@ What is **not** journaled:
 
 ### Native `bun run dev` processes: no integration exists
 
-There is no code in `tools/alchemy` or `tools/infra` that tracks, starts, stops, or records native `bun run dev` processes. The `bun` command is used to *run Alchemy itself* (`alchemy.run.ts`, `staged-controller.run.ts`, `staged.run.ts`), not to manage developer workloads as Alchemy resources. `tools/alchemy/src/Cartridge.ts` accepts only `CartridgeJob` → `image`-based Nomad jobs (`tools/alchemy/src/Job.ts:95-121`; `Driver: "podman"` at `tools/alchemy/src/Job.ts:241`). No schema field, provider, or journal event represents a native process.
+There is no code in `tools/alchemy` or `tools/infra` that tracks, starts, stops, or records native `bun run dev` processes. The `bun` command is used to *run Alchemy itself* (`alchemy.run.ts`, `staged.run.ts`), not to manage developer workloads as Alchemy resources. `tools/alchemy/src/Cartridge.ts` accepts only `CartridgeJob` → `image`-based Nomad jobs (`tools/alchemy/src/Job.ts:95-121`; `Driver: "podman"` at `tools/alchemy/src/Job.ts:241`). No schema field, provider, or journal event represents a native process.
 
 ## Nomad GC and History Limits (official API)
 
@@ -113,7 +112,7 @@ Relevant GC/retention behavior:
 1. **Jobs disappear from `/v1/jobs` after purge.** `nomad.stop` sends `DELETE /v1/job/:name?purge=true` (`tools/alchemy/src/Nomad.ts:286`), which removes the job from the job list. There is no `jobs` history query for purged jobs.
 2. **Terminal allocation retention is bounded.** Server allocation records and client allocation files have separate garbage-collection rules. This investigation did not verify the configured retention periods, so it cannot promise a recent-history window.
 3. **Allocation logs are not a durable archive.** Logs can remain available after a task stops, until the client removes the allocation files. The client exposes them through `/v1/client/fs/logs`. See https://developer.hashicorp.com/nomad/api-docs/client#read-file-logs.
-4. **Event replay is bounded.** The event stream accepts an index for replay from its retained buffer, not an unlimited historical query. `staged-controller.run.ts:56` explicitly accounts for event history gaps by reconciling on reconnect. See https://developer.hashicorp.com/nomad/api-docs/events.
+4. **Event replay is bounded.** The event stream accepts an index for replay from its retained buffer, not an unlimited historical query. A watcher over that stream must reconcile after every reconnect, because an index does not recover the gaps. See https://developer.hashicorp.com/nomad/api-docs/events.
 
 So Nomad itself does **not** provide a durable "recently run" directory. It provides current job/allocation state plus short-lived event streams and terminal-allocation logs.
 

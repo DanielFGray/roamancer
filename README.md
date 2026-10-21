@@ -12,8 +12,8 @@ OpenBao remains the secret store. Application declarations must contain secret r
 
 `nixos/cynic` pins the NixOS configuration for `10.13.37.196`. Nomad and rootless Podman have passed a disposable container run and a host reboot. Nomad retains its node identity after reboot. Tailscale also returns without a new login.
 
-The repository-root flake builds the Alchemy runtime and the host with its
-controller from one pinned Nix package set. Run these commands from the
+The repository-root flake builds the Alchemy runtime and the host from one
+pinned Nix package set. Run these commands from the
 repository root on a separate builder. The runtime source must be inside the
 flake source directory. Build application packages outside `cynic`.
 
@@ -23,9 +23,10 @@ nix build .#nixosConfigurations.cynic.config.system.build.toplevel
 ```
 
 The root configuration includes Nomad ACLs and the host-owned Alchemy
-controller. The controller waits for its credential file. Building does not
-activate this configuration. Follow `nixos/cynic/nomad-acl-operations.md` for
-credential setup. The nested host flake does not include the controller.
+staged runner. The staged commands read their Nomad credential file at run
+time. Building does not activate this configuration. Follow
+`nixos/cynic/nomad-acl-operations.md` for credential setup. The nested host
+flake does not include the staged runner.
 
 For a local Docker builder, run `tools/alchemy/build-runtime.sh`. It limits the
 whole build to 2 GiB RAM, no container swap, one CPU, and one Nix build at a
@@ -39,7 +40,7 @@ Traefik is the HTTP entry point on `cynic`, and one Caddy process behind it on l
 
 Production inventory puts `web01` in the `nixos` group. Every play in `site.yml` excludes that group. Its peer address remains in inventory for the existing `atheist` configuration. The disposable Ansible testground keeps its own inventory and retains its web-node plays.
 
-Nomad control-plane listeners use loopback. Operators must use SSH to run Nomad commands or forward port 4646. Application ports still require a tested private routing and firewall policy. The Alchemy controller is not installed on this host yet.
+Nomad control-plane listeners use loopback. Operators must use SSH to run Nomad commands or forward port 4646. Application ports still require a tested private routing and firewall policy. The host-owned Alchemy runner is configured in the root flake but is not activated on this host yet.
 
 A disposable bridge-network web service served a file from `noneuclid-data`. After allocation replacement, the replacement served the same file through the new address and port returned by Nomad service discovery. This proves one-node storage retention and host-local HTTP access only. It does not prove container-to-container access, ingress from `atheist`, multi-node routing, or recovery after disk loss. The job and its test files were removed.
 
@@ -49,8 +50,8 @@ Backups are deferred with the operator's accepted data-loss risk. This is a temp
 
 The local QEMU staging VM needs `-enable-kvm -cpu host`. The generic QEMU CPU
 model caused the packaged Bun runtimes to stall or fail with an illegal
-instruction. With host CPU features, both tested runtimes started, and the
-controller reconciled while using little CPU. The current disposable guest
+instruction. With host CPU features, both tested runtimes started and used
+little CPU. The current disposable guest
 has 2 GiB RAM and a 12 GiB virtual disk. Its source disk and running process
 are local test artifacts, not a reproducible staging provisioner yet.
 
@@ -88,7 +89,6 @@ The release proof used a disposable single-node NixOS VM, two digest-pinned `who
 - Resolve narrowly scoped OpenBao references at workload start without storing secret values in Alchemy state.
 - Define backups and restore for host volumes before deploying production databases.
 - Add TLS for public domains to Traefik, durable/shared Alchemy state and operation locking, and a verified service move between nodes. The current provider cannot discover or adopt release sets after Alchemy state is lost.
-- Decide whether the staged allocation controller is still needed. It existed to repair Caddy routes after Nomad replaced an allocation, and Traefik now follows the allocation itself.
 - Repair the Nix image build so a fresh disk boots without a manual filesystem repair.
 - Replace testground firewall and VM defaults with production NixOS policy before reuse.
 

@@ -3,7 +3,7 @@
 # The Nomad listeners are bound to loopback, so only local processes can reach
 # the API. Loopback is not an identity: a workload that can reach the host
 # loopback can call the API. This module turns on Nomad's ACL enforcement and
-# gives the Alchemy controller and Traefik each their own narrow token.
+# gives the staged Alchemy commands and Traefik each their own narrow token.
 #
 # Credentials never enter the Nix store. The store holds the ACL policy and
 # the operator scripts; the tokens live in root-owned runtime files under
@@ -14,8 +14,8 @@
 let
   credentialDir = "/var/lib/nomad-acl";
 
-  # The capabilities below are the union of what the Alchemy controller calls
-  # and what Nomad checks for those calls. Each line is justified by an API
+  # The capabilities below are the union of what the staged Alchemy commands
+  # call and what Nomad checks for those calls. Each line is justified by an API
   # call in tools/alchemy/src/Nomad.ts; nomad-acl-operations.md lists the
   # mapping.
   controllerPolicy = ''

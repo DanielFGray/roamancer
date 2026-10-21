@@ -4,17 +4,11 @@ let
 in
 {
   options.services.alchemyStaged = {
-    enable = lib.mkEnableOption "the host-owned Alchemy staged release controller";
+    enable = lib.mkEnableOption "the host-owned Alchemy staged release runner";
 
     package = lib.mkOption {
       type = lib.types.package;
       description = "Pinned Alchemy runtime and staged host commands.";
-    };
-
-    nomadTokenFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "Optional systemd environment file for the Nomad ACL token.";
     };
 
     operatorGroups = lib.mkOption {
@@ -29,8 +23,11 @@ in
     users.users.alchemy = {
       isSystemUser = true;
       group = "alchemy";
+      # The account owns the state directory. Without a service to create it,
+      # the operator command needs the home directory to exist.
       home = "/var/lib/alchemy";
-      createHome = false;
+      createHome = true;
+      homeMode = "0700";
     };
 
     security.sudo.extraRules = map (group: {
@@ -45,39 +42,5 @@ in
     }) cfg.operatorGroups;
 
     environment.systemPackages = [ cfg.package ];
-
-    systemd.services.alchemy-staged-controller = {
-      description = "Reconcile staged Nomad releases with Alchemy";
-      wantedBy = [ "multi-user.target" ];
-      wants = [ "network-online.target" "nomad.service" "traefik.service" ];
-      after = [ "network-online.target" "nomad.service" "traefik.service" ];
-      unitConfig = lib.mkIf (cfg.nomadTokenFile != null) {
-        ConditionPathExists = cfg.nomadTokenFile;
-      };
-      serviceConfig = {
-        User = "alchemy";
-        Group = "alchemy";
-        StateDirectory = "alchemy";
-        StateDirectoryMode = "0700";
-        WorkingDirectory = "/var/lib/alchemy";
-        UMask = "0077";
-        Environment = [
-          "HOME=/var/lib/alchemy"
-          "NOMAD_ADDR=http://127.0.0.1:4646"
-          "ALCHEMY_HOST_RUNNER=${cfg.package}/bin/alchemy-staged"
-        ] ++ lib.optional (cfg.nomadTokenFile != null) "NOMAD_TOKEN_ENV_FILE=${cfg.nomadTokenFile}";
-        EnvironmentFile = lib.optional (cfg.nomadTokenFile != null) cfg.nomadTokenFile;
-        ExecStart = "${cfg.package}/bin/alchemy-controller";
-        Restart = "on-failure";
-        RestartSec = "3s";
-        # Peak use measured at about 287 MB on Bun 1.4.2. An earlier reconcile hit this cap under an older runtime and was killed.
-        MemoryMax = "512M";
-        KillMode = "control-group";
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ReadWritePaths = [ "/var/lib/alchemy" ];
-        PrivateTmp = true;
-      };
-    };
   };
 }

@@ -38,7 +38,7 @@ The operation-history candidate supplies the base design: Alchemy keeps resource
 ## Tradeoffs accepted
 
 - A failed or interrupted journal write can stop or report a failed deployment. This keeps the journal and provider operation status aligned. A later Alchemy run can reconcile the pending operation from the stack and live Nomad state.
-- SQLite is suitable for the current single-controller setup. The journal does not coordinate independent Alchemy controllers.
+- SQLite is suitable for the current single-writer setup. The journal does not coordinate independent Alchemy writers.
 - The history database and Alchemy state must be preserved together. Neither file is a backup by itself.
 - Event history grows with resource operations. This first version has no retention or archive policy.
 
@@ -50,7 +50,7 @@ The operation-history candidate supplies the base design: Alchemy keeps resource
 
 ## Open questions and risks
 
-This does not start Alchemy after a host reboot. It recovers when an operator or controller runs the next plan. The journal is not a write-ahead log for Nomad: the SQLite commit and Nomad HTTP change cannot share one transaction. A pending event triggers a live-state retry; it does not prove that Nomad did or did not accept the request. The journal itself does not lock Nomad operations across processes. The staged deploy wrapper and controller share a host-local flock lock only when they use the same checkout; a workstation lock does not coordinate with a future controller on the NixOS host.
+This does not start Alchemy after a host reboot. It recovers when an operator runs the next plan. The journal is not a write-ahead log for Nomad: the SQLite commit and Nomad HTTP change cannot share one transaction. A pending event triggers a live-state retry; it does not prove that Nomad did or did not accept the request. The journal itself does not lock Nomad operations across processes. Staged applies take one host-local flock lock in the staged runner; a workstation lock does not coordinate with that runner on the NixOS host.
 
 ## Next implementation step
 
