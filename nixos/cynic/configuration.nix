@@ -3,7 +3,8 @@
   imports = [
     ./hardware-configuration.nix
     ./nomad-podman.nix
-    ./caddy.nix
+    ./traefik.nix
+    ./static-sites.nix
     ./nomad-acl.nix
     ./openbao.nix
     ./herdr.nix

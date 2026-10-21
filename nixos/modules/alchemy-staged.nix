@@ -49,8 +49,8 @@ in
     systemd.services.alchemy-staged-controller = {
       description = "Reconcile staged Nomad releases with Alchemy";
       wantedBy = [ "multi-user.target" ];
-      wants = [ "network-online.target" "nomad.service" "caddy.service" ];
-      after = [ "network-online.target" "nomad.service" "caddy.service" ];
+      wants = [ "network-online.target" "nomad.service" "traefik.service" ];
+      after = [ "network-online.target" "nomad.service" "traefik.service" ];
       unitConfig = lib.mkIf (cfg.nomadTokenFile != null) {
         ConditionPathExists = cfg.nomadTokenFile;
       };
@@ -64,7 +64,6 @@ in
         Environment = [
           "HOME=/var/lib/alchemy"
           "NOMAD_ADDR=http://127.0.0.1:4646"
-          "CADDY_ADMIN_ADDR=http://127.0.0.1:2019"
           "ALCHEMY_HOST_RUNNER=${cfg.package}/bin/alchemy-staged"
         ] ++ lib.optional (cfg.nomadTokenFile != null) "NOMAD_TOKEN_ENV_FILE=${cfg.nomadTokenFile}";
         EnvironmentFile = lib.optional (cfg.nomadTokenFile != null) cfg.nomadTokenFile;

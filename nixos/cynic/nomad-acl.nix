@@ -3,7 +3,7 @@
 # The Nomad listeners are bound to loopback, so only local processes can reach
 # the API. Loopback is not an identity: a workload that can reach the host
 # loopback can call the API. This module turns on Nomad's ACL enforcement and
-# gives the Alchemy controller its own narrow token.
+# gives the Alchemy controller and Traefik each their own narrow token.
 #
 # Credentials never enter the Nix store. The store holds the ACL policy and
 # the operator scripts; the tokens live in root-owned runtime files under
@@ -13,8 +13,6 @@
 
 let
   credentialDir = "/var/lib/nomad-acl";
-  policyFile = "/etc/nomad-acl/controller-policy.hcl";
-  policyName = "alchemy-controller";
 
   # The capabilities below are the union of what the Alchemy controller calls
   # and what Nomad checks for those calls. Each line is justified by an API
@@ -43,6 +41,14 @@ let
 
     host_volume "openobserve-data" {
       capabilities = ["mount-readwrite"]
+    }
+  '';
+
+  # Traefik lists Nomad services and follows the service event stream. Both
+  # calls check read-job, and Traefik makes no other call.
+  traefikPolicy = ''
+    namespace "default" {
+      capabilities = ["read-job"]
     }
   '';
 
@@ -85,72 +91,88 @@ let
     echo "Bootstrap token stored in $file"
   '';
 
-  # Issues the controller token from the stored bootstrap token. The policy is
-  # applied first, so the token and the policy never drift apart.
-  issueScript = pkgs.writeShellScriptBin "nomad-acl-issue-controller" ''
-    set -euo pipefail
+  # Issues a client token from the stored bootstrap token. The policy is
+  # applied first, so the token and the policy never drift apart. The token
+  # goes to <file>.token and an environment file holding NOMAD_TOKEN goes to
+  # <file>.env. readerGroup, when that group exists, may read the environment
+  # file; otherwise only root can, which is enough for a systemd
+  # EnvironmentFile.
+  issueScript = { command, policyName, policyText, file, readerGroup ? null }:
+    let
+      policy = pkgs.writeText "${policyName}-policy.hcl" policyText;
+    in
+    pkgs.writeShellScriptBin command (''
+      set -euo pipefail
 
-    dir=${credentialDir}
-    bootstrap="$dir/bootstrap.token"
-    token="$dir/controller.token"
-    env_file="$dir/controller.env"
-    policy=${policyFile}
-    name=${policyName}
+      dir=${credentialDir}
+      bootstrap="$dir/bootstrap.token"
+      token="$dir/${file}.token"
+      env_file="$dir/${file}.env"
+      name=${policyName}
 
-    if [ ! -s "$bootstrap" ]; then
-      echo "No bootstrap token at $bootstrap." >&2
-      echo "Run nomad-acl-bootstrap first." >&2
-      exit 1
-    fi
+      if [ ! -s "$bootstrap" ]; then
+        echo "No bootstrap token at $bootstrap." >&2
+        echo "Run nomad-acl-bootstrap first." >&2
+        exit 1
+      fi
 
-    if [ ! -f "$policy" ]; then
-      echo "Missing policy file $policy." >&2
-      exit 1
-    fi
+      umask 077
+      tmp=$(mktemp "$dir/${file}.XXXXXXXX")
+      trap 'rm -f "$tmp"' EXIT
 
-    umask 077
-    tmp=$(mktemp "$dir/controller.XXXXXXXX")
-    trap 'rm -f "$tmp"' EXIT
+      NOMAD_TOKEN=$(cat "$bootstrap")
+      export NOMAD_TOKEN
 
-    NOMAD_TOKEN=$(cat "$bootstrap")
-    export NOMAD_TOKEN
+      nomad acl policy apply "$name" ${policy} > /dev/null
+      nomad acl token create \
+        -name="$name" \
+        -type=client \
+        -policy="$name" \
+        -t '{{ .SecretID }}' > "$tmp"
 
-    nomad acl policy apply "$name" "$policy" > /dev/null
-    nomad acl token create \
-      -name="$name" \
-      -type=client \
-      -policy="$name" \
-      -t '{{ .SecretID }}' > "$tmp"
+      unset NOMAD_TOKEN
 
-    unset NOMAD_TOKEN
+      if [ ! -s "$tmp" ]; then
+        echo "Token creation produced no token." >&2
+        exit 1
+      fi
 
-    if [ ! -s "$tmp" ]; then
-      echo "Token creation produced no token." >&2
-      exit 1
-    fi
+      mv -f "$tmp" "$token"
+      chmod 0600 "$token"
+      trap - EXIT
 
-    mv -f "$tmp" "$token"
-    chmod 0600 "$token"
-    trap - EXIT
-
-    printf 'NOMAD_TOKEN=%s\n' "$(cat "$token")" > "$env_file"
-
-    # The Alchemy account reads the environment file. Give it to that group
-    # when the group exists, and say so plainly when it does not.
-    if getent group alchemy > /dev/null; then
-      chown root:alchemy "$dir"
-      chmod 0710 "$dir"
-      chown root:alchemy "$env_file"
-      chmod 0640 "$env_file"
-      echo "Controller token stored in $token"
-      echo "Runner environment file $env_file is readable by the alchemy group"
-    else
+      printf 'NOMAD_TOKEN=%s\n' "$(cat "$token")" > "$env_file"
       chmod 0600 "$env_file"
-      echo "Controller token stored in $token"
-      echo "Runner environment file $env_file is readable by root only." >&2
-      echo "The alchemy account cannot read it until that account exists." >&2
-    fi
-  '';
+      echo "Token stored in $token"
+    '' + lib.optionalString (readerGroup != null) ''
+      if getent group ${readerGroup} > /dev/null; then
+        chown root:${readerGroup} "$dir"
+        chmod 0710 "$dir"
+        chown root:${readerGroup} "$env_file"
+        chmod 0640 "$env_file"
+        echo "Environment file $env_file is readable by the ${readerGroup} group"
+      else
+        echo "Environment file $env_file is readable by root only." >&2
+        echo "The ${readerGroup} account cannot read it until that account exists." >&2
+      fi
+    '' + ''
+      echo "Revoke the token this one replaces with nomad acl token delete <accessor-id>."
+    '');
+
+  issueController = issueScript {
+    command = "nomad-acl-issue-controller";
+    policyName = "alchemy-controller";
+    policyText = controllerPolicy;
+    file = "controller";
+    readerGroup = "alchemy";
+  };
+
+  issueTraefik = issueScript {
+    command = "nomad-acl-issue-traefik";
+    policyName = "traefik";
+    policyText = traefikPolicy;
+    file = "traefik";
+  };
 in
 {
   # Nomad merges every .hcl file in its configuration directory, so the ACL
@@ -161,10 +183,6 @@ in
       enabled = true
     }
   '';
-
-  # The policy file cannot live in /etc/nomad.d: the agent would try to read it
-  # as agent configuration and refuse to start.
-  environment.etc."nomad-acl/controller-policy.hcl".text = controllerPolicy;
 
   # The credential directory holds tokens. It is created at boot, owned by
   # root, and holds nothing until an operator issues a token.
@@ -181,6 +199,7 @@ in
 
   environment.systemPackages = [
     bootstrapScript
-    issueScript
+    issueController
+    issueTraefik
   ];
 }

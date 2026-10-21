@@ -18,10 +18,11 @@ operator runs it once, by hand.
 | --- | --- | --- |
 | `nixos/cynic/nomad-acl.nix` | this slice | the module |
 | `/etc/nomad.d/acl.hcl` | Nix | the ACL block |
-| `/etc/nomad-acl/controller-policy.hcl` | Nix | the controller policy |
+| `/nix/store/...-alchemy-controller-policy.hcl` | Nix | the controller policy, applied by `nomad-acl-issue-controller` |
+| `/nix/store/...-traefik-policy.hcl` | Nix | the Traefik policy, applied by `nomad-acl-issue-traefik` |
 | `/var/lib/nomad-acl/` | runtime | mode 0710 root:alchemy when that group exists; otherwise 0700 root:root |
 
-The Nix store holds the policy and the operator scripts. No token is written to
+The Nix store holds the policies and the operator scripts. No token is written to
 the store, to source control, to a log, or to Alchemy resource state.
 
 ## How the configuration composes
@@ -93,6 +94,32 @@ exist yet, the environment file stays root-only and the script says so.
 
 The token has no expiry. It can be revoked at any time with
 `nomad acl token delete <accessor-id>`.
+
+## The Traefik token
+
+Traefik reads Nomad services to build its routes. It gets its own client token
+bound to the `traefik` policy, which grants `read-job` in the `default`
+namespace and nothing else.
+
+```sh
+sudo nomad-acl-issue-traefik
+sudo systemctl start traefik
+```
+
+The script writes `/var/lib/nomad-acl/traefik.token` and
+`/var/lib/nomad-acl/traefik.env`, both mode 0600 root. systemd reads the
+environment file before it starts Traefik as the `traefik` user, and the
+NixOS module substitutes `NOMAD_TOKEN` into the static configuration under
+`/run/traefik`. The unit does not start while the file is missing.
+
+Traefik makes three kinds of call, and each checks `read-job`. Checked on cynic
+with a token bound to that policy alone:
+
+| Traefik call | Result |
+| --- | --- |
+| `GET /v1/services` | 200 |
+| `GET /v1/service/:name` | 200 |
+| `GET /v1/event/stream?topic=Service` | 200 |
 
 ## What the controller policy allows
 

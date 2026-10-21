@@ -8,11 +8,11 @@ import type {
   JobSnapshot,
   ServiceLocation,
 } from "./Nomad.ts";
-import type { ReleaseSetProps } from "./ReleaseJob.ts";
+import { candidateOf, type ReleaseSetProps } from "./ReleaseJob.ts";
 
 /**
  * The rules that decide what a ReleaseSet does, kept out of the provider so they
- * can be read and tested without Nomad, Caddy or a journal.
+ * can be read and tested without Nomad or a journal.
  */
 
 export type ReleaseSetOutput = {
@@ -28,19 +28,11 @@ export class ReleaseSetFailed extends Schema.TaggedError<ReleaseSetFailed>()("Re
   message: Schema.String,
 }) {}
 
-export const candidateOf = (props: ReleaseSetProps) =>
-  Option.isOption(props.candidateRelease) ? props.candidateRelease : Option.none<string>();
-
 export const releaseById = (props: ReleaseSetProps, id: string) =>
   Arr.findFirst(props.releases, (release) => release.id === id);
 
 export const previewUrl = (props: ReleaseSetProps, releaseId: string) =>
   `${props.scheme}://${releaseId}.${props.domain}`;
-
-const routePrefix = (fqn: string, domain: string) => `alchemy-${fqn}-${domain}`;
-export const stableRouteId = (fqn: string, domain: string) => `${routePrefix(fqn, domain)}-stable`;
-export const previewRouteId = (fqn: string, domain: string, releaseId: string) =>
-  `${routePrefix(fqn, domain)}-preview-${releaseId}`;
 
 export const attributes = (props: ReleaseSetProps): ReleaseSetOutput => ({
   id: props.name,
@@ -118,18 +110,6 @@ export const validate = (props: ReleaseSetProps, olds: ReleaseSetProps | undefin
         }),
       );
 };
-
-export type RouteFacts = {
-  readonly stableMatches: boolean;
-  readonly candidateMatches: boolean;
-  readonly stalePreview: boolean;
-};
-
-/** The route half of the diff: any mismatch means the next apply must update. */
-export const routeDecision = (facts: RouteFacts) =>
-  facts.stableMatches && facts.candidateMatches && !facts.stalePreview
-    ? undefined
-    : { action: "update" as const };
 
 /**
  * A release is ready only when Nomad says the allocation it routed to is still

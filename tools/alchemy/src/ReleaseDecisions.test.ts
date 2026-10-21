@@ -8,13 +8,10 @@ import {
   JobListItemSchema,
   ServiceLocationSchema,
 } from "./Nomad.ts";
-import { ReleaseSetProps } from "./ReleaseJob.ts";
+import { ReleaseSetProps, toJobSpec } from "./ReleaseJob.ts";
 import {
   adoptionAttributes,
-  previewRouteId,
-  routeDecision,
   serviceIsReady,
-  stableRouteId,
   validate,
 } from "./ReleaseDecisions.ts";
 
@@ -126,30 +123,20 @@ describe("ReleaseSet recovery and diff decisions", () => {
     );
   });
 
-  it("plans an update for route drift but not for matching routes", () => {
-    assert.equal(
-      routeDecision({ stableMatches: true, candidateMatches: true, stalePreview: false }),
-      undefined,
-    );
-    assert.deepEqual(
-      routeDecision({ stableMatches: true, candidateMatches: true, stalePreview: true }),
-      { action: "update" },
-    );
-    assert.deepEqual(
-      routeDecision({ stableMatches: false, candidateMatches: true, stalePreview: false }),
-      { action: "update" },
-    );
-  });
+  it("routes the stable host to the selected release and the preview host to the candidate", () => {
+    // The Host rules Traefik reads from each release's Nomad service.
+    const tags = (set: ReleaseSetProps, release: (typeof props.releases)[number]) =>
+      toJobSpec(set, release, "StagedReleases/probe").TaskGroups[0].Services[0].Tags;
+    const hosts = (set: ReleaseSetProps, release: (typeof props.releases)[number]) =>
+      tags(set, release).flatMap((tag) => tag.match(/\.rule=Host\(`(.+)`\)$/)?.[1] ?? []);
+    const [v1, v2] = props.releases;
+    assert.deepEqual(hosts(props, v1), ["probe.example.test"]);
+    assert.deepEqual(hosts(props, v2), ["v2.probe.example.test"]);
 
-  it("keeps route identity stable across Alchemy state recreation", () => {
-    assert.equal(
-      stableRouteId("StagedReleases/probe", props.domain),
-      "alchemy-StagedReleases/probe-probe.example.test-stable",
-    );
-    assert.equal(
-      previewRouteId("StagedReleases/probe", props.domain, "v2"),
-      "alchemy-StagedReleases/probe-probe.example.test-preview-v2",
-    );
+    const promoted = { ...props, selectedRelease: "v2", candidateRelease: Option.none<string>() };
+    assert.deepEqual(hosts(promoted, v2), ["probe.example.test"]);
+    // A release kept only for rollback is invisible to Traefik.
+    assert.deepEqual(tags(promoted, v1), []);
   });
 
   it("requires the routed allocation and all healthiness checks to match the deployed job", () => {
