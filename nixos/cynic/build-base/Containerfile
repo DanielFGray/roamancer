@@ -1,0 +1,10 @@
+# Build base for Bun projects on cynic. Built from nothing: every file comes from rootfs/,
+# which make-base-rootfs.sh assembles from cynic's pinned nixpkgs and the baseline bun.
+FROM scratch
+COPY rootfs/ /
+ENV PATH=/usr/local/bin:/bin
+ENV HOME=/root
+# The Nix glibc searches its own store directory, not /lib, for libraries that a binary
+# does not name in its RUNPATH. Native addons such as rolldown need this path.
+ENV LD_LIBRARY_PATH=/lib
+CMD ["/bin/sh"]
