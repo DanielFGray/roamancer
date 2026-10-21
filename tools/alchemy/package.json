@@ -1,0 +1,34 @@
+{
+  "name": "server-alchemy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit -p tsconfig.json",
+    "plan": "alchemy plan --stage trial",
+    "deploy": "alchemy deploy --stage trial",
+    "destroy": "alchemy destroy --stage trial",
+    "staged:plan": "ALCHEMY_HOST_RUNNER=./staged-host-runner.sh ./staged-host-runner.sh plan",
+    "staged:deploy": "./staged-host-runner.sh deploy",
+    "staged:destroy": "./staged-host-runner.sh destroy",
+    "staged:controller": "ALCHEMY_HOST_RUNNER=./staged-host-runner.sh bun run staged-controller.run.ts",
+    "nix:deps": "./refresh-nix-deps.sh",
+    "history": "node --import ./node_modules/alchemy/bin/register-oxc.js src/history.ts"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.2",
+    "@effect/platform-node": "4.0.2",
+    "@effect/sql-pg": "4.0.2",
+    "@effect/sql-sqlite-node": "4.0.2",
+    "@redis/client": "^5.12.1",
+    "alchemy": "2.0.0-beta.81",
+    "effect": "4.0.2",
+    "pg": "8.22.0"
+  },
+  "devDependencies": {
+    "bun2nix": "2.1.2",
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
+    "typescript": "^7.0.2"
+  }
+}

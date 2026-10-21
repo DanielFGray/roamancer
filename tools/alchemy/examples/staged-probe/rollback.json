@@ -1,0 +1,24 @@
+{
+  "apiVersion": "server-ansible/releases-v1",
+  "releaseSet": {
+    "name": "staged-probe",
+    "scheme": "http",
+    "domain": "probe.localhost",
+    "containerPort": 80,
+    "healthPath": "/",
+    "cpu": 100,
+    "memoryMB": 64,
+    "releases": [
+      {
+        "id": "v1",
+        "image": "docker.io/traefik/whoami@sha256:c899811bc4a1f63a1273c612e15f1bea6514a19c7b08143dbbdef3e8f882c38d"
+      },
+      {
+        "id": "v2",
+        "image": "docker.io/traefik/whoami@sha256:4f90b33ddca9c4d4f06527070d6e503b16d71016edea036842be2a84e60c91cb"
+      }
+    ],
+    "selectedRelease": "v1",
+    "candidateRelease": null
+  }
+}
