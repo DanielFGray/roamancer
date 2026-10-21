@@ -296,6 +296,9 @@ const toHealthCheck = (healthCheck: HealthCheck) =>
       };
 
 /** Render one workload job. Service references and secret paths are metadata, not values. */
+// Nomad fails a deployment that does not progress within this time; NomadJob waits for that verdict.
+export const progressDeadlineMillis = 600_000;
+
 export const toJobSpec = (job: Job, owner: string) => {
   const serverTask = toTask(job, {
     name: "server",
@@ -356,7 +359,7 @@ export const toJobSpec = (job: Job, owner: string) => {
       HealthCheck: "checks",
       MinHealthyTime: 10_000_000_000,
       HealthyDeadline: 180_000_000_000,
-      ProgressDeadline: 600_000_000_000,
+      ProgressDeadline: progressDeadlineMillis * 1_000_000,
       AutoRevert: true,
     },
   };
