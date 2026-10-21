@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import {
   AllocationChecksSchema,
   AllocationSnapshotSchema,
@@ -30,10 +30,10 @@ const input = {
   selectedRelease: "v1",
   candidateRelease: "v2",
 };
-const props = Schema.decodeUnknownSync(ReleaseSetProps)(input);
+const props = S.decodeUnknownSync(ReleaseSetProps)(input);
 
 const ownedJob = (release: string) =>
-  Schema.decodeUnknownSync(JobListItemSchema)({
+  S.decodeUnknownSync(JobListItemSchema)({
     ID: `probe-${release}`,
     JobModifyIndex: 1,
     Meta: {
@@ -43,7 +43,7 @@ const ownedJob = (release: string) =>
     },
   });
 
-const service = Schema.decodeUnknownSync(ServiceLocationSchema)({
+const service = S.decodeUnknownSync(ServiceLocationSchema)({
   ServiceName: "probe-v1",
   AllocID: "allocation-1",
   Address: "10.0.0.2",
@@ -57,8 +57,8 @@ const allocationInput = {
   DeploymentStatus: { Healthy: true },
   Job: { ID: "probe-v1", Version: 4, JobModifyIndex: 12 },
 };
-const allocation = Schema.decodeUnknownSync(AllocationSnapshotSchema)(allocationInput);
-const checks = Schema.decodeUnknownSync(AllocationChecksSchema)({
+const allocation = S.decodeUnknownSync(AllocationSnapshotSchema)(allocationInput);
+const checks = S.decodeUnknownSync(AllocationChecksSchema)({
   "check-1": { Mode: "healthiness", Service: "probe-v1", Status: "success" },
   "check-2": { Mode: "readiness", Service: "probe-v1", Status: "success" },
 });
@@ -95,6 +95,8 @@ describe("ReleaseSet recovery and diff decisions", () => {
         ownedJob("v1"),
         ownedJob("v2"),
         ownedJob("abandoned"),
+        // Nomad omits Meta for a job without metadata, such as one run by hand.
+        S.decodeUnknownSync(JobListItemSchema)({ ID: "hand-run", JobModifyIndex: 3 }),
       ]),
     );
   });
@@ -109,7 +111,7 @@ describe("ReleaseSet recovery and diff decisions", () => {
       ]),
       undefined,
     );
-    const foreign = Schema.decodeUnknownSync(JobListItemSchema)({
+    const foreign = S.decodeUnknownSync(JobListItemSchema)({
       ...ownedJob("v2"),
       Meta: {
         "alchemy.owner": "AnotherStack/probe",
@@ -144,7 +146,7 @@ describe("ReleaseSet recovery and diff decisions", () => {
     assert.equal(
       readiness(
         Option.some(
-          Schema.decodeUnknownSync(AllocationSnapshotSchema)({
+          S.decodeUnknownSync(AllocationSnapshotSchema)({
             ...allocationInput,
             Job: { ...allocationInput.Job, JobModifyIndex: 13 },
           }),
@@ -156,7 +158,7 @@ describe("ReleaseSet recovery and diff decisions", () => {
       readiness(
         Option.some(allocation),
         Option.some(
-          Schema.decodeUnknownSync(AllocationChecksSchema)({
+          S.decodeUnknownSync(AllocationChecksSchema)({
             ...checks,
             "check-1": { Mode: "healthiness", Service: "probe-v1", Status: "warning" },
           }),
@@ -169,7 +171,7 @@ describe("ReleaseSet recovery and diff decisions", () => {
   });
 
   it("rejects a release ID whose immutable image changes", () => {
-    const changed = Schema.decodeUnknownSync(ReleaseSetProps)({
+    const changed = S.decodeUnknownSync(ReleaseSetProps)({
       ...input,
       releases: [
         { ...input.releases[0], image: `registry.example.test/probe@sha256:${"c".repeat(64)}` },

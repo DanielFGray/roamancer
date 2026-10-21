@@ -2,11 +2,11 @@ import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import { ReleaseSetProps } from "./ReleaseJob.ts";
 
-const ReleaseManifest = Schema.Struct({
-  apiVersion: Schema.Literals(["server-ansible/releases-v1"]),
+const ReleaseManifest = S.Struct({
+  apiVersion: S.Literals(["server-ansible/releases-v1"]),
   releaseSet: ReleaseSetProps,
 });
 
@@ -25,7 +25,7 @@ export const load = Effect.fn(function* () {
         ),
     ),
   );
-  return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ReleaseManifest), {
+  return yield* S.decodeUnknownEffect(S.fromJsonString(ReleaseManifest), {
     onExcessProperty: "error",
   })(contents).pipe(
     Effect.mapError(

@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { deploymentOutcome } from "./NomadJob.ts";
+import { deploymentOutcome } from "./Deployment.ts";
 import type { Deployment, JobSnapshot } from "./Nomad.ts";
 
 const owner = "cartridge/platform-data/postgres";
@@ -25,7 +25,7 @@ const outcome = (current: Option.Option<JobSnapshot>, latest: Option.Option<Depl
     deploymentOutcome(
       { job: () => Effect.succeed(current), deployment: () => Effect.succeed(latest) },
       "postgres",
-      owner,
+      (j: JobSnapshot) => (j.Meta?.["alchemy.owner"] as string | undefined) === owner,
       41,
     ),
   );

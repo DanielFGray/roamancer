@@ -3,11 +3,11 @@ import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 
-export class ServiceNotRegistered extends Schema.TaggedError<ServiceNotRegistered>()(
+export class ServiceNotRegistered extends S.TaggedError<ServiceNotRegistered>()(
   "ServiceNotRegistered",
-  { service: Schema.String },
+  { service: S.String },
 ) {}
 
 export interface RegistrationRetry {

@@ -3,7 +3,7 @@ import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import { expand, Cartridge } from "./Cartridge.ts";
 import { compose } from "./Compose.ts";
 import { Job } from "./Job.ts";
@@ -14,7 +14,7 @@ import { AdminCredentialProps } from "./AdminCredential.ts";
 const readCartridge = (rel: string) => {
   const path = fileURLToPath(new URL(rel, import.meta.url));
   const contents = readFileSync(path, "utf8");
-  return Schema.decodeUnknownSync(Cartridge)(JSON.parse(contents));
+  return S.decodeUnknownSync(Cartridge)(JSON.parse(contents));
 };
 
 const makeConstructors = () => {
@@ -126,7 +126,7 @@ describe("Compose", () => {
   });
 
   it("routes migration and api logins to their credential paths", async () => {
-    const cartridge = Schema.decodeUnknownSync(Cartridge)({
+    const cartridge = S.decodeUnknownSync(Cartridge)({
       apiVersion: "server-ansible/v2",
       name: "app-needs",
       postgres: [{ database: "app_needs" }],
@@ -187,7 +187,7 @@ describe("Compose", () => {
   });
 
   it("resolves a migrate step's login to the migration credential path", async () => {
-    const cartridge = Schema.decodeUnknownSync(Cartridge)({
+    const cartridge = S.decodeUnknownSync(Cartridge)({
       apiVersion: "server-ansible/v2",
       name: "app-needs",
       postgres: [{ database: "app_needs" }],

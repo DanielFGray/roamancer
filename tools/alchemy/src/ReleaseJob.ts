@@ -1,43 +1,39 @@
-import * as Option from "effect/Option"
-import * as Schema from "effect/Schema"
+import * as Option from "effect/Option";
+import * as S from "effect/Schema";
+import { progressDeadlineMillis } from "./Job.ts";
 
-const ResourceName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/))
-const ReleaseId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/))
-const HostName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9.-]+$/))
-const HealthPath = Schema.String.check(Schema.isPattern(/^\/[A-Za-z0-9_./-]*$/))
+const ResourceName = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
+const ReleaseId = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
+const HostName = S.String.check(S.isPattern(/^[A-Za-z0-9.-]+$/));
+const HealthPath = S.String.check(S.isPattern(/^\/[A-Za-z0-9_./-]*$/));
 
-export const Release = Schema.Struct({
+export const Release = S.Struct({
   id: ReleaseId,
-  image: Schema.String.check(Schema.isPattern(/^.+@sha256:[a-f0-9]{64}$/))
-})
-export type Release = typeof Release.Type
+  image: S.String.check(S.isPattern(/^.+@sha256:[a-f0-9]{64}$/)),
+});
+export type Release = typeof Release.Type;
 
-export const ReleaseSetProps = Schema.Struct({
+export const ReleaseSetProps = S.Struct({
   name: ResourceName,
-  scheme: Schema.Literals(["http", "https"]),
+  scheme: S.Literals(["http", "https"]),
   domain: HostName,
-  containerPort: Schema.Number.check(
-    Schema.isInt(),
-    Schema.isGreaterThan(0),
-    Schema.isLessThanOrEqualTo(65_535)
-  ),
+  containerPort: S.Number.check(S.isInt(), S.isGreaterThan(0), S.isLessThanOrEqualTo(65_535)),
   healthPath: HealthPath,
-  cpu: Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
-  memoryMB: Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
-  releases: Schema.Array(Release),
+  cpu: S.Number.check(S.isInt(), S.isGreaterThan(0)),
+  memoryMB: S.Number.check(S.isInt(), S.isGreaterThan(0)),
+  releases: S.Array(Release),
   selectedRelease: ReleaseId,
-  candidateRelease: Schema.optionalKey(Schema.OptionFromNullOr(ReleaseId))
-})
-export type ReleaseSetProps = typeof ReleaseSetProps.Type
+  candidateRelease: S.optionalKey(S.OptionFromNullOr(ReleaseId)),
+});
+export type ReleaseSetProps = typeof ReleaseSetProps.Type;
 
 export const candidateOf = (props: ReleaseSetProps) =>
-  Option.isOption(props.candidateRelease) ? props.candidateRelease : Option.none<string>()
+  Option.isOption(props.candidateRelease) ? props.candidateRelease : Option.none<string>();
 
 export const previewHost = (props: ReleaseSetProps, release: Release) =>
-  `${release.id}.${props.domain}`
+  `${release.id}.${props.domain}`;
 
-export const jobName = (props: ReleaseSetProps, release: Release) =>
-  `${props.name}-${release.id}`
+export const jobName = (props: ReleaseSetProps, release: Release) => `${props.name}-${release.id}`;
 
 /**
  * The Traefik route tags for one release's Nomad service. Traefik reads them
@@ -53,12 +49,13 @@ export const jobName = (props: ReleaseSetProps, release: Release) =>
  * as soon as its allocation starts, before the service is ready.
  */
 export const routeTags = (props: ReleaseSetProps, release: Release): ReadonlyArray<string> => {
-  const name = jobName(props, release)
-  const host = release.id === props.selectedRelease
-    ? Option.some({ router: `${name}-stable`, host: props.domain })
-    : Option.filter(candidateOf(props), (id) => id === release.id).pipe(
-      Option.map(() => ({ router: `${name}-preview`, host: previewHost(props, release) }))
-    )
+  const name = jobName(props, release);
+  const host =
+    release.id === props.selectedRelease
+      ? Option.some({ router: `${name}-stable`, host: props.domain })
+      : Option.filter(candidateOf(props), (id) => id === release.id).pipe(
+          Option.map(() => ({ router: `${name}-preview`, host: previewHost(props, release) })),
+        );
   return Option.match(host, {
     onNone: () => [],
     onSome: ({ router, host }) => [
@@ -68,14 +65,14 @@ export const routeTags = (props: ReleaseSetProps, release: Release): ReadonlyArr
       `traefik.http.middlewares.${name}-release.headers.customresponseheaders.X-Alchemy-Release=${release.id}`,
       `traefik.http.routers.${router}.rule=Host(\`${host}\`)`,
       `traefik.http.routers.${router}.service=${name}`,
-      `traefik.http.routers.${router}.middlewares=${name}-release`
-    ]
-  })
-}
+      `traefik.http.routers.${router}.middlewares=${name}-release`,
+    ],
+  });
+};
 
 /** Render a stateless release job with a Nomad-assigned host port. */
 export const toJobSpec = (props: ReleaseSetProps, release: Release, owner: string) => {
-  const name = jobName(props, release)
+  const name = jobName(props, release);
   return {
     ID: name,
     Name: name,
@@ -84,42 +81,50 @@ export const toJobSpec = (props: ReleaseSetProps, release: Release, owner: strin
     Meta: {
       "alchemy.owner": owner,
       "alchemy.provider": "Nomad.ReleaseSet",
-      "alchemy.release": release.id
+      "alchemy.release": release.id,
     },
-    TaskGroups: [{
-      Name: "app",
-      Count: 1,
-      Networks: [{ DynamicPorts: [{ Label: "http", To: props.containerPort }] }],
-      Services: [{
-        Name: name,
-        PortLabel: "http",
-        Provider: "nomad",
-        Tags: routeTags(props, release),
-        Checks: [{
-          Name: "http",
-          Type: "http",
-          Path: props.healthPath,
-          Interval: 5_000_000_000,
-          Timeout: 2_000_000_000,
-          OnUpdate: "require_healthy"
-        }]
-      }],
-      Tasks: [{
+    TaskGroups: [
+      {
         Name: "app",
-        Driver: "podman",
-        Config: { image: release.image, network_mode: "bridge", ports: ["http"] },
-        Resources: { CPU: props.cpu, MemoryMB: props.memoryMB }
-      }]
-    }],
+        Count: 1,
+        Networks: [{ DynamicPorts: [{ Label: "http", To: props.containerPort }] }],
+        Services: [
+          {
+            Name: name,
+            PortLabel: "http",
+            Provider: "nomad",
+            Tags: routeTags(props, release),
+            Checks: [
+              {
+                Name: "http",
+                Type: "http",
+                Path: props.healthPath,
+                Interval: 5_000_000_000,
+                Timeout: 2_000_000_000,
+                OnUpdate: "require_healthy",
+              },
+            ],
+          },
+        ],
+        Tasks: [
+          {
+            Name: "app",
+            Driver: "podman",
+            Config: { image: release.image, network_mode: "bridge", ports: ["http"] },
+            Resources: { CPU: props.cpu, MemoryMB: props.memoryMB },
+          },
+        ],
+      },
+    ],
     Update: {
       MaxParallel: 1,
       HealthCheck: "checks",
       MinHealthyTime: 10_000_000_000,
       HealthyDeadline: 180_000_000_000,
-      ProgressDeadline: 600_000_000_000,
-      AutoRevert: true
-    }
-  }
-}
+      ProgressDeadline: progressDeadlineMillis * 1_000_000,
+      AutoRevert: true,
+    },
+  };
+};
 
-export type ReleaseJobSpec = ReturnType<typeof toJobSpec>
+export type ReleaseJobSpec = ReturnType<typeof toJobSpec>;

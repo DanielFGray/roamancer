@@ -1,89 +1,89 @@
-import { Schema } from "effect";
+import { Schema as S } from "effect";
 import * as Match from "effect/Match";
 
-export const ResourceName = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/),
+export const ResourceName = S.String.check(
+  S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/),
 );
-const EnvironmentVariable = Schema.String.check(Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/));
-const SecretPath = Schema.String.check(
-  Schema.isPattern(/^secret\/data\/[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)*$/),
+const EnvironmentVariable = S.String.check(S.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/));
+const SecretPath = S.String.check(
+  S.isPattern(/^secret\/data\/[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)*$/),
 );
-const DatabaseCredentialPath = Schema.String.check(
-  Schema.isPattern(/^database\/creds\/[A-Za-z0-9_.-]+$/),
+const DatabaseCredentialPath = S.String.check(
+  S.isPattern(/^database\/creds\/[A-Za-z0-9_.-]+$/),
 );
-const SecretKey = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]+$/));
-export const DatabaseIdentifier = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
-export const ServiceConnection = Schema.Struct({
+const SecretKey = S.String.check(S.isPattern(/^[A-Za-z0-9_-]+$/));
+export const DatabaseIdentifier = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
+export const ServiceConnection = S.Struct({
   service: ResourceName,
   hostEnv: EnvironmentVariable,
   portEnv: EnvironmentVariable,
 });
 export type ServiceConnection = typeof ServiceConnection.Type;
 
-export const HealthCheck = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literals(["http"]),
-    path: Schema.String.check(Schema.isPattern(/^\/[A-Za-z0-9_./-]*$/)),
+export const HealthCheck = S.Union([
+  S.Struct({
+    type: S.Literals(["http"]),
+    path: S.String.check(S.isPattern(/^\/[A-Za-z0-9_./-]*$/)),
   }),
-  Schema.Struct({ type: Schema.Literals(["tcp"]) }),
+  S.Struct({ type: S.Literals(["tcp"]) }),
 ]);
 export type HealthCheck = typeof HealthCheck.Type;
 
-export const KvSecretReference = Schema.TaggedStruct("KvSecret", {
+export const KvSecretReference = S.TaggedStruct("KvSecret", {
   path: SecretPath,
   key: SecretKey,
   env: EnvironmentVariable,
 });
-const PostgresUrlReference = Schema.Struct({
+const PostgresUrlReference = S.Struct({
   env: EnvironmentVariable,
   server: ResourceName,
   database: DatabaseIdentifier,
 });
-const PostgresCredentialsReference = Schema.TaggedStruct("PostgresCredentials", {
+const PostgresCredentialsReference = S.TaggedStruct("PostgresCredentials", {
   role: ResourceName,
   credentialPath: DatabaseCredentialPath,
-  usernameEnv: Schema.optionalKey(EnvironmentVariable),
-  passwordEnv: Schema.optionalKey(EnvironmentVariable),
-  url: Schema.optionalKey(PostgresUrlReference),
+  usernameEnv: S.optionalKey(EnvironmentVariable),
+  passwordEnv: S.optionalKey(EnvironmentVariable),
+  url: S.optionalKey(PostgresUrlReference),
 });
-const ValkeyUrlReference = Schema.Struct({
+const ValkeyUrlReference = S.Struct({
   env: EnvironmentVariable,
   server: ResourceName,
 });
-const ValkeyCredentialsReference = Schema.TaggedStruct("ValkeyCredentials", {
-  access: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/)),
+const ValkeyCredentialsReference = S.TaggedStruct("ValkeyCredentials", {
+  access: S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,39}$/)),
   credentialPath: SecretPath,
-  usernameEnv: Schema.optionalKey(EnvironmentVariable),
-  passwordEnv: Schema.optionalKey(EnvironmentVariable),
-  url: Schema.optionalKey(ValkeyUrlReference),
+  usernameEnv: S.optionalKey(EnvironmentVariable),
+  passwordEnv: S.optionalKey(EnvironmentVariable),
+  url: S.optionalKey(ValkeyUrlReference),
 });
-export const SecretReference = Schema.Union([
+export const SecretReference = S.Union([
   KvSecretReference,
   PostgresCredentialsReference,
   ValkeyCredentialsReference,
 ]);
 export type SecretReference = typeof SecretReference.Type;
 
-const atLeastOneEnvironmentVariable = Schema.makeFilter(
+const atLeastOneEnvironmentVariable = S.makeFilter(
   (value: { usernameEnv?: string; passwordEnv?: string; urlEnv?: string }) =>
     value.usernameEnv === undefined && value.passwordEnv === undefined && value.urlEnv === undefined
       ? "at least one environment variable is required"
       : undefined,
 );
 
-export const ValkeyCredentialsDeclaration = Schema.TaggedStruct("ValkeyCredentials", {
-  usernameEnv: Schema.optionalKey(EnvironmentVariable),
-  passwordEnv: Schema.optionalKey(EnvironmentVariable),
-  urlEnv: Schema.optionalKey(EnvironmentVariable),
+export const ValkeyCredentialsDeclaration = S.TaggedStruct("ValkeyCredentials", {
+  usernameEnv: S.optionalKey(EnvironmentVariable),
+  passwordEnv: S.optionalKey(EnvironmentVariable),
+  urlEnv: S.optionalKey(EnvironmentVariable),
 }).check(atLeastOneEnvironmentVariable);
-export const PostgresCredentialsDeclaration = Schema.TaggedStruct("PostgresCredentials", {
+export const PostgresCredentialsDeclaration = S.TaggedStruct("PostgresCredentials", {
   database: DatabaseIdentifier,
-  login: Schema.Literals(["api", "migration"]),
-  usernameEnv: Schema.optionalKey(EnvironmentVariable),
-  passwordEnv: Schema.optionalKey(EnvironmentVariable),
-  urlEnv: Schema.optionalKey(EnvironmentVariable),
+  login: S.Literals(["api", "migration"]),
+  usernameEnv: S.optionalKey(EnvironmentVariable),
+  passwordEnv: S.optionalKey(EnvironmentVariable),
+  urlEnv: S.optionalKey(EnvironmentVariable),
 }).check(atLeastOneEnvironmentVariable);
-export const CartridgeSecretReference = Schema.Union([
+export const CartridgeSecretReference = S.Union([
   KvSecretReference,
   PostgresCredentialsDeclaration,
   ValkeyCredentialsDeclaration,
@@ -104,51 +104,51 @@ export const secretPolicyPath = (secret: SecretReference) =>
 export const secretPolicyPaths = (job: Job) =>
   [...(job.secrets ?? []), ...(job.migrate?.secrets ?? [])].map(secretPolicyPath);
 
-const Storage = Schema.Struct({
+const Storage = S.Struct({
   volume: ResourceName,
-  mountPath: Schema.String.check(Schema.isPattern(/^\/[A-Za-z0-9_./-]+$/)),
+  mountPath: S.String.check(S.isPattern(/^\/[A-Za-z0-9_./-]+$/)),
 });
 
 const JobBaseFields = {
   name: ResourceName,
-  image: Schema.String,
-  hostPort: Schema.Union([
-    Schema.Literals(["dynamic"]),
-    Schema.Number.check(
-      Schema.isInt(),
-      Schema.isGreaterThan(0),
-      Schema.isLessThanOrEqualTo(65_535),
+  image: S.String,
+  hostPort: S.Union([
+    S.Literals(["dynamic"]),
+    S.Number.check(
+      S.isInt(),
+      S.isGreaterThan(0),
+      S.isLessThanOrEqualTo(65_535),
     ),
   ]),
-  containerPort: Schema.Number.check(
-    Schema.isInt(),
-    Schema.isGreaterThan(0),
-    Schema.isLessThanOrEqualTo(65_535),
+  containerPort: S.Number.check(
+    S.isInt(),
+    S.isGreaterThan(0),
+    S.isLessThanOrEqualTo(65_535),
   ),
-  healthCheck: Schema.optionalKey(HealthCheck),
-  cpu: Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
-  memoryMB: Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
-  networkMode: Schema.Literals(["bridge", "pasta"]),
-  storage: Schema.optionalKey(Storage),
-  environment: Schema.Array(Schema.Struct({ name: EnvironmentVariable, value: Schema.String })),
-  command: Schema.optionalKey(Schema.String),
-  args: Schema.optionalKey(Schema.Array(Schema.String)),
-  connections: Schema.Array(ServiceConnection),
+  healthCheck: S.optionalKey(HealthCheck),
+  cpu: S.Number.check(S.isInt(), S.isGreaterThan(0)),
+  memoryMB: S.Number.check(S.isInt(), S.isGreaterThan(0)),
+  networkMode: S.Literals(["bridge", "pasta"]),
+  storage: S.optionalKey(Storage),
+  environment: S.Array(S.Struct({ name: EnvironmentVariable, value: S.String })),
+  command: S.optionalKey(S.String),
+  args: S.optionalKey(S.Array(S.String)),
+  connections: S.Array(ServiceConnection),
 };
 
-export const ExpandedPostgresCredentials = Schema.TaggedStruct("PostgresCredentials", {
+export const ExpandedPostgresCredentials = S.TaggedStruct("PostgresCredentials", {
   role: ResourceName,
-  usernameEnv: Schema.optionalKey(EnvironmentVariable),
-  passwordEnv: Schema.optionalKey(EnvironmentVariable),
-  url: Schema.optionalKey(Schema.Struct({ env: EnvironmentVariable })),
+  usernameEnv: S.optionalKey(EnvironmentVariable),
+  passwordEnv: S.optionalKey(EnvironmentVariable),
+  url: S.optionalKey(S.Struct({ env: EnvironmentVariable })),
 });
-export const ExpandedValkeyCredentials = Schema.TaggedStruct("ValkeyCredentials", {
-  access: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/)),
-  usernameEnv: Schema.optionalKey(EnvironmentVariable),
-  passwordEnv: Schema.optionalKey(EnvironmentVariable),
-  url: Schema.optionalKey(Schema.Struct({ env: EnvironmentVariable })),
+export const ExpandedValkeyCredentials = S.TaggedStruct("ValkeyCredentials", {
+  access: S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,39}$/)),
+  usernameEnv: S.optionalKey(EnvironmentVariable),
+  passwordEnv: S.optionalKey(EnvironmentVariable),
+  url: S.optionalKey(S.Struct({ env: EnvironmentVariable })),
 });
-export const ExpandedSecretReference = Schema.Union([
+export const ExpandedSecretReference = S.Union([
   KvSecretReference,
   ExpandedPostgresCredentials,
   ExpandedValkeyCredentials,
@@ -156,31 +156,31 @@ export const ExpandedSecretReference = Schema.Union([
 export type ExpandedSecretReference = typeof ExpandedSecretReference.Type;
 
 // A step that runs to completion in the service image before the service starts, with its own secrets.
-const migrateStep = <S extends Schema.Top>(secret: S) =>
-  Schema.Struct({
-    command: Schema.optionalKey(Schema.String),
-    args: Schema.optionalKey(Schema.Array(Schema.String)),
-    secrets: Schema.optionalKey(Schema.Array(secret)),
+const migrateStep = <S extends S.Top>(secret: S) =>
+  S.Struct({
+    command: S.optionalKey(S.String),
+    args: S.optionalKey(S.Array(S.String)),
+    secrets: S.optionalKey(S.Array(secret)),
   });
 
-export const ExpandedJob = Schema.Struct({
+export const ExpandedJob = S.Struct({
   ...JobBaseFields,
-  secrets: Schema.optionalKey(Schema.Array(ExpandedSecretReference)),
-  migrate: Schema.optionalKey(migrateStep(ExpandedSecretReference)),
+  secrets: S.optionalKey(S.Array(ExpandedSecretReference)),
+  migrate: S.optionalKey(migrateStep(ExpandedSecretReference)),
 });
 export type ExpandedJob = typeof ExpandedJob.Type;
 
-export const Job = Schema.Struct({
+export const Job = S.Struct({
   ...JobBaseFields,
-  secrets: Schema.optionalKey(Schema.Array(SecretReference)),
-  migrate: Schema.optionalKey(migrateStep(SecretReference)),
+  secrets: S.optionalKey(S.Array(SecretReference)),
+  migrate: S.optionalKey(migrateStep(SecretReference)),
 });
 export type Job = typeof Job.Type;
 
-export const CartridgeJob = Schema.Struct({
+export const CartridgeJob = S.Struct({
   ...JobBaseFields,
-  secrets: Schema.optionalKey(Schema.Array(CartridgeSecretReference)),
-  migrate: Schema.optionalKey(migrateStep(CartridgeSecretReference)),
+  secrets: S.optionalKey(S.Array(CartridgeSecretReference)),
+  migrate: S.optionalKey(migrateStep(CartridgeSecretReference)),
 });
 export type CartridgeJob = typeof CartridgeJob.Type;
 

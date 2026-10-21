@@ -4,7 +4,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as PgClient from "@effect/sql-pg/PgClient";
 import { KvSecretReference } from "./Job.ts";
@@ -13,12 +13,12 @@ import { OpenBao } from "./OpenBao.ts";
 import { OperationJournal } from "./OperationJournal.ts";
 import { dependencyRegistrationRetry, firstServiceLocation } from "./ServiceRegistration.ts";
 
-const DatabaseIdentifier = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
-const ResourceName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
-const EngineName = Schema.String.check(Schema.isPattern(/^alchemy_[a-z][a-z0-9_]{0,54}$/));
-const CredentialRoleName = Schema.String.check(Schema.isPattern(/^alchemy_[a-z][a-z0-9_]{0,54}$/));
+const DatabaseIdentifier = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
+const ResourceName = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
+const EngineName = S.String.check(S.isPattern(/^alchemy_[a-z][a-z0-9_]{0,54}$/));
+const CredentialRoleName = S.String.check(S.isPattern(/^alchemy_[a-z][a-z0-9_]{0,54}$/));
 
-export const PostgresDatabaseProps = Schema.Struct({
+export const PostgresDatabaseProps = S.Struct({
   name: DatabaseIdentifier,
   server: ResourceName,
   adminUsername: DatabaseIdentifier,
@@ -32,8 +32,8 @@ export const PostgresDatabaseProps = Schema.Struct({
   credentialRole: CredentialRoleName,
   // The migration login. It joins the owner role.
   migrationCredentialRole: CredentialRoleName,
-  defaultTtl: Schema.String.check(Schema.isPattern(/^[1-9][0-9]*(s|m|h)$/)),
-  maxTtl: Schema.String.check(Schema.isPattern(/^[1-9][0-9]*(s|m|h)$/)),
+  defaultTtl: S.String.check(S.isPattern(/^[1-9][0-9]*(s|m|h)$/)),
+  maxTtl: S.String.check(S.isPattern(/^[1-9][0-9]*(s|m|h)$/)),
 });
 export type PostgresDatabaseProps = typeof PostgresDatabaseProps.Type;
 
@@ -56,11 +56,11 @@ export interface PostgresDatabase extends Alchemy.Resource<
 
 export const PostgresDatabase = Alchemy.Resource<PostgresDatabase>("Postgres.Database");
 
-export class PostgresDatabaseError extends Schema.TaggedError<PostgresDatabaseError>()(
+export class PostgresDatabaseError extends S.TaggedError<PostgresDatabaseError>()(
   "PostgresDatabaseError",
   {
-    operation: Schema.String,
-    target: Schema.String,
+    operation: S.String,
+    target: S.String,
   },
 ) {}
 

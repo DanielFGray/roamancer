@@ -6,22 +6,22 @@ import {
   HttpApiSchema,
   HttpApiSecurity,
 } from "@effect/platform";
-import { Context, Schema } from "effect";
+import { Context, Schema as S } from "effect";
 import { OperationalReportSchema } from "../src/services/OperationalReport.ts";
 
 // ---------------------------------------------------------------------------
 // Webhook error schemas
 // ---------------------------------------------------------------------------
 
-export class WebhookForbidden extends Schema.TaggedError<WebhookForbidden>()(
+export class WebhookForbidden extends S.TaggedError<WebhookForbidden>()(
   "WebhookForbidden",
-  { message: Schema.String },
+  { message: S.String },
   HttpApiSchema.annotations({ status: 403 }),
 ) {}
 
-export class WebhookError extends Schema.TaggedError<WebhookError>()(
+export class WebhookError extends S.TaggedError<WebhookError>()(
   "WebhookError",
-  { message: Schema.String },
+  { message: S.String },
   HttpApiSchema.annotations({ status: 500 }),
 ) {}
 
@@ -29,15 +29,15 @@ export class WebhookError extends Schema.TaggedError<WebhookError>()(
 // Error schemas
 // ---------------------------------------------------------------------------
 
-export class DeployError extends Schema.TaggedError<DeployError>()(
+export class DeployError extends S.TaggedError<DeployError>()(
   "DeployError",
-  { message: Schema.String },
+  { message: S.String },
   HttpApiSchema.annotations({ status: 500 }),
 ) {}
 
-export class NotFoundError extends Schema.TaggedError<NotFoundError>()(
+export class NotFoundError extends S.TaggedError<NotFoundError>()(
   "NotFoundError",
-  { message: Schema.String },
+  { message: S.String },
   HttpApiSchema.annotations({ status: 404 }),
 ) {}
 
@@ -46,43 +46,43 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()(
 // ---------------------------------------------------------------------------
 
 /** Alphanumeric + hyphens/underscores/dots, 1-64 chars. No consecutive dots (prevents path traversal). */
-const SafeName = Schema.String.pipe(
-  Schema.pattern(/^[a-zA-Z0-9](?:[a-zA-Z0-9_.-]*[a-zA-Z0-9])?$/),
-  Schema.maxLength(64),
-  Schema.filter((s) => !s.includes(".."), { message: () => "name must not contain '..'" }),
+const SafeName = S.String.pipe(
+  S.pattern(/^[a-zA-Z0-9](?:[a-zA-Z0-9_.-]*[a-zA-Z0-9])?$/),
+  S.maxLength(64),
+  S.filter((s) => !s.includes(".."), { message: () => "name must not contain '..'" }),
 );
 
-export const StubResponse = Schema.Struct({
-  status: Schema.String,
-  message: Schema.String,
+export const StubResponse = S.Struct({
+  status: S.String,
+  message: S.String,
 });
 
 /** Git ref: branches, tags, SHAs. Allows alphanumeric, dots, slashes, hyphens, underscores, tildes. */
-const SafeRef = Schema.String.pipe(Schema.pattern(/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/));
+const SafeRef = S.String.pipe(S.pattern(/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/));
 
 /** Git remote URL: git@host:path, https://host/path, or ssh://host/path */
-const SafeRepoUrl = Schema.String.pipe(
-  Schema.pattern(/^(https?:\/\/|git@|ssh:\/\/)[a-zA-Z0-9._/-]+$/),
+const SafeRepoUrl = S.String.pipe(
+  S.pattern(/^(https?:\/\/|git@|ssh:\/\/)[a-zA-Z0-9._/-]+$/),
 );
 
-const DeployBody = Schema.Struct({
+const DeployBody = S.Struct({
   name: SafeName,
-  ref: Schema.optional(SafeRef),
-  as: Schema.optional(SafeName),
-  repo: Schema.optional(SafeRepoUrl),
+  ref: S.optional(SafeRef),
+  as: S.optional(SafeName),
+  repo: S.optional(SafeRepoUrl),
 });
 
-const PromoteBody = Schema.Struct({
+const PromoteBody = S.Struct({
   name: SafeName,
   stage: SafeName,
-  force: Schema.optional(Schema.Boolean),
+  force: S.optional(S.Boolean),
 });
 
-const RollbackBody = Schema.Struct({
+const RollbackBody = S.Struct({
   name: SafeName,
 });
 
-const TeardownBody = Schema.Struct({
+const TeardownBody = S.Struct({
   name: SafeName,
   stage: SafeName,
 });
@@ -91,53 +91,53 @@ const TeardownBody = Schema.Struct({
 // Response schemas
 // ---------------------------------------------------------------------------
 
-export const DeployResultSchema = Schema.Struct({
-  name: Schema.String,
-  stage: Schema.String,
-  hash: Schema.String,
-  type: Schema.String,
-  previewUrl: Schema.String,
-  autoPromote: Schema.optional(Schema.String),
+export const DeployResultSchema = S.Struct({
+  name: S.String,
+  stage: S.String,
+  hash: S.String,
+  type: S.String,
+  previewUrl: S.String,
+  autoPromote: S.optional(S.String),
 });
 
-export const PromoteResultSchema = Schema.Struct({
-  name: Schema.String,
-  stage: Schema.String,
-  domain: Schema.String,
+export const PromoteResultSchema = S.Struct({
+  name: S.String,
+  stage: S.String,
+  domain: S.String,
 });
 
-export const RollbackResultSchema = Schema.Struct({
-  name: Schema.String,
-  stage: Schema.String,
+export const RollbackResultSchema = S.Struct({
+  name: S.String,
+  stage: S.String,
 });
 
-export const TeardownResultSchema = Schema.Struct({
-  name: Schema.String,
-  stage: Schema.String,
+export const TeardownResultSchema = S.Struct({
+  name: S.String,
+  stage: S.String,
 });
 
-export const ProjectInfoSchema = Schema.Struct({
-  name: Schema.String,
-  stageCount: Schema.Number,
-  promoted: Schema.NullOr(Schema.String),
+export const ProjectInfoSchema = S.Struct({
+  name: S.String,
+  stageCount: S.Number,
+  promoted: S.NullOr(S.String),
 });
 
-const StageDetailSchema = Schema.Struct({
-  stage: Schema.String,
-  promoted: Schema.Boolean,
-  type: Schema.String,
-  port: Schema.NullOr(Schema.Number),
-  domain: Schema.String,
-  ref: Schema.String,
-  hash: Schema.String,
-  deployed_at: Schema.String,
-  previewUrl: Schema.String,
+const StageDetailSchema = S.Struct({
+  stage: S.String,
+  promoted: S.Boolean,
+  type: S.String,
+  port: S.NullOr(S.Number),
+  domain: S.String,
+  ref: S.String,
+  hash: S.String,
+  deployed_at: S.String,
+  previewUrl: S.String,
 });
 
-export const StageListResultSchema = Schema.Struct({
-  name: Schema.String,
-  stages: Schema.Array(StageDetailSchema),
-  production: Schema.NullOr(Schema.String),
+export const StageListResultSchema = S.Struct({
+  name: S.String,
+  stages: S.Array(StageDetailSchema),
+  production: S.NullOr(S.String),
 });
 
 const nameParam = HttpApiSchema.param("name", SafeName);
@@ -146,9 +146,9 @@ const nameParam = HttpApiSchema.param("name", SafeName);
 // Auth middleware
 // ---------------------------------------------------------------------------
 
-export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
+export class Unauthorized extends S.TaggedError<Unauthorized>()(
   "Unauthorized",
-  { message: Schema.String },
+  { message: S.String },
   HttpApiSchema.annotations({ status: 401 }),
 ) {}
 
@@ -168,7 +168,7 @@ export class Authorization extends HttpApiMiddleware.Tag<Authorization>()("Autho
 // ---------------------------------------------------------------------------
 
 const projectsGroup = HttpApiGroup.make("projects")
-  .add(HttpApiEndpoint.get("listProjects", "/projects").addSuccess(Schema.Array(ProjectInfoSchema)))
+  .add(HttpApiEndpoint.get("listProjects", "/projects").addSuccess(S.Array(ProjectInfoSchema)))
   .add(
     HttpApiEndpoint.get("getProject")`/projects/${nameParam}`
       .addSuccess(StageListResultSchema)
@@ -181,14 +181,14 @@ const projectsGroup = HttpApiGroup.make("projects")
   )
   .middleware(Authorization);
 
-const BackupJobStatusSchema = Schema.Struct({
-  lastRun: Schema.NullOr(Schema.String),
-  lastResult: Schema.Union(Schema.Literal("success"), Schema.Literal("failure")),
-  lastError: Schema.NullOr(Schema.String),
-  lastFile: Schema.NullOr(Schema.String),
+const BackupJobStatusSchema = S.Struct({
+  lastRun: S.NullOr(S.String),
+  lastResult: S.Union(S.Literal("success"), S.Literal("failure")),
+  lastError: S.NullOr(S.String),
+  lastFile: S.NullOr(S.String),
 });
 
-const BackupStatusResponse = Schema.Struct({
+const BackupStatusResponse = S.Struct({
   postgres: BackupJobStatusSchema,
   vault: BackupJobStatusSchema,
   clickhouse: BackupJobStatusSchema,
@@ -197,12 +197,12 @@ const BackupStatusResponse = Schema.Struct({
   signoz: BackupJobStatusSchema,
 });
 
-const CaddyRouteSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown });
+const CaddyRouteSchema = S.Record({ key: S.String, value: S.Unknown });
 
 const statusGroup = HttpApiGroup.make("status")
   .add(HttpApiEndpoint.get("getStatus", "/status").addSuccess(OperationalReportSchema))
   .add(HttpApiEndpoint.get("getBackups", "/backups").addSuccess(BackupStatusResponse))
-  .add(HttpApiEndpoint.get("getRoutes", "/routes").addSuccess(Schema.Array(CaddyRouteSchema)))
+  .add(HttpApiEndpoint.get("getRoutes", "/routes").addSuccess(S.Array(CaddyRouteSchema)))
   .add(HttpApiEndpoint.post("syncRoutes", "/sync").addSuccess(StubResponse))
   .middleware(Authorization);
 

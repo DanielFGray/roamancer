@@ -1,18 +1,18 @@
-import { Config, Context, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Config, Context, Effect, Layer, Option, Redacted, Schema as S } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
-const KvValue = Schema.Struct({
-  data: Schema.Struct({ data: Schema.Record(Schema.String, Schema.String) }),
+const KvValue = S.Struct({
+  data: S.Struct({ data: S.Record(S.String, S.String) }),
 });
-const ValkeyCredentials = Schema.Struct({
-  username: Schema.String,
-  password: Schema.String,
+const ValkeyCredentials = S.Struct({
+  username: S.String,
+  password: S.String,
 });
-const AdminCredential = Schema.Struct({ password: Schema.String });
+const AdminCredential = S.Struct({ password: S.String });
 
-export class OpenBaoError extends Schema.TaggedError<OpenBaoError>()("OpenBaoError", {
-  operation: Schema.String,
-  target: Schema.String,
+export class OpenBaoError extends S.TaggedError<OpenBaoError>()("OpenBaoError", {
+  operation: S.String,
+  target: S.String,
 }) {}
 
 type DatabaseConnection = {
@@ -219,7 +219,7 @@ export class OpenBao extends Context.Service<
             () => new OpenBaoError({ operation: "decode credentials", target: path }),
           ),
         );
-        const credentials = yield* Schema.decodeUnknownEffect(ValkeyCredentials)(
+        const credentials = yield* S.decodeUnknownEffect(ValkeyCredentials)(
           value.data.data,
         ).pipe(
           Effect.mapError(
@@ -283,7 +283,7 @@ export class OpenBao extends Context.Service<
             () => new OpenBaoError({ operation: "decode admin credential", target: path }),
           ),
         );
-        const credential = yield* Schema.decodeUnknownEffect(AdminCredential)(
+        const credential = yield* S.decodeUnknownEffect(AdminCredential)(
           value.data.data,
         ).pipe(
           Effect.mapError(

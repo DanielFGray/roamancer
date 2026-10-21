@@ -1,6 +1,6 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import type {
   AllocationChecks,
   AllocationSnapshot,
@@ -23,9 +23,9 @@ export type ReleaseSetOutput = {
   readonly releases: ReadonlyArray<string>;
 };
 
-export class ReleaseSetFailed extends Schema.TaggedError<ReleaseSetFailed>()("ReleaseSetFailed", {
-  resource: Schema.String,
-  message: Schema.String,
+export class ReleaseSetFailed extends S.TaggedError<ReleaseSetFailed>()("ReleaseSetFailed", {
+  resource: S.String,
+  message: S.String,
 }) {}
 
 export const releaseById = (props: ReleaseSetProps, id: string) =>
@@ -116,8 +116,9 @@ export const validate = (props: ReleaseSetProps, olds: ReleaseSetProps | undefin
  * the running one for the job version we registered, and every healthiness
  * check on that allocation passes.
  *
- * Nomad removes completed deployments from its active-deployment lookup, so the
- * allocation's own deployment status is the durable record.
+ * diff's allReleasesReady keeps reading allocation health, because Nomad
+ * garbage-collects finished deployments (deployment_gc_threshold, default 1 h),
+ * so an unchanged job may have no deployment to read.
  */
 export const serviceIsReady = (input: {
   readonly service: ServiceLocation;

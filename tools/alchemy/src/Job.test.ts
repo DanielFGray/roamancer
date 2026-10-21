@@ -1,11 +1,11 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import { Job, toJobSpec, secretPolicyPaths } from "./Job.ts";
 
 describe("Nomad workload rendering", () => {
   it("renders a dynamic service port and runtime-only secret references", () => {
-    const job = Schema.decodeUnknownSync(Job)({
+    const job = S.decodeUnknownSync(Job)({
       name: "proof-app",
       image: "registry.example.test/proof-app:trial",
       hostPort: "dynamic",
@@ -69,7 +69,7 @@ describe("Nomad workload rendering", () => {
   });
 
   it("assembles a PostgreSQL URL from the dynamic credential and the server address", () => {
-    const job = Schema.decodeUnknownSync(Job)({
+    const job = S.decodeUnknownSync(Job)({
       name: "proof-app",
       image: "registry.example.test/proof-app:trial",
       hostPort: "dynamic",
@@ -103,7 +103,7 @@ describe("Nomad workload rendering", () => {
   });
 
   it("assembles a Valkey URL from the ACL credential and the server address", () => {
-    const job = Schema.decodeUnknownSync(Job)({
+    const job = S.decodeUnknownSync(Job)({
       name: "proof-app",
       image: "registry.example.test/proof-app:trial",
       hostPort: "dynamic",
@@ -137,7 +137,7 @@ describe("Nomad workload rendering", () => {
   });
 
   it("renders no URL line for credentials without a url", () => {
-    const job = Schema.decodeUnknownSync(Job)({
+    const job = S.decodeUnknownSync(Job)({
       name: "proof-app",
       image: "registry.example.test/proof-app:trial",
       hostPort: "dynamic",
@@ -166,7 +166,7 @@ describe("Nomad workload rendering", () => {
   });
 
   it("allows a client task without a local service health check", () => {
-    const job = Schema.decodeUnknownSync(Job)({
+    const job = S.decodeUnknownSync(Job)({
       name: "database-client",
       image: "docker.io/library/postgres:16-alpine",
       hostPort: "dynamic",
@@ -182,7 +182,7 @@ describe("Nomad workload rendering", () => {
   });
 
   it("derives policy paths from both main and migrate secrets", () => {
-    const job = Schema.decodeUnknownSync(Job)({
+    const job = S.decodeUnknownSync(Job)({
       name: "proof-app",
       image: "registry.example.test/proof-app:trial",
       hostPort: "dynamic",
@@ -223,7 +223,7 @@ describe("Nomad workload rendering", () => {
   });
 
   it("renders a migrate prestart task with only its own secrets", () => {
-    const job = Schema.decodeUnknownSync(Job)({
+    const job = S.decodeUnknownSync(Job)({
       name: "proof-app",
       image: "registry.example.test/proof-app:trial",
       hostPort: "dynamic",

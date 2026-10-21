@@ -15,6 +15,7 @@ import {
 } from "./ReleaseDecisions.ts";
 import { jobName, type Release, ReleaseSetProps, toJobSpec } from "./ReleaseJob.ts";
 import { Nomad, type JobSnapshot, type ServiceLocation } from "./Nomad.ts";
+import { settle as settleDeployment, awaitSome } from "./Deployment.ts";
 import { OperationJournal } from "./OperationJournal.ts";
 
 export interface ReleaseSet extends Alchemy.Resource<
@@ -178,18 +179,19 @@ const healthyRelease = Effect.fn(function* (
   return ready.some(Boolean);
 });
 
-const settle = Effect.fn(function* (
+const settleUnchanged = Effect.fn(function* (
   nomad: typeof Nomad.Service,
   props: ReleaseSetProps,
   release: Release,
   owner: string,
   modifyIndex: number,
 ) {
-  for (let attempt = 0; attempt < 180; attempt++) {
-    if (yield* healthyRelease(nomad, props, release, owner, modifyIndex)) return true;
-    yield* Effect.sleep("1 second");
-  }
-  return false;
+  const result = yield* awaitSome(
+    healthyRelease(nomad, props, release, owner, modifyIndex).pipe(
+      Effect.map((b) => (b ? Option.some(true) : Option.none<boolean>())),
+    ),
+  );
+  return Option.isSome(result);
 });
 
 const ensureRelease = Effect.fn(function* (
@@ -201,9 +203,11 @@ const ensureRelease = Effect.fn(function* (
   const name = jobName(props, release);
   const spec = toJobSpec(props, release, owner);
   const current = yield* nomad.job(name);
-  const index = yield* Option.match(current, {
+  const { index, registered } = yield* Option.match(current, {
     onNone: () =>
-      nomad.registerRelease(name, spec, 0).pipe(Effect.map((result) => result.JobModifyIndex)),
+      nomad
+        .registerRelease(name, spec, 0)
+        .pipe(Effect.map((result) => ({ index: result.JobModifyIndex, registered: true }))),
     onSome: (job) =>
       Option.match(ownerOf(job), {
         onNone: () =>
@@ -226,15 +230,28 @@ const ensureRelease = Effect.fn(function* (
                 .pipe(
                   Effect.flatMap((plan) =>
                     plan.Diff.Type === "None"
-                      ? Effect.succeed(job.JobModifyIndex)
+                      ? Effect.succeed({ index: job.JobModifyIndex, registered: false })
                       : nomad
                           .registerRelease(name, spec, job.JobModifyIndex)
-                          .pipe(Effect.map((result) => result.JobModifyIndex)),
+                          .pipe(
+                            Effect.map((result) => ({
+                              index: result.JobModifyIndex,
+                              registered: true,
+                            })),
+                          ),
                   ),
                 ),
       }),
   });
-  if (!(yield* settle(nomad, props, release, owner, index))) {
+  if (registered) {
+    const settled = yield* settleDeployment(nomad, name, (job) => jobIsOwnedBy(job, owner), index);
+    if (settled._tag === "Failed") {
+      return yield* new ReleaseSetFailed({
+        resource: props.name,
+        message: `release '${release.id}': ${settled.reason}`,
+      });
+    }
+  } else if (!(yield* settleUnchanged(nomad, props, release, owner, index))) {
     return yield* new ReleaseSetFailed({
       resource: props.name,
       message: `Nomad did not report release '${release.id}' healthy before its deadline`,

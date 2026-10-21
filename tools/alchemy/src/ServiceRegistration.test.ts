@@ -2,12 +2,12 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import { ServiceNotRegistered, firstServiceLocation } from "./ServiceRegistration.ts";
 
 const fast = { times: 5, spacing: "1 millis" } as const;
 
-class LookupFailed extends Schema.TaggedError<LookupFailed>()("LookupFailed", {}) {}
+class LookupFailed extends S.TaggedError<LookupFailed>()("LookupFailed", {}) {}
 
 describe("firstServiceLocation", () => {
   it("returns the first location once Nomad lists the service", async () => {

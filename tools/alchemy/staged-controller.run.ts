@@ -7,13 +7,13 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient } from "effect/http";
 import { Nomad, layer as nomadLayer } from "./src/Nomad.ts";
 
-class DeployCommandFailed extends Schema.TaggedError<DeployCommandFailed>()("DeployCommandFailed", {
-  exitCode: Schema.Number,
+class DeployCommandFailed extends S.TaggedError<DeployCommandFailed>()("DeployCommandFailed", {
+  exitCode: S.Number,
 }) {}
 
 const retrySchedule = Schedule.min([

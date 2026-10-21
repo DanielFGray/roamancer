@@ -2,12 +2,11 @@ import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Arr from "effect/Array";
-import * as Schema from "effect/Schema";
+import * as Graph from "effect/Graph";
+import * as S from "effect/Schema";
 import {
   CartridgeJob,
   CartridgeSecretReference,
-  DatabaseIdentifier,
   ExpandedJob,
   ExpandedSecretReference,
   ResourceName,
@@ -16,41 +15,39 @@ import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { adminCredentialPath } from "./AdminCredential.ts";
 
-const AppName = Schema.String.check(
-  Schema.isPattern(/^[a-z][a-z0-9-]{0,30}$/),
-  Schema.makeFilter((value) => (value === "default" ? 'must not be "default"' : undefined)),
+const AppName = S.String.check(
+  S.isPattern(/^[a-z][a-z0-9-]{0,30}$/),
+  S.makeFilter((value) => (value === "default" ? 'must not be "default"' : undefined)),
 );
 
-const DatabaseName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/));
+const DatabaseName = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,39}$/));
 
-const PostgresServerDeclaration = Schema.TaggedStruct("PostgresServer", {
+const PostgresServerDeclaration = S.TaggedStruct("PostgresServer", {
   service: CartridgeJob,
 });
-const ValkeyServerDeclaration = Schema.TaggedStruct("ValkeyServer", {
+const ValkeyServerDeclaration = S.TaggedStruct("ValkeyServer", {
   service: CartridgeJob,
 });
 
-const PostgresEntry = Schema.Struct({
+const PostgresEntry = S.Struct({
   database: DatabaseName,
-  server: Schema.optionalKey(ResourceName),
+  server: S.optionalKey(ResourceName),
 });
 
-const ValkeyEntry = Schema.Struct({
-  server: Schema.optionalKey(ResourceName),
-  access: Schema.optionalKey(Schema.Literals(["read-only", "read-write"])),
+const ValkeyEntry = S.Struct({
+  server: S.optionalKey(ResourceName),
+  access: S.optionalKey(S.Literals(["read-only", "read-write"])),
 });
 
-export const Cartridge = Schema.Struct({
-  apiVersion: Schema.Literals(["server-ansible/v2"]),
+export const Cartridge = S.Struct({
+  apiVersion: S.Literals(["server-ansible/v2"]),
   name: AppName,
-  servers: Schema.optionalKey(
-    Schema.Array(Schema.Union([PostgresServerDeclaration, ValkeyServerDeclaration])),
-  ),
-  postgres: Schema.optionalKey(Schema.Array(PostgresEntry)),
-  valkey: Schema.optionalKey(ValkeyEntry),
-  services: Schema.Array(CartridgeJob),
+  servers: S.optionalKey(S.Array(S.Union([PostgresServerDeclaration, ValkeyServerDeclaration]))),
+  postgres: S.optionalKey(S.Array(PostgresEntry)),
+  valkey: S.optionalKey(ValkeyEntry),
+  services: S.Array(CartridgeJob),
 }).check(
-  Schema.makeFilter((cartridge) => {
+  S.makeFilter((cartridge) => {
     const issues: Array<string> = [];
     if (
       (cartridge.servers?.length ?? 0) > 0 &&
@@ -78,10 +75,7 @@ export const Cartridge = Schema.Struct({
         )
         .map((database) => `Database '${database}' must equal or start with '${appUnderscore}_'`),
     );
-    const allJobs = [
-      ...(cartridge.servers ?? []).map((server) => server.service),
-      ...cartridge.services,
-    ];
+    const allJobs = declaredJobs(cartridge).map(({ job }) => job);
     const secretIssues = allJobs.flatMap((job) => {
       const jobSecrets = [...(job.secrets ?? []), ...(job.migrate?.secrets ?? [])];
       return jobSecrets.flatMap((secret) => {
@@ -106,18 +100,30 @@ export const Cartridge = Schema.Struct({
       .map(() => "server declarations may not declare `migrate`");
     issues.push(...secretIssues);
     issues.push(...serverMigrateIssues);
-    const seenServices = new Set<string>();
-    const connectionIssues = allJobs.flatMap((job) => {
-      const result = job.connections
-        .filter((connection) => !seenServices.has(connection.service))
+    const declaredJobNames = new Set(allJobs.map((job) => job.name));
+    const undeclaredIssues = allJobs.flatMap((job) =>
+      job.connections
+        .filter((connection) => !declaredJobNames.has(connection.service))
         .map(
           (connection) =>
-            `Service '${job.name}' must follow its service dependency '${connection.service}'`,
-        );
-      seenServices.add(job.name);
-      return result;
-    });
-    issues.push(...connectionIssues);
+            `Service '${job.name}' connects to undeclared service '${connection.service}'`,
+        ),
+    );
+    issues.push(...undeclaredIssues);
+    const jobGraph = buildJobGraph(allJobs);
+    if (!Graph.isAcyclic(jobGraph)) {
+      const cycleIssues = Graph.stronglyConnectedComponents(jobGraph)
+        .filter(
+          (component) =>
+            component.length > 1 ||
+            (component.length === 1 && Graph.hasEdge(jobGraph, component[0], component[0])),
+        )
+        .map((component) => {
+          const names = [...component].sort((a, b) => a - b).map((index) => allJobs[index].name);
+          return `Services ${names.join(", ")} form a dependency cycle`;
+        });
+      issues.push(...cycleIssues);
+    }
     return issues.length === 0 ? undefined : issues;
   }),
 );
@@ -197,12 +203,6 @@ const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => 
 };
 
 export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> => {
-  const serverResources = (cartridge.servers ?? []).map((server) => {
-    const renderedJob = toRenderedJob(cartridge, server.service);
-    const tag = server._tag === "PostgresServer" ? "PostgresServer" : "ValkeyServer";
-    return { _tag: tag, service: renderedJob } as ExpandedResource;
-  });
-
   const databaseResources = (cartridge.postgres ?? []).map((entry) => {
     const database = entry.database;
     const server = entry.server ?? "postgres";
@@ -243,12 +243,7 @@ export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> =>
           } as ExpandedResource,
         ];
 
-  const serviceResources = cartridge.services.map((job) => ({
-    _tag: "NomadService",
-    service: toRenderedJob(cartridge, job),
-  })) as ReadonlyArray<ExpandedResource>;
-
-  return [...serverResources, ...databaseResources, ...valkeyResource, ...serviceResources];
+  return [...databaseResources, ...valkeyResource, ...orderedJobResources(cartridge)];
 };
 
 /** Read and validate the project-owned workload declaration. */
@@ -266,8 +261,60 @@ export const load = Effect.fn(function* () {
         ),
     ),
   );
-  const cartridge = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Cartridge), {
+  const cartridge = yield* S.decodeUnknownEffect(S.fromJsonString(Cartridge), {
     onExcessProperty: "error",
   })(contents).pipe(Effect.mapError((cause) => new Config.ConfigError(cause)));
   return cartridge;
 });
+
+/**
+ * Jobs in dependency order. compose declares resources one at a time and wires a
+ * job only to services declared before it, so each job must come after every job
+ * it connects to.
+ */
+const orderedJobResources = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> => {
+  const jobs = declaredJobs(cartridge);
+  const order = Graph.topo(buildJobGraph(jobs.map(({ job }) => job)));
+  return [...Graph.values(order)].map(
+    (index) =>
+      ({
+        _tag: jobs[index]._tag,
+        service: toRenderedJob(cartridge, jobs[index].job),
+      }) as ExpandedResource,
+  );
+};
+
+/**
+ * Every job with the resource kind it expands to, in declaration order: servers'
+ * services, then services. Node indexes in buildJobGraph are positions in this list.
+ */
+const declaredJobs = (cartridge: {
+  readonly servers?: ReadonlyArray<{
+    readonly _tag: "PostgresServer" | "ValkeyServer";
+    readonly service: CartridgeJob;
+  }>;
+  readonly services: ReadonlyArray<CartridgeJob>;
+}) => [
+  ...(cartridge.servers ?? []).map((server) => ({ _tag: server._tag, job: server.service })),
+  ...cartridge.services.map((job) => ({ _tag: "NomadService" as const, job })),
+];
+
+// Graph.topo emits a node before its outgoing neighbours, so each edge runs from the
+// connected-to job to the job that connects to it.
+const buildJobGraph = (jobs: ReadonlyArray<CartridgeJob>): Graph.DirectedGraph<number, string> => {
+  const indexByName = new Map<string, number>();
+  jobs.forEach((job, index) => {
+    if (!indexByName.has(job.name)) indexByName.set(job.name, index);
+  });
+  return Graph.directed<number, string>((mutable) => {
+    const nodes = jobs.map((_, index) => Graph.addNode(mutable, index));
+    jobs.forEach((job, index) => {
+      for (const connection of job.connections) {
+        const provider = indexByName.get(connection.service);
+        if (provider !== undefined) {
+          Graph.addEdge(mutable, nodes[provider], nodes[index], connection.service);
+        }
+      }
+    });
+  });
+};

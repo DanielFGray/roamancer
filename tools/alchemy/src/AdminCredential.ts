@@ -5,16 +5,16 @@ import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import { OpenBao } from "./OpenBao.ts";
 import { OperationJournal } from "./OperationJournal.ts";
 
-const ServerName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
+const ServerName = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
 
-export const AdminEngine = Schema.Literals(["postgres", "valkey"]);
+export const AdminEngine = S.Literals(["postgres", "valkey"]);
 export type AdminEngine = typeof AdminEngine.Type;
 
-export const AdminCredentialProps = Schema.Struct({
+export const AdminCredentialProps = S.Struct({
   engine: AdminEngine,
   server: ServerName,
 });

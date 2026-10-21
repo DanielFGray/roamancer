@@ -4,11 +4,11 @@ import * as Effect from "effect/Effect";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
 import { expand, load, Cartridge } from "./Cartridge.ts";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 
 describe("cartridge v2", () => {
   it("derives names for a database and Valkey access", () => {
-    const cartridge = Schema.decodeUnknownSync(Cartridge)({
+    const cartridge = S.decodeUnknownSync(Cartridge)({
       apiVersion: "server-ansible/v2",
       name: "app-needs",
       postgres: [{ database: "app_needs" }],
@@ -35,7 +35,7 @@ describe("cartridge v2", () => {
 
   it("rejects a database name that does not start with the app name", () => {
     assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
+      S.decodeUnknownSync(Cartridge)({
         apiVersion: "server-ansible/v2",
         name: "app-needs",
         postgres: [{ database: "other_db" }],
@@ -46,7 +46,7 @@ describe("cartridge v2", () => {
 
   it("rejects a PostgresCredentials naming a database not in postgres", () => {
     assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
+      S.decodeUnknownSync(Cartridge)({
         apiVersion: "server-ansible/v2",
         name: "app-needs",
         postgres: [{ database: "app_needs" }],
@@ -77,7 +77,7 @@ describe("cartridge v2", () => {
 
   it("rejects ValkeyCredentials without valkey", () => {
     assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
+      S.decodeUnknownSync(Cartridge)({
         apiVersion: "server-ansible/v2",
         name: "app-needs",
         services: [
@@ -105,7 +105,7 @@ describe("cartridge v2", () => {
 
   it("rejects a secret with no env field", () => {
     assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
+      S.decodeUnknownSync(Cartridge)({
         apiVersion: "server-ansible/v2",
         name: "app-needs",
         postgres: [{ database: "app_needs" }],
@@ -135,7 +135,7 @@ describe("cartridge v2", () => {
 
   it("rejects a migrate PostgresCredentials naming an undeclared database", () => {
     assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
+      S.decodeUnknownSync(Cartridge)({
         apiVersion: "server-ansible/v2",
         name: "app-needs",
         postgres: [{ database: "app_needs" }],
@@ -171,7 +171,7 @@ describe("cartridge v2", () => {
 
   it("rejects migrate on a server declaration", () => {
     assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
+      S.decodeUnknownSync(Cartridge)({
         apiVersion: "server-ansible/v2",
         name: "app-needs",
         servers: [
@@ -206,44 +206,109 @@ describe("cartridge v2", () => {
     );
   });
 
-  it("rejects a service before a service it connects to", () => {
-    assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
-        apiVersion: "server-ansible/v2",
-        name: "app-needs",
-        services: [
-          {
-            name: "consumer",
-            image: "img",
-            hostPort: "dynamic",
-            containerPort: 80,
-            cpu: 100,
-            memoryMB: 128,
-            networkMode: "bridge",
-            environment: [],
-            connections: [{ service: "provider", hostEnv: "H", portEnv: "P" }],
-            secrets: [],
-          },
-          {
-            name: "provider",
-            image: "img",
-            hostPort: "dynamic",
-            containerPort: 80,
-            cpu: 100,
-            memoryMB: 128,
-            networkMode: "bridge",
-            environment: [],
-            connections: [],
-            secrets: [],
-          },
-        ],
-      }),
+  it("accepts a service listed before the service it connects to, and expand puts the dependency first", () => {
+    const cartridge = S.decodeUnknownSync(Cartridge)({
+      apiVersion: "server-ansible/v2",
+      name: "app-needs",
+      services: [
+        {
+          name: "consumer",
+          image: "img",
+          hostPort: "dynamic",
+          containerPort: 80,
+          cpu: 100,
+          memoryMB: 128,
+          networkMode: "bridge",
+          environment: [],
+          connections: [{ service: "provider", hostEnv: "H", portEnv: "P" }],
+          secrets: [],
+        },
+        {
+          name: "provider",
+          image: "img",
+          hostPort: "dynamic",
+          containerPort: 80,
+          cpu: 100,
+          memoryMB: 128,
+          networkMode: "bridge",
+          environment: [],
+          connections: [],
+          secrets: [],
+        },
+      ],
+    });
+    const resources = expand(cartridge);
+    assert.deepEqual(
+      resources.map((resource) => ("service" in resource ? resource.service.name : resource._tag)),
+      ["provider", "consumer"],
+    );
+  });
+
+  it("rejects a two-job cycle, naming both jobs", () => {
+    assert.throws(
+      () =>
+        S.decodeUnknownSync(Cartridge)({
+          apiVersion: "server-ansible/v2",
+          name: "app-needs",
+          services: [
+            {
+              name: "consumer",
+              image: "img",
+              hostPort: "dynamic",
+              containerPort: 80,
+              cpu: 100,
+              memoryMB: 128,
+              networkMode: "bridge",
+              environment: [],
+              connections: [{ service: "provider", hostEnv: "H", portEnv: "P" }],
+              secrets: [],
+            },
+            {
+              name: "provider",
+              image: "img",
+              hostPort: "dynamic",
+              containerPort: 80,
+              cpu: 100,
+              memoryMB: 128,
+              networkMode: "bridge",
+              environment: [],
+              connections: [{ service: "consumer", hostEnv: "H", portEnv: "P" }],
+              secrets: [],
+            },
+          ],
+        }),
+      /Services consumer, provider form a dependency cycle/,
+    );
+  });
+
+  it("rejects a connection to an undeclared service", () => {
+    assert.throws(
+      () =>
+        S.decodeUnknownSync(Cartridge)({
+          apiVersion: "server-ansible/v2",
+          name: "app-needs",
+          services: [
+            {
+              name: "consumer",
+              image: "img",
+              hostPort: "dynamic",
+              containerPort: 80,
+              cpu: 100,
+              memoryMB: 128,
+              networkMode: "bridge",
+              environment: [],
+              connections: [{ service: "missing", hostEnv: "H", portEnv: "P" }],
+              secrets: [],
+            },
+          ],
+        }),
+      /Service 'consumer' connects to undeclared service 'missing'/,
     );
   });
 
   it("rejects duplicate job names", () => {
     assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
+      S.decodeUnknownSync(Cartridge)({
         apiVersion: "server-ansible/v2",
         name: "app-needs",
         services: [
@@ -278,7 +343,7 @@ describe("cartridge v2", () => {
 
   it("rejects a cartridge declaring both servers and postgres", () => {
     assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
+      S.decodeUnknownSync(Cartridge)({
         apiVersion: "server-ansible/v2",
         name: "app-needs",
         servers: [
@@ -306,7 +371,7 @@ describe("cartridge v2", () => {
 
   it("rejects duplicate database names", () => {
     assert.throws(() =>
-      Schema.decodeUnknownSync(Cartridge)({
+      S.decodeUnknownSync(Cartridge)({
         apiVersion: "server-ansible/v2",
         name: "app-needs",
         postgres: [{ database: "app_needs" }, { database: "app_needs" }],
@@ -316,7 +381,7 @@ describe("cartridge v2", () => {
   });
 
   it("expands app-needs with derived credential roles", () => {
-    const cartridge = Schema.decodeUnknownSync(Cartridge)({
+    const cartridge = S.decodeUnknownSync(Cartridge)({
       apiVersion: "server-ansible/v2",
       name: "app-needs",
       postgres: [{ database: "app_needs" }],

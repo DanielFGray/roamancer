@@ -27,8 +27,8 @@
   },
   "devDependencies": {
     "bun2nix": "2.1.2",
-    "oxfmt": "^0.72.0",
-    "oxlint": "^1.87.0",
+    "oxfmt": "^0.74.0",
+    "oxlint": "^1.89.0",
     "typescript": "^7.0.2"
   }
 }

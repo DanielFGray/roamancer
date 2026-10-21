@@ -3,14 +3,14 @@ import * as Provider from "alchemy/Provider";
 import { Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
 import * as Arr from "effect/Array";
-import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
-import { Job, progressDeadlineMillis, secretPolicyPaths, workloadRole } from "./Job.ts";
+import * as S from "effect/Schema";
+import { Job, secretPolicyPaths, workloadRole } from "./Job.ts";
+import { settle, deploymentIsHealthy } from "./Deployment.ts";
 import { Nomad } from "./Nomad.ts";
-import type { Deployment, JobSnapshot } from "./Nomad.ts";
+import type { JobSnapshot } from "./Nomad.ts";
 import { OperationJournal } from "./OperationJournal.ts";
 import { OpenBao } from "./OpenBao.ts";
 
@@ -26,11 +26,11 @@ export interface NomadJob extends Alchemy.Resource<
 
 export const NomadJob = Alchemy.Resource<NomadJob>("Nomad.Job");
 
-export class NomadJobDeployFailed extends Schema.TaggedError<NomadJobDeployFailed>()(
+export class NomadJobDeployFailed extends S.TaggedError<NomadJobDeployFailed>()(
   "NomadJobDeployFailed",
   {
-    job: Schema.String,
-    message: Schema.String,
+    job: S.String,
+    message: S.String,
   },
 ) {}
 
@@ -43,11 +43,6 @@ const attributes = (job: JobSnapshot, owner: string) => ({
   modifyIndex: job.JobModifyIndex,
   owner,
 });
-
-const deploymentIsHealthy = (job: JobSnapshot, deployment: Deployment) =>
-  deployment.JobVersion === job.Version &&
-  deployment.JobModifyIndex === job.JobModifyIndex &&
-  deployment.Status === "successful";
 
 export const NomadJobProvider = () =>
   Provider.effect(
@@ -166,7 +161,7 @@ export const NomadJobProvider = () =>
                   });
                   return nomad.register(news, fqn, expectedModifyIndex).pipe(
                     Effect.flatMap((registration) =>
-                      settle(nomad, news.name, fqn, registration.JobModifyIndex),
+                      settle(nomad, news.name, (job) => Option.getOrUndefined(ownerOf(job)) === fqn, registration.JobModifyIndex),
                     ),
                     Effect.flatMap((settled) =>
                       settled._tag === "Healthy"
@@ -233,57 +228,3 @@ export const NomadJobProvider = () =>
       });
     }),
   );
-
-type Settled =
-  | { readonly _tag: "Healthy"; readonly job: JobSnapshot; readonly deployment: Deployment }
-  | { readonly _tag: "Failed"; readonly reason: string };
-
-/**
- * Wait for Nomad's verdict on the deployment of the registered job version. Nomad itself fails a
- * deployment that misses the progress deadline in toJobSpec's Update block, so the wait follows
- * the deployment's status. Its own bound, one minute past that deadline, only covers a job or
- * deployment that never appears.
- */
-const settle = Effect.fn(function* (
-  nomad: typeof Nomad.Service,
-  name: string,
-  owner: string,
-  modifyIndex: number,
-) {
-  const giveUpAt = (yield* Clock.currentTimeMillis) + progressDeadlineMillis + 60_000;
-  while ((yield* Clock.currentTimeMillis) < giveUpAt) {
-    const outcome = yield* deploymentOutcome(nomad, name, owner, modifyIndex);
-    if (Option.isSome(outcome)) return outcome.value;
-    yield* Effect.sleep("1 second");
-  }
-  const settled: Settled = {
-    _tag: "Failed",
-    reason: "Nomad reported no deployment for this job version before its progress deadline",
-  };
-  return settled;
-});
-
-/** The deployment's verdict, or none while Nomad has not decided yet. */
-export const deploymentOutcome = (
-  nomad: Pick<typeof Nomad.Service, "job" | "deployment">,
-  name: string,
-  owner: string,
-  modifyIndex: number,
-) =>
-  Effect.gen(function* () {
-    const pending = Option.none<Settled>();
-    const failed = (reason: string) => Option.some<Settled>({ _tag: "Failed", reason });
-    const current = yield* nomad.job(name);
-    if (Option.isNone(current)) return pending;
-    const job = current.value;
-    if (job.JobModifyIndex !== modifyIndex) return failed("a newer registration replaced this job version");
-    if (Option.getOrUndefined(ownerOf(job)) !== owner) return failed("another owner took over this job");
-    const deployment = yield* nomad.deployment(name);
-    if (Option.isNone(deployment) || deployment.value.JobModifyIndex !== modifyIndex) return pending;
-    if (deploymentIsHealthy(job, deployment.value)) {
-      return Option.some<Settled>({ _tag: "Healthy", job, deployment: deployment.value });
-    }
-    return deployment.value.Status === "failed" || deployment.value.Status === "cancelled"
-      ? failed(`Nomad deployment ${deployment.value.Status}: ${deployment.value.StatusDescription}`)
-      : pending;
-  });

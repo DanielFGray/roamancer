@@ -1,93 +1,95 @@
-import { Context, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Context, Effect, Layer, Option, Redacted, Schema as S } from "effect";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Job, toJobSpec } from "./Job.ts";
 import type { ReleaseJobSpec } from "./ReleaseJob.ts";
 import * as NomadConfig from "./NomadConfig.ts";
 
-export class NomadError extends Schema.TaggedError<NomadError>()("NomadError", {
-  op: Schema.String,
-  cause: Schema.Defect(),
+export class NomadError extends S.TaggedError<NomadError>()("NomadError", {
+  op: S.String,
+  cause: S.Defect(),
 }) {}
 
 export type PlanType = "None" | "Added" | "Edited" | "Deleted";
 
-const NomadMeta = Schema.Struct({
-  "alchemy.owner": Schema.optionalKey(Schema.String),
-  "alchemy.provider": Schema.optionalKey(Schema.String),
-  "alchemy.release": Schema.optionalKey(Schema.String),
+const NomadMeta = S.Struct({
+  "alchemy.owner": S.optionalKey(S.String),
+  "alchemy.provider": S.optionalKey(S.String),
+  "alchemy.release": S.optionalKey(S.String),
 });
 
-const JobSnapshot = Schema.Struct({
-  ID: Schema.String,
-  Version: Schema.Number,
-  JobModifyIndex: Schema.Number,
-  Meta: Schema.NullOr(NomadMeta),
+const JobSnapshot = S.Struct({
+  ID: S.String,
+  Version: S.Number,
+  JobModifyIndex: S.Number,
+  Meta: S.NullOr(NomadMeta),
 });
 export type JobSnapshot = typeof JobSnapshot.Type;
 
-export const JobListItemSchema = Schema.Struct({
-  ID: Schema.String,
-  JobModifyIndex: Schema.Number,
-  Meta: Schema.NullOr(NomadMeta),
+export const JobListItemSchema = S.Struct({
+  ID: S.String,
+  JobModifyIndex: S.Number,
+  // `/v1/jobs?meta=true` omits the key for a job that has no metadata, such
+  // as one an operator ran by hand.
+  Meta: S.optionalKey(S.NullOr(NomadMeta)),
 });
 export type JobListItem = typeof JobListItemSchema.Type;
 
-const Deployment = Schema.Struct({
-  ID: Schema.String,
-  JobVersion: Schema.Number,
-  JobModifyIndex: Schema.Number,
-  Status: Schema.Literals(["running", "successful", "failed", "cancelled"]),
-  StatusDescription: Schema.String,
+const Deployment = S.Struct({
+  ID: S.String,
+  JobVersion: S.Number,
+  JobModifyIndex: S.Number,
+  Status: S.Literals(["running", "successful", "failed", "cancelled"]),
+  StatusDescription: S.String,
 });
 export type Deployment = typeof Deployment.Type;
 
-const PlanResponse = Schema.Struct({
-  Diff: Schema.Struct({ Type: Schema.Literals(["None", "Added", "Edited", "Deleted"]) }),
-  JobModifyIndex: Schema.Number,
+const PlanResponse = S.Struct({
+  Diff: S.Struct({ Type: S.Literals(["None", "Added", "Edited", "Deleted"]) }),
+  JobModifyIndex: S.Number,
 });
 
-const Registration = Schema.Struct({ EvalID: Schema.String, JobModifyIndex: Schema.Number });
+const Registration = S.Struct({ EvalID: S.String, JobModifyIndex: S.Number });
 export type Registration = typeof Registration.Type;
 
-export const ServiceLocationSchema = Schema.Struct({
-  ServiceName: Schema.String,
-  AllocID: Schema.String,
-  Address: Schema.String,
-  Port: Schema.Number,
+export const ServiceLocationSchema = S.Struct({
+  ServiceName: S.String,
+  AllocID: S.String,
+  Address: S.String,
+  Port: S.Number,
 });
 export type ServiceLocation = typeof ServiceLocationSchema.Type;
 
-export const AllocationSnapshotSchema = Schema.Struct({
-  ID: Schema.String,
-  JobID: Schema.String,
-  DesiredStatus: Schema.String,
-  ClientStatus: Schema.String,
-  DeploymentStatus: Schema.optionalKey(Schema.NullOr(Schema.Struct({ Healthy: Schema.Boolean }))),
-  Job: Schema.Struct({
-    ID: Schema.String,
-    Version: Schema.Number,
-    JobModifyIndex: Schema.Number,
+export const AllocationSnapshotSchema = S.Struct({
+  ID: S.String,
+  JobID: S.String,
+  DesiredStatus: S.String,
+  ClientStatus: S.String,
+  DeploymentStatus: S.optionalKey(S.NullOr(S.Struct({ Healthy: S.Boolean }))),
+  Job: S.Struct({
+    ID: S.String,
+    Version: S.Number,
+    JobModifyIndex: S.Number,
   }),
 });
 
 export type AllocationSnapshot = typeof AllocationSnapshotSchema.Type;
 
-const AllocationCheck = Schema.Struct({
-  Mode: Schema.String,
-  Service: Schema.String,
-  Status: Schema.String,
+const AllocationCheck = S.Struct({
+  Mode: S.String,
+  Service: S.String,
+  Status: S.String,
 });
-export const AllocationChecksSchema = Schema.Record(Schema.String, AllocationCheck);
+export const AllocationChecksSchema = S.Record(S.String, AllocationCheck);
 export type AllocationChecks = typeof AllocationChecksSchema.Type;
 
-const AllocationEvent = Schema.Struct({
-  Type: Schema.String,
-  FilterKeys: Schema.OptionFromNullOr(Schema.Array(Schema.String)),
+const AllocationEvent = S.Struct({
+  Type: S.String,
+  FilterKeys: S.OptionFromNullOr(S.Array(S.String)),
 });
 
-const AllocationEventBatch = Schema.Struct({
-  Events: Schema.Array(AllocationEvent),
+const AllocationEventBatch = S.Struct({
+  Events: S.Array(AllocationEvent),
 });
 
 type JobRequest = {
@@ -178,19 +180,19 @@ export const layer = () =>
       const decode = <A, I, R>(
         op: string,
         response: HttpClientResponse.HttpClientResponse,
-        schema: Schema.Codec<A, I, R>,
+        schema: S.Codec<A, I, R>,
       ) =>
         HttpClientResponse.schemaBodyJson(schema)(response).pipe(
           Effect.mapError((cause) => new NomadError({ op, cause })),
         );
-      const lookup = <A, I, R>(op: string, url: string, schema: Schema.Codec<A, I, R>) =>
+      const lookup = <A, I, R>(op: string, url: string, schema: S.Codec<A, I, R>) =>
         call(op, Effect.succeed(HttpClientRequest.get(url))).pipe(
           Effect.flatMap((response) =>
             response.status === 404
               ? Effect.succeed(Option.none<A>())
               : HttpClientResponse.filterStatusOk(response).pipe(
                   Effect.mapError((cause) => new NomadError({ op, cause })),
-                  Effect.flatMap((ok) => decode(op, ok, Schema.NullOr(schema))),
+                  Effect.flatMap((ok) => decode(op, ok, S.NullOr(schema))),
                   Effect.map(Option.fromNullishOr),
                 ),
           ),
@@ -199,7 +201,7 @@ export const layer = () =>
       return Nomad.of({
         jobs: () =>
           requestJson("jobs", "GET", "/v1/jobs?meta=true").pipe(
-            Effect.flatMap((response) => decode("jobs", response, Schema.Array(JobListItemSchema))),
+            Effect.flatMap((response) => decode("jobs", response, S.Array(JobListItemSchema))),
           ),
         job: (name) => lookup("job", `/v1/job/${encodeURIComponent(name)}`, JobSnapshot),
         plan: (job, owner) =>
@@ -232,7 +234,7 @@ export const layer = () =>
             Effect.succeed(HttpClientRequest.get(`/v1/service/${encodeURIComponent(name)}`)),
           ).pipe(
             Effect.flatMap((response) =>
-              decode("service", response, Schema.Array(ServiceLocationSchema)),
+              decode("service", response, S.Array(ServiceLocationSchema)),
             ),
           ),
         allocation: (id) =>
@@ -268,7 +270,7 @@ export const layer = () =>
           Stream.splitLines,
           Stream.filter((line) => line.length > 0 && line !== "{}"),
           Stream.mapEffect((line) =>
-            Schema.decodeUnknownEffect(Schema.fromJsonString(AllocationEventBatch))(line).pipe(
+            S.decodeUnknownEffect(S.fromJsonString(AllocationEventBatch))(line).pipe(
               Effect.mapError((cause) => new NomadError({ op: "allocation changes", cause })),
             ),
           ),

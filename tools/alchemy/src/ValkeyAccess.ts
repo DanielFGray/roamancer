@@ -7,23 +7,23 @@ import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
-import * as Schema from "effect/Schema";
+import * as S from "effect/Schema";
 import { adminCredentialPath } from "./AdminCredential.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
 import { OperationJournal } from "./OperationJournal.ts";
 import { dependencyRegistrationRetry, firstServiceLocation } from "./ServiceRegistration.ts";
 
-const ResourceName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
-const ValkeyUsername = Schema.String.check(Schema.isPattern(/^(?!default$)[a-z][a-z0-9_]{0,39}$/));
-const AdminUsername = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/));
-const KeyPrefix = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/));
-export const ValkeyAccessConfig = Schema.Struct({
+const ResourceName = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
+const ValkeyUsername = S.String.check(S.isPattern(/^(?!default$)[a-z][a-z0-9_]{0,39}$/));
+const AdminUsername = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,39}$/));
+const KeyPrefix = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/));
+export const ValkeyAccessConfig = S.Struct({
   resourceName: ValkeyUsername,
   server: ResourceName,
   adminUsername: AdminUsername,
   keyPrefix: KeyPrefix,
-  access: Schema.Literals(["read-only", "read-write"]),
+  access: S.Literals(["read-only", "read-write"]),
 });
 export type ValkeyAccessConfig = typeof ValkeyAccessConfig.Type;
 
@@ -44,13 +44,10 @@ export interface ValkeyAccess extends Alchemy.Resource<
 
 export const ValkeyAccess = Alchemy.Resource<ValkeyAccess>("Valkey.Access");
 
-export class ValkeyAccessError extends Schema.TaggedError<ValkeyAccessError>()(
-  "ValkeyAccessError",
-  {
-    operation: Schema.String,
-    target: Schema.String,
-  },
-) {}
+export class ValkeyAccessError extends S.TaggedError<ValkeyAccessError>()("ValkeyAccessError", {
+  operation: S.String,
+  target: S.String,
+}) {}
 
 const attributes = (id: string, props: ValkeyAccessProps) => ({
   id,
@@ -255,7 +252,10 @@ export const ValkeyAccessProvider = () =>
               const rootPassword = yield* Option.match(storedRootPassword, {
                 onNone: () =>
                   Effect.fail(
-                    new ValkeyAccessError({ operation: "read admin credential", target: olds.server }),
+                    new ValkeyAccessError({
+                      operation: "read admin credential",
+                      target: olds.server,
+                    }),
                   ),
                 onSome: Effect.succeed,
               });
