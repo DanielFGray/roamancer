@@ -48,11 +48,16 @@ const PostgresCredentialsReference = Schema.TaggedStruct("PostgresCredentials", 
   passwordEnv: EnvironmentVariable,
   url: Schema.optionalKey(PostgresUrlReference),
 });
+const ValkeyUrlReference = Schema.Struct({
+  env: EnvironmentVariable,
+  server: ResourceName,
+});
 const ValkeyCredentialsReference = Schema.TaggedStruct("ValkeyCredentials", {
   access: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/)),
   credentialPath: SecretPath,
   usernameEnv: EnvironmentVariable,
   passwordEnv: EnvironmentVariable,
+  url: Schema.optionalKey(ValkeyUrlReference),
 });
 export const SecretReference = Schema.Union([
   KvSecretReference,
@@ -65,6 +70,8 @@ export const ValkeyCredentialsDeclaration = Schema.TaggedStruct("ValkeyCredentia
   access: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/)),
   usernameEnv: EnvironmentVariable,
   passwordEnv: EnvironmentVariable,
+  // The server comes from the access resource, so the declaration names only the environment variable.
+  url: Schema.optionalKey(Schema.Struct({ env: EnvironmentVariable })),
 });
 export const PostgresCredentialsDeclaration = Schema.TaggedStruct("PostgresCredentials", {
   role: ResourceName,
@@ -170,6 +177,15 @@ const postgresUrlLines = (url: typeof PostgresUrlReference.Type) => [
   "{{- end }}",
 ];
 
+// ValkeyAccess and ValkeyAdminCredential hex-encode their passwords, so the URL needs no escaping.
+const valkeyUrlLines = (url: typeof ValkeyUrlReference.Type) => [
+  "{{- $username := .Data.data.username }}",
+  "{{- $password := .Data.data.password }}",
+  '{{- range nomadService "' + url.server + '" }}',
+  url.env + '={{ printf "redis://%s:%s@%s:%d" $username $password .Address .Port | toJSON }}',
+  "{{- end }}",
+];
+
 const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
   DestPath: "secrets/openbao.env",
   Envvars: true,
@@ -198,6 +214,7 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
             '{{- with secret "' + value.credentialPath + '" -}}',
             value.usernameEnv + "={{ .Data.data.username | toJSON }}",
             value.passwordEnv + "={{ .Data.data.password | toJSON }}",
+            ...(value.url === undefined ? [] : valkeyUrlLines(value.url)),
             "{{- end }}",
           ].join("\n"),
         ),

@@ -30,6 +30,8 @@ type DeployedService = {
 
 type DeployedValkeyAccess = {
   readonly name: string;
+  // The Valkey service name, which is also its Nomad service name.
+  readonly server: string;
   readonly resource: ValkeyAccessResource;
 };
 
@@ -115,6 +117,9 @@ const stack = Alchemy.Stack(
                                 Effect.succeed({
                                   ...value,
                                   credentialPath: access.resource.credentialPath,
+                                  ...(value.url === undefined
+                                    ? {}
+                                    : { url: { env: value.url.env, server: access.server } }),
                                 }),
                             },
                           ),
@@ -268,6 +273,7 @@ const stack = Alchemy.Stack(
                 ...state,
                 valkeyAccesses: Arr.append(state.valkeyAccesses, {
                   name: access.resourceName,
+                  server: access.server,
                   resource,
                 }),
                 outputs: Arr.append(state.outputs, {

@@ -108,6 +108,43 @@ describe("Nomad workload rendering", () => {
     );
   });
 
+  it("assembles a Valkey URL from the ACL credential and the server address", () => {
+    const job = Schema.decodeUnknownSync(Job)({
+      name: "proof-app",
+      image: "registry.example.test/proof-app:trial",
+      hostPort: "dynamic",
+      containerPort: 8080,
+      cpu: 250,
+      memoryMB: 256,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+      vault: {
+        role: "alchemy-proof-app",
+        secrets: [
+          {
+            _tag: "ValkeyCredentials",
+            access: "proof_cache",
+            credentialPath: "secret/data/valkey/proof_cache",
+            usernameEnv: "VALKEY_USER",
+            passwordEnv: "VALKEY_PASSWORD",
+            url: { env: "VALKEY_URL", server: "shared-valkey" },
+          },
+        ],
+      },
+    });
+
+    const task = toJobSpec(job, "ProofStack/app").TaskGroups[0].Tasks[0];
+    const template = task.Templates[0].EmbeddedTmpl;
+
+    assert.match(template, /\{\{- \$username := \.Data\.data\.username \}\}/);
+    assert.match(template, /\{\{- range nomadService "shared-valkey" \}\}/);
+    assert.match(
+      template,
+      /VALKEY_URL=\{\{ printf "redis:\/\/%s:%s@%s:%d" \$username \$password \.Address \.Port \| toJSON \}\}/,
+    );
+  });
+
   it("renders no URL line for credentials without a url", () => {
     const job = Schema.decodeUnknownSync(Job)({
       name: "proof-app",

@@ -26,6 +26,9 @@ const CaddyRoute = Schema.Struct({
 });
 type CaddyRoute = typeof CaddyRoute.Type;
 
+// Any route object with an id. Site routes use handlers that the release check does not model.
+export type CaddyJsonRoute = { readonly "@id": string; readonly [key: string]: unknown };
+
 export class CaddyError extends Schema.TaggedError<CaddyError>()("CaddyError", {
   op: Schema.String,
   cause: Schema.Defect(),
@@ -34,8 +37,8 @@ export class CaddyError extends Schema.TaggedError<CaddyError>()("CaddyError", {
 export class Caddy extends Context.Service<
   Caddy,
   {
-    readonly route: (id: string) => Effect.Effect<Option.Option<CaddyRoute>, CaddyError>;
-    readonly applyRoute: (route: CaddyRoute) => Effect.Effect<void, CaddyError>;
+    readonly route: (id: string) => Effect.Effect<Option.Option<unknown>, CaddyError>;
+    readonly applyRoute: (route: CaddyJsonRoute) => Effect.Effect<void, CaddyError>;
     readonly deleteRoute: (id: string) => Effect.Effect<void, CaddyError>;
     readonly routeTargets: (
       id: string,
@@ -80,7 +83,7 @@ export const layer = () =>
         op: string,
         method: "GET" | "POST" | "PATCH" | "DELETE",
         path: string,
-        body?: CaddyRoute,
+        body?: CaddyJsonRoute,
       ) =>
         (body === undefined
           ? Effect.succeed(HttpClientRequest.make(method)(path))
@@ -107,9 +110,9 @@ export const layer = () =>
         request("route", "GET", `/id/${encodeURIComponent(id)}`).pipe(
           Effect.flatMap(
             Option.match({
-              onNone: () => Effect.succeed(Option.none<CaddyRoute>()),
+              onNone: () => Effect.succeed(Option.none<unknown>()),
               onSome: (response) =>
-                HttpClientResponse.schemaBodyJson(CaddyRoute)(response).pipe(
+                HttpClientResponse.schemaBodyJson(Schema.Unknown)(response).pipe(
                   Effect.mapError((cause) => new CaddyError({ op: "route", cause })),
                   Effect.map(Option.some),
                 ),
@@ -120,7 +123,7 @@ export const layer = () =>
         op: string,
         method: "POST" | "PATCH" | "DELETE",
         path: string,
-        body?: CaddyRoute,
+        body?: CaddyJsonRoute,
       ) => request(op, method, path, body).pipe(Effect.asVoid);
 
       return Caddy.of({
@@ -142,7 +145,10 @@ export const layer = () =>
           });
         }),
         routeTargets: Effect.fn(function* (id, host, release, upstream) {
-          const current = yield* route(id);
+          // A site route uses handlers this release check does not model, so it never matches a release.
+          const current = yield* route(id).pipe(
+            Effect.map(Option.flatMap((raw) => Schema.decodeUnknownOption(CaddyRoute)(raw))),
+          );
           return Option.match(current, {
             onNone: () => false,
             onSome: (value) => {
