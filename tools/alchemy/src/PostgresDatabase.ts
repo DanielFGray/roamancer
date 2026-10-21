@@ -19,7 +19,6 @@ const EngineName = Schema.String.check(Schema.isPattern(/^alchemy_[a-z][a-z0-9_]
 const CredentialRoleName = Schema.String.check(Schema.isPattern(/^alchemy_[a-z][a-z0-9_]{0,54}$/));
 
 export const PostgresDatabaseProps = Schema.Struct({
-  resourceName: ResourceName,
   name: DatabaseIdentifier,
   server: ResourceName,
   adminUsername: DatabaseIdentifier,

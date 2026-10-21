@@ -21,7 +21,7 @@ describe("cartridge v2", () => {
         r._tag === "PostgresDatabase",
     );
     assert.ok(db);
-    assert.equal(db.database.resourceName, "app_needs");
+    assert.equal(db.database.name, "app_needs");
     assert.equal(db.database.ownerRole, "app_needs_owner");
     assert.equal(db.database.visitorRole, "app_needs_visitor");
     const va = resources.find(

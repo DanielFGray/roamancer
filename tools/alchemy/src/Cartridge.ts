@@ -207,7 +207,6 @@ export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> =>
     const database = entry.database;
     const server = entry.server ?? "postgres";
     const props: PostgresDatabaseProps = {
-      resourceName: database,
       name: database,
       server,
       adminUsername: "postgres",

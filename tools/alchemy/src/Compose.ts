@@ -75,7 +75,13 @@ export type Constructors<R> = {
   ) => Effect.Effect<AdminCredentialOutput, never, R>;
 };
 
-/** Declare one Alchemy resource per expanded resource, in order, wiring each job to the outputs it depends on. */
+/**
+ * Declare one Alchemy resource per expanded resource, in order, wiring each job to the outputs it depends on.
+ *
+ * Alchemy keys resources by logical ID within a stack. A job keeps its name as its ID; every other
+ * resource kind gets its own prefix or suffix, so a database, a Valkey access and a job named after
+ * the same app never share an ID.
+ */
 export const compose = <R>(
   resources: ReadonlyArray<ExpandedResource>,
   constructors: Constructors<R>,
@@ -90,7 +96,7 @@ export const compose = <R>(
         ),
         Match.when({ _tag: "PostgresDatabase" }, ({ database }) =>
           Effect.gen(function* () {
-            const resource = yield* constructors.PostgresDatabase(database.resourceName, database);
+            const resource = yield* constructors.PostgresDatabase(`postgres-database-${database.name}`, database);
             return {
               ...state,
               postgresDatabases: Arr.appendAll(state.postgresDatabases, [
@@ -120,7 +126,7 @@ export const compose = <R>(
               declaration._tag === "PostgresServer"
                 ? { engine: "postgres" as const, env: "POSTGRES_PASSWORD", kind: "PostgresServer" }
                 : { engine: "valkey" as const, env: "VALKEY_ADMIN_PASSWORD", kind: "ValkeyServer" };
-            const adminCredential = yield* constructors.AdminCredential(service.name, {
+            const adminCredential = yield* constructors.AdminCredential(`${service.name}-admin-credential`, {
               engine: config.engine,
               server: service.name,
             });
@@ -135,7 +141,7 @@ export const compose = <R>(
         ),
         Match.when({ _tag: "ValkeyAccess" }, ({ access }) =>
           Effect.gen(function* () {
-            const resource = yield* constructors.ValkeyAccess(access.resourceName, access);
+            const resource = yield* constructors.ValkeyAccess(`valkey-access-${access.resourceName}`, access);
             return {
               ...state,
               valkeyAccesses: Arr.append(state.valkeyAccesses, {

@@ -22,15 +22,24 @@ const makeConstructors = () => {
   const postgresDatabaseCalls: Array<{ id: string; props: PostgresDatabaseProps }> = [];
   const valkeyAccessCalls: Array<{ id: string; props: ValkeyAccessConfig }> = [];
   const adminCredentialCalls: Array<{ id: string; props: AdminCredentialProps }> = [];
+  // Alchemy keys resources by logical ID within a stack, so a repeated ID would merge two resources.
+  const declaredIds = new Set<string>();
+  const declare = <A>(id: string, output: A) =>
+    declaredIds.has(id)
+      ? Effect.die(new Error(`duplicate resource id '${id}'`))
+      : Effect.sync(() => {
+          declaredIds.add(id);
+          return output;
+        });
 
   const constructors = {
     NomadJob: (id: string, props: Job) => {
       nomadJobCalls.push({ id, props });
-      return Effect.succeed({ id: `${id}-nomad` });
+      return declare(id, { id: `${id}-nomad` });
     },
     PostgresDatabase: (id: string, props: PostgresDatabaseProps) => {
       postgresDatabaseCalls.push({ id, props });
-      return Effect.succeed({
+      return declare(id, {
         id: `${id}-pg`,
         name: props.name,
         server: props.server,
@@ -40,14 +49,14 @@ const makeConstructors = () => {
     },
     ValkeyAccess: (id: string, props: ValkeyAccessConfig) => {
       valkeyAccessCalls.push({ id, props });
-      return Effect.succeed({
+      return declare(id, {
         id: `${id}-va`,
         credentialPath: `secret/data/valkey/${props.resourceName}`,
       });
     },
     AdminCredential: (id: string, props: AdminCredentialProps) => {
       adminCredentialCalls.push({ id, props });
-      return Effect.succeed({
+      return declare(id, {
         id: `${id}-ac`,
         path: `secret/data/${props.engine}/servers/${props.server}`,
       });
