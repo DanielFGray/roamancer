@@ -298,6 +298,13 @@ assert_contains "$docker_log" '--memory=2g' 'the container keeps a 2 GiB memory 
 assert_contains "$docker_log" '--memory-swap=2g' 'the container keeps no swap'
 assert_contains "$docker_log" '--cpus=1' 'the container keeps one CPU'
 assert_contains "$docker_log" '--max-jobs 1 --cores 1' 'the build keeps one Nix build'
+assert_contains "$docker_log" 'NIX_BUILD_TARGET=path:/src#alchemy-staged' 'the default target is the staged package'
+
+new_workspace
+extra_env=("NIX_BUILD_TARGET=path:/src/nixos/testground#default")
+run_builder
+assert_eq 0 "$status" 'a build can target another flake output'
+assert_contains "$docker_log" 'NIX_BUILD_TARGET=path:/src/nixos/testground#default' 'the chosen target reaches the container'
 assert_contains "$docker_log" 'dst=/src,readonly' 'the source snapshot is read-only in the container'
 assert_eq 0 "$(snapshot_leftovers)" 'a successful build leaves no source snapshot behind'
 

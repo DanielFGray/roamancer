@@ -20,6 +20,8 @@ readonly POLL_SECONDS=2
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 builder_dir="${NIX_BUILDER_DIR:-$HOME/.cache/server-ansible-builder}"
 image="${NIX_BUILDER_IMAGE:-nixos/nix:latest}"
+# A flake reference inside the source snapshot, such as path:/src/nixos/testground#default.
+build_target="${NIX_BUILD_TARGET:-path:/src#alchemy-staged}"
 mkdir -p -- "$builder_dir/nix" "$builder_dir/tmp"
 builder_dir="$(cd -- "$builder_dir" && pwd)"
 
@@ -91,7 +93,8 @@ container="$(docker create --memory=2g --memory-swap=2g --cpus=1 --pids-limit=25
   --mount "type=bind,src=$builder_dir/tmp,dst=/build-tmp" \
   --mount "type=bind,src=$snapshot,dst=/src,readonly" \
   --env TMPDIR=/build-tmp \
-  "$image" sh -c 'nix --extra-experimental-features "nix-command flakes" build --max-jobs 1 --cores 1 --option sandbox false --no-link --print-out-paths "path:/src#alchemy-staged" > /build-tmp/out-path')"
+  --env "NIX_BUILD_TARGET=$build_target" \
+  "$image" sh -c 'nix --extra-experimental-features "nix-command flakes" build --max-jobs 1 --cores 1 --option sandbox false --no-link --print-out-paths "$NIX_BUILD_TARGET" > /build-tmp/out-path')"
 if [[ -z "$container" ]]; then
   printf 'docker create returned no container id\n' >&2
   exit 1
