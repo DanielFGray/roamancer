@@ -147,6 +147,18 @@ in
         }
       }
     }
+
+    # Jobs log in to OpenBao (openbao.nix) with their workload identity through
+    # the jwt-nomad auth mount; Alchemy writes each job's JWT role and policy.
+    vault {
+      enabled = true
+      address = "http://127.0.0.1:8200"
+      jwt_auth_backend_path = "jwt-nomad"
+      default_identity {
+        aud = ["vault.io"]
+        ttl = "1h"
+      }
+    }
   '';
 
   environment.systemPackages = [ nomad pkgs.iproute2 pkgs.podman pkgs.curl pkgs.jq ];
