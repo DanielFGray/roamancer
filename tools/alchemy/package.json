@@ -13,7 +13,8 @@
     "staged:destroy": "./staged-host-runner.sh destroy",
     "nix:deps": "./refresh-nix-deps.sh",
     "history": "node --import ./node_modules/alchemy/bin/register-oxc.js src/history.ts",
-    "format": "oxfmt --check"
+    "format": "oxfmt --check",
+    "lint": "oxlint"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.5",

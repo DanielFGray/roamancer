@@ -36,8 +36,6 @@ export class NomadJobDeployFailed extends S.TaggedError<NomadJobDeployFailed>()(
 
 const ownerOf = (job: JobSnapshot) => Option.fromNullishOr(job.Meta?.["alchemy.owner"]);
 
-const providerOf = (job: JobSnapshot) => Option.fromNullishOr(job.Meta?.["alchemy.provider"]);
-
 const attributes = (job: JobSnapshot, owner: string) => ({
   id: job.ID,
   modifyIndex: job.JobModifyIndex,
@@ -102,7 +100,7 @@ export const NomadJobProvider = () =>
               }),
           });
         }),
-        reconcile: Effect.fn(function* ({ news, output, fqn }) {
+        reconcile: Effect.fn(function* ({ news, fqn }) {
           const secretPaths = secretPolicyPaths(news);
           yield* secretPaths.length === 0
             ? Effect.void
