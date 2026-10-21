@@ -89,61 +89,74 @@ The disposable VM returned HTTP 200 with `X-Alchemy-Release: v1` on the stable h
 
 ## Composed services and OpenBao secrets
 
-The cartridge declares an ordered `resources` array. Each Nomad service becomes its own Alchemy-managed job. Services can refer to earlier services by job name; Alchemy resolves the dependency before it renders the `nomadService` template. PostgreSQL database, Valkey server, and Valkey access resources also participate in this order. The schema rejects duplicate names and dependencies that appear after their consumers. Network mode is explicit per service. Ports can be fixed or dynamic, and each service can use an HTTP or TCP health check.
+The cartridge declares an `apiVersion: "server-ansible/v2"` document with `name`, optional `servers`, `postgres`, `valkey`, and an ordered `services` array. Each service becomes its own Alchemy-managed job. Services can refer to earlier services by job name; Alchemy resolves the dependency before it renders the `nomadService` template. PostgreSQL database and Valkey access resources are derived from `postgres` and `valkey` and participate in this order. The schema rejects duplicate names and dependencies that appear after their consumers. Network mode is explicit per service. Ports can be fixed or dynamic, and each service can use an HTTP or TCP health check.
 
-Use `vault.role` and `vault.secrets` to request runtime credentials. A secret reference contains only an OpenBao KV-v2 path, key, and destination environment-variable name. Nomad authenticates its workload identity to OpenBao and renders the secret into the task environment. Secret values are not inputs to Alchemy and are not included in its state or operation journal. Configure Nomad's Vault-compatible integration and OpenBao JWT auth separately, with a policy and role bound to the exact Nomad job identity. Do not put secret values in the cartridge's ordinary `environment` entries.
+Use `secrets` on each service to request runtime credentials. Each job's OpenBao role is derived as `alchemy-<job name>`; no role field is declared by hand. A secret reference contains only an OpenBao KV-v2 path, key, and destination environment-variable name. Nomad authenticates its workload identity to OpenBao and renders the secret into the task environment. Secret values are not inputs to Alchemy and are not included in its state or operation journal. `NomadJob.ts` writes the OpenBao ACL policy and the job-bound JWT role on reconcile; configure Nomad's Vault-compatible integration and OpenBao JWT auth endpoint separately. Do not put secret values in the cartridge's ordinary `environment` entries.
 
 On 2026-10-20, a fresh disposable VM ran an Alchemy-managed PostgreSQL job and a dependent client job. Nomad obtained both jobs' credentials from OpenBao through job-bound JWT roles. The client discovered PostgreSQL's dynamic endpoint through the generated Nomad service template and successfully queried the database. Both Alchemy resources reached healthy status. A check of the Alchemy state and operation journal found no copy of the test password. The proof used a disposable PostgreSQL role and database, not shared production data. Its saved input and limits are in [`../../.audit/alchemy-postgres-openbao-proof.txt`](../../.audit/alchemy-postgres-openbao-proof.txt).
 
-This proves ordered multi-job deployment, runtime secret delivery, and an authenticated query on one disposable node. It does not implement a shared PostgreSQL server/database provider or idempotent app-role provisioning. The proof configured its test secret, OpenBao policy, and job-bound roles directly. It did not test persistent database data, replacement recovery, multiple nodes, or private cross-node routing. Do not use the proof's broad test policy or root token pattern in a deployment.
+This proves ordered multi-job deployment, runtime secret delivery, and an authenticated query on one disposable node. The v2 platform provides a shared PostgreSQL server and database provider; idempotent app-role provisioning is handled by the OpenBao database plugin. The proof configured its test secret, OpenBao policy, and job-bound roles directly. It did not test persistent database data, replacement recovery, multiple nodes, or private cross-node routing. Do not use the proof's broad test policy or root token pattern in a deployment.
 
 ### Shared Valkey service and app access
 
-Declare a Valkey job as a `ValkeyServer` resource. Its `Valkey.AdminCredential` resource creates a random admin password in OpenBao during reconciliation, at `secret/data/valkey/servers/<job-name>`. The Nomad job receives only the path and a workload identity role that can read it. Plans do not create credentials. Configure the job to read `VALKEY_ADMIN_PASSWORD`, enable an ACL file on persistent storage, and enable Valkey data persistence. The provider creates a separate ACL user for each `ValkeyAccess` resource and stores its generated password at `secret/data/valkey/<access-name>`.
+In v2 a platform cartridge (see `platform/data/cartridge.json`) declares the shared servers once. An app cartridge declares what it needs with `postgres` and `valkey`; the platform derives every role name, login name, key prefix, secret path, and OpenBao role from the app name. `platform/data` provides `PostgresServer "postgres"` and `ValkeyServer "valkey"`; each generates its own admin password through `AdminCredential`.
+
+The Valkey server job uses an ACL file on persistent storage and initialises it on first boot so the default user is never passwordless:
 
 ```json
 {
   "_tag": "ValkeyServer",
   "service": {
-    "name": "shared-valkey",
-    "image": "docker.io/valkey/valkey:8-alpine",
+    "name": "valkey",
+    "image": "docker.io/valkey/valkey:8.1.3",
     "hostPort": "dynamic",
     "containerPort": 6379,
     "cpu": 500,
     "memoryMB": 512,
     "networkMode": "bridge",
     "storage": { "volume": "valkey-data", "mountPath": "/data" },
+    "environment": [],
     "command": "sh",
     "args": [
       "-ec",
-      "exec valkey-server --appendonly yes --requirepass \"$VALKEY_ADMIN_PASSWORD\" --aclfile /data/users.acl"
+      "if [ ! -s /data/users.acl ]; then printf 'user default on >%s ~* &* +@all\\n' \"$VALKEY_ADMIN_PASSWORD\" > /data/users.acl; fi; exec valkey-server --appendonly yes --aclfile /data/users.acl"
     ],
-    "environment": [],
     "connections": [],
     "healthCheck": { "type": "tcp" },
-    "vault": { "role": "alchemy-valkey", "secrets": [] }
+    "secrets": []
   }
 }
 ```
 
-An app access resource can then look like this:
+An app declares its needs and refers to them in secrets, without `connections` to the shared servers and without any role name, secret path, TTL, admin user, or vault role:
 
 ```json
 {
-  "_tag": "ValkeyAccess",
-  "access": {
-    "resourceName": "cache_app",
-    "server": "shared-valkey",
-    "adminUsername": "default",
-    "keyPrefix": "cache_app",
-    "access": "read-write"
-  }
+  "apiVersion": "server-ansible/v2",
+  "name": "app-needs",
+  "postgres": [{ "database": "app_needs" }],
+  "valkey": {},
+  "services": [
+    {
+      "name": "app-needs",
+      "image": "example/app-needs:latest",
+      "hostPort": "dynamic",
+      "containerPort": 8080,
+      "cpu": 200,
+      "memoryMB": 256,
+      "networkMode": "bridge",
+      "environment": [],
+      "connections": [],
+      "secrets": [
+        { "_tag": "PostgresCredentials", "database": "app_needs", "login": "api", "usernameEnv": "PGUSER", "passwordEnv": "PGPASSWORD", "urlEnv": "DATABASE_URL" },
+        { "_tag": "ValkeyCredentials", "usernameEnv": "VALKEY_USER", "passwordEnv": "VALKEY_PASSWORD", "urlEnv": "VALKEY_URL" }
+      ]
+    }
+  ]
 }
 ```
 
-The consumer job uses `connections: [{"service":"shared-valkey","hostEnv":"VALKEY_HOST","portEnv":"VALKEY_PORT"}]` and a `ValkeyCredentials` secret reference with `access: "cache_app"`, `usernameEnv: "VALKEY_USERNAME"`, and `passwordEnv: "VALKEY_PASSWORD"`.
-
-An access resource names its `ValkeyServer`, a key prefix, and either `read-only` or `read-write`. The ACL grants only that prefix and the selected read/write command categories. It denies dangerous commands. It saves the ACL after each change, so the server must use an ACL file on persistent storage. The app must follow its access resource in the cartridge, declare the server in `connections`, and add a `ValkeyCredentials` secret reference. Composition passes the access resource's `credentialPath` Output into the Nomad job. That output creates the Alchemy dependency; the app declaration does not carry a synthetic resource ID or secret path. PostgreSQL database roles use the same output-to-job pattern. Nomad renders the discovered host, port, username, and password into the app environment. Do not use logical database numbers as an isolation boundary.
+The platform creates a `ValkeyAccess` for the app and an ACL user whose key prefix is the app name. `ValkeyCredentials` carries the access name (`app_needs`); composition fills the credential path from the access resource Output, which is also the Alchemy dependency edge. PostgreSQL database roles use the same output-to-job pattern. The URL templates resolve the server host and port through `nomadService`, so apps do not list platform servers in `connections`. Do not use logical database numbers as an isolation boundary.
 
 Destroying a `ValkeyAccess` revokes and persists the ACL user. Its OpenBao KV value is retained so a later recreation can reuse the credential. The server admin value is also retained when the Nomad job is destroyed. Remove these KV values through the OpenBao lifecycle when they are no longer needed.
 

@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import * as Match from "effect/Match";
 
-const ResourceName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
+export const ResourceName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
 const EnvironmentVariable = Schema.String.check(Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/));
 const SecretPath = Schema.String.check(
   Schema.isPattern(/^secret\/data\/[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)*$/),
@@ -10,11 +10,7 @@ const DatabaseCredentialPath = Schema.String.check(
   Schema.isPattern(/^database\/creds\/[A-Za-z0-9_.-]+$/),
 );
 const SecretKey = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]+$/));
-const DatabaseIdentifier = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
-const VaultRole = Schema.String.check(
-  Schema.isPattern(/^alchemy-[A-Za-z0-9][A-Za-z0-9_.-]{0,54}$/),
-);
-
+export const DatabaseIdentifier = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
 export const ServiceConnection = Schema.Struct({
   service: ResourceName,
   hostEnv: EnvironmentVariable,
@@ -44,8 +40,8 @@ const PostgresUrlReference = Schema.Struct({
 const PostgresCredentialsReference = Schema.TaggedStruct("PostgresCredentials", {
   role: ResourceName,
   credentialPath: DatabaseCredentialPath,
-  usernameEnv: EnvironmentVariable,
-  passwordEnv: EnvironmentVariable,
+  usernameEnv: Schema.optionalKey(EnvironmentVariable),
+  passwordEnv: Schema.optionalKey(EnvironmentVariable),
   url: Schema.optionalKey(PostgresUrlReference),
 });
 const ValkeyUrlReference = Schema.Struct({
@@ -55,8 +51,8 @@ const ValkeyUrlReference = Schema.Struct({
 const ValkeyCredentialsReference = Schema.TaggedStruct("ValkeyCredentials", {
   access: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/)),
   credentialPath: SecretPath,
-  usernameEnv: EnvironmentVariable,
-  passwordEnv: EnvironmentVariable,
+  usernameEnv: Schema.optionalKey(EnvironmentVariable),
+  passwordEnv: Schema.optionalKey(EnvironmentVariable),
   url: Schema.optionalKey(ValkeyUrlReference),
 });
 export const SecretReference = Schema.Union([
@@ -66,30 +62,38 @@ export const SecretReference = Schema.Union([
 ]);
 export type SecretReference = typeof SecretReference.Type;
 
+const atLeastOneEnvironmentVariable = Schema.makeFilter((value: {
+  usernameEnv?: string;
+  passwordEnv?: string;
+  urlEnv?: string;
+}) =>
+  value.usernameEnv === undefined &&
+  value.passwordEnv === undefined &&
+  value.urlEnv === undefined
+    ? "at least one environment variable is required"
+    : undefined,
+);
+
 export const ValkeyCredentialsDeclaration = Schema.TaggedStruct("ValkeyCredentials", {
-  access: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/)),
-  usernameEnv: EnvironmentVariable,
-  passwordEnv: EnvironmentVariable,
-  // The server comes from the access resource, so the declaration names only the environment variable.
-  url: Schema.optionalKey(Schema.Struct({ env: EnvironmentVariable })),
-});
+  usernameEnv: Schema.optionalKey(EnvironmentVariable),
+  passwordEnv: Schema.optionalKey(EnvironmentVariable),
+  urlEnv: Schema.optionalKey(EnvironmentVariable),
+}).check(atLeastOneEnvironmentVariable);
 export const PostgresCredentialsDeclaration = Schema.TaggedStruct("PostgresCredentials", {
-  role: ResourceName,
-  usernameEnv: EnvironmentVariable,
-  passwordEnv: EnvironmentVariable,
-  // The server and database come from the role's PostgresDatabase resource,
-  // so the declaration names only the environment variable.
-  url: Schema.optionalKey(Schema.Struct({ env: EnvironmentVariable })),
-});
-const CartridgeSecretReference = Schema.Union([
+  database: DatabaseIdentifier,
+  login: Schema.Literals(["api", "migration"]),
+  usernameEnv: Schema.optionalKey(EnvironmentVariable),
+  passwordEnv: Schema.optionalKey(EnvironmentVariable),
+  urlEnv: Schema.optionalKey(EnvironmentVariable),
+}).check(atLeastOneEnvironmentVariable);
+export const CartridgeSecretReference = Schema.Union([
   KvSecretReference,
   PostgresCredentialsDeclaration,
   ValkeyCredentialsDeclaration,
 ]);
-const CartridgeVault = Schema.Struct({
-  role: VaultRole,
-  secrets: Schema.Array(CartridgeSecretReference),
-});
+export type CartridgeSecretReference = typeof CartridgeSecretReference.Type;
+
+export const workloadRole = (jobName: string) => `alchemy-${jobName}`;
 
 export const secretPolicyPath = (secret: SecretReference) =>
   Match.value(secret).pipe(
@@ -99,17 +103,12 @@ export const secretPolicyPath = (secret: SecretReference) =>
     Match.exhaustive,
   );
 
-const Vault = Schema.Struct({
-  role: VaultRole,
-  secrets: Schema.Array(SecretReference),
-});
-
 const Storage = Schema.Struct({
   volume: ResourceName,
   mountPath: Schema.String.check(Schema.isPattern(/^\/[A-Za-z0-9_./-]+$/)),
 });
 
-export const Job = Schema.Struct({
+const JobBaseFields = {
   name: ResourceName,
   image: Schema.String,
   hostPort: Schema.Union([
@@ -134,13 +133,42 @@ export const Job = Schema.Struct({
   command: Schema.optionalKey(Schema.String),
   args: Schema.optionalKey(Schema.Array(Schema.String)),
   connections: Schema.Array(ServiceConnection),
-  vault: Schema.optionalKey(Vault),
+};
+
+export const ExpandedPostgresCredentials = Schema.TaggedStruct("PostgresCredentials", {
+  role: ResourceName,
+  usernameEnv: Schema.optionalKey(EnvironmentVariable),
+  passwordEnv: Schema.optionalKey(EnvironmentVariable),
+  url: Schema.optionalKey(Schema.Struct({ env: EnvironmentVariable })),
+});
+export const ExpandedValkeyCredentials = Schema.TaggedStruct("ValkeyCredentials", {
+  access: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/)),
+  usernameEnv: Schema.optionalKey(EnvironmentVariable),
+  passwordEnv: Schema.optionalKey(EnvironmentVariable),
+  url: Schema.optionalKey(Schema.Struct({ env: EnvironmentVariable })),
+});
+export const ExpandedSecretReference = Schema.Union([
+  KvSecretReference,
+  ExpandedPostgresCredentials,
+  ExpandedValkeyCredentials,
+]);
+export type ExpandedSecretReference = typeof ExpandedSecretReference.Type;
+
+export const ExpandedJob = Schema.Struct({
+  ...JobBaseFields,
+  secrets: Schema.optionalKey(Schema.Array(ExpandedSecretReference)),
+});
+export type ExpandedJob = typeof ExpandedJob.Type;
+
+export const Job = Schema.Struct({
+  ...JobBaseFields,
+  secrets: Schema.optionalKey(Schema.Array(SecretReference)),
 });
 export type Job = typeof Job.Type;
 
 export const CartridgeJob = Schema.Struct({
-  ...Job.fields,
-  vault: Schema.optionalKey(CartridgeVault),
+  ...JobBaseFields,
+  secrets: Schema.optionalKey(Schema.Array(CartridgeSecretReference)),
 });
 export type CartridgeJob = typeof CartridgeJob.Type;
 
@@ -163,7 +191,7 @@ const toServiceTemplate = (connections: ReadonlyArray<ServiceConnection>) => ({
 /**
  * Assemble a PostgreSQL URL from the dynamic credential and the Nomad service address.
  * The password is written into the URL unescaped, so it must use URL-safe characters.
- * The generated role passwords are alphanumeric, but that is an assumption about OpenBao's
+ * The generated passwords are alphanumeric, but that is an assumption about OpenBao's
  * generator, not a check. Confirm it on the first live credential before relying on the URL.
  */
 const postgresUrlLines = (url: typeof PostgresUrlReference.Type) => [
@@ -177,7 +205,7 @@ const postgresUrlLines = (url: typeof PostgresUrlReference.Type) => [
   "{{- end }}",
 ];
 
-// ValkeyAccess and ValkeyAdminCredential hex-encode their passwords, so the URL needs no escaping.
+// ValkeyAccess and the admin credential hex-encode their passwords, so the URL needs no escaping.
 const valkeyUrlLines = (url: typeof ValkeyUrlReference.Type) => [
   "{{- $username := .Data.data.username }}",
   "{{- $password := .Data.data.password }}",
@@ -203,8 +231,8 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
         Match.when({ _tag: "PostgresCredentials" }, (value) =>
           [
             '{{- with secret "' + value.credentialPath + '" -}}',
-            value.usernameEnv + "={{ .Data.username | toJSON }}",
-            value.passwordEnv + "={{ .Data.password | toJSON }}",
+            ...(value.usernameEnv === undefined ? [] : [value.usernameEnv + "={{ .Data.username | toJSON }}"]),
+            ...(value.passwordEnv === undefined ? [] : [value.passwordEnv + "={{ .Data.password | toJSON }}"]),
             ...(value.url === undefined ? [] : postgresUrlLines(value.url)),
             "{{- end }}",
           ].join("\n"),
@@ -212,8 +240,8 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
         Match.when({ _tag: "ValkeyCredentials" }, (value) =>
           [
             '{{- with secret "' + value.credentialPath + '" -}}',
-            value.usernameEnv + "={{ .Data.data.username | toJSON }}",
-            value.passwordEnv + "={{ .Data.data.password | toJSON }}",
+            ...(value.usernameEnv === undefined ? [] : [value.usernameEnv + "={{ .Data.data.username | toJSON }}"]),
+            ...(value.passwordEnv === undefined ? [] : [value.passwordEnv + "={{ .Data.data.password | toJSON }}"]),
             ...(value.url === undefined ? [] : valkeyUrlLines(value.url)),
             "{{- end }}",
           ].join("\n"),
@@ -249,12 +277,11 @@ const toHealthCheck = (healthCheck: HealthCheck) =>
 
 /** Render one workload job. Service references and secret paths are metadata, not values. */
 export const toJobSpec = (job: Job, owner: string) => {
+  const secrets = job.secrets ?? [];
   const templates = (
     job.connections.length === 0 ? [] : [toServiceTemplate(job.connections)]
   ).concat(
-    job.vault === undefined || job.vault.secrets.length === 0
-      ? []
-      : [toSecretTemplate(job.vault.secrets)],
+    secrets.length === 0 ? [] : [toSecretTemplate(secrets)],
   );
 
   return {
@@ -300,9 +327,9 @@ export const toJobSpec = (job: Job, owner: string) => {
                 : [{ Volume: "data", Destination: job.storage.mountPath, ReadOnly: false }],
             Resources: { CPU: job.cpu, MemoryMB: job.memoryMB },
             Vault:
-              job.vault === undefined || job.vault.secrets.length === 0
+              secrets.length === 0
                 ? undefined
-                : { Role: job.vault.role, Env: false, DisableFile: true },
+                : { Role: workloadRole(job.name), Env: false, DisableFile: true },
             Templates: templates,
           },
         ],

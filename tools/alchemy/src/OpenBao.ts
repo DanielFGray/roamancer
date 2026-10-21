@@ -8,7 +8,7 @@ const ValkeyCredentials = Schema.Struct({
   username: Schema.String,
   password: Schema.String,
 });
-const ValkeyAdminCredential = Schema.Struct({ password: Schema.String });
+const AdminCredential = Schema.Struct({ password: Schema.String });
 
 export class OpenBaoError extends Schema.TaggedError<OpenBaoError>()("OpenBaoError", {
   operation: Schema.String,
@@ -87,7 +87,7 @@ type WriteBody =
     }
   | { readonly policy: string }
   | { readonly data: typeof ValkeyCredentials.Type }
-  | { readonly data: typeof ValkeyAdminCredential.Type }
+  | { readonly data: typeof AdminCredential.Type }
   | {
       readonly role_type: "jwt";
       readonly bound_audiences: ReadonlyArray<string>;
@@ -112,10 +112,10 @@ export class OpenBao extends Context.Service<
       Option.Option<{ readonly username: string; readonly password: Redacted.Redacted<string> }>,
       OpenBaoError
     >;
-    readonly readValkeyAdminCredential: (
+    readonly readAdminCredential: (
       path: string,
     ) => Effect.Effect<Option.Option<Redacted.Redacted<string>>, OpenBaoError>;
-    readonly writeValkeyAdminCredential: (
+    readonly writeAdminCredential: (
       path: string,
       password: Redacted.Redacted<string>,
     ) => Effect.Effect<void, OpenBaoError>;
@@ -239,7 +239,7 @@ export class OpenBao extends Context.Service<
         yield* request("write credentials", path, "PUT", path, { data: credentials });
       });
 
-      const readValkeyAdminCredential = Effect.fn("OpenBao.readValkeyAdminCredential")(function* (
+      const readAdminCredential = Effect.fn("OpenBao.readAdminCredential")(function* (
         path: string,
       ) {
         const baseAddress = yield* Option.match(address, {
@@ -283,7 +283,7 @@ export class OpenBao extends Context.Service<
             () => new OpenBaoError({ operation: "decode admin credential", target: path }),
           ),
         );
-        const credential = yield* Schema.decodeUnknownEffect(ValkeyAdminCredential)(
+        const credential = yield* Schema.decodeUnknownEffect(AdminCredential)(
           value.data.data,
         ).pipe(
           Effect.mapError(
@@ -293,7 +293,7 @@ export class OpenBao extends Context.Service<
         return Option.some(Redacted.make(credential.password));
       });
 
-      const writeValkeyAdminCredential = Effect.fn("OpenBao.writeValkeyAdminCredential")(function* (
+      const writeAdminCredential = Effect.fn("OpenBao.writeAdminCredential")(function* (
         path: string,
         password: Redacted.Redacted<string>,
       ) {
@@ -386,8 +386,8 @@ export class OpenBao extends Context.Service<
         readKv,
         readValkeyCredentials,
         writeValkeyCredentials,
-        readValkeyAdminCredential,
-        writeValkeyAdminCredential,
+        readAdminCredential,
+        writeAdminCredential,
         configurePostgres,
         configureWorkloadRole,
       });

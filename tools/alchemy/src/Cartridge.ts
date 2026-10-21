@@ -3,227 +3,227 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Arr from "effect/Array";
-import * as Option from "effect/Option";
-import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
-import { CartridgeJob } from "./Job.ts";
+import {
+  CartridgeJob,
+  CartridgeSecretReference,
+  DatabaseIdentifier,
+  ExpandedJob,
+  ExpandedSecretReference,
+  ResourceName,
+} from "./Job.ts";
 import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
+import { adminCredentialPath } from "./AdminCredential.ts";
 
-const NomadServiceDeclaration = Schema.TaggedStruct("NomadService", { service: CartridgeJob });
-const PostgresDatabaseDeclaration = Schema.TaggedStruct("PostgresDatabase", {
-  database: PostgresDatabaseProps,
+const AppName = Schema.String.check(
+  Schema.isPattern(/^[a-z][a-z0-9-]{0,30}$/),
+  Schema.makeFilter((value) =>
+    value === "default" ? "must not be \"default\"" : undefined,
+  ),
+);
+
+const DatabaseName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/));
+
+const PostgresServerDeclaration = Schema.TaggedStruct("PostgresServer", {
+  service: CartridgeJob,
 });
-const ValkeyServerDeclaration = Schema.TaggedStruct("ValkeyServer", { service: CartridgeJob });
-const ValkeyAccessDeclaration = Schema.TaggedStruct("ValkeyAccess", {
-  access: ValkeyAccessConfig,
+const ValkeyServerDeclaration = Schema.TaggedStruct("ValkeyServer", {
+  service: CartridgeJob,
 });
-const Resource = Schema.Union([
-  NomadServiceDeclaration,
-  ValkeyServerDeclaration,
-  PostgresDatabaseDeclaration,
-  ValkeyAccessDeclaration,
-]);
+
+const PostgresEntry = Schema.Struct({
+  database: DatabaseName,
+  server: Schema.optionalKey(ResourceName),
+});
+
+const ValkeyEntry = Schema.Struct({
+  server: Schema.optionalKey(ResourceName),
+  access: Schema.optionalKey(Schema.Literals(["read-only", "read-write"])),
+});
 
 export const Cartridge = Schema.Struct({
-  apiVersion: Schema.Literals(["server-ansible/v1"]),
-  resources: Schema.Array(Resource),
-});
+  apiVersion: Schema.Literals(["server-ansible/v2"]),
+  name: AppName,
+  servers: Schema.optionalKey(
+    Schema.Array(Schema.Union([PostgresServerDeclaration, ValkeyServerDeclaration])),
+  ),
+  postgres: Schema.optionalKey(Schema.Array(PostgresEntry)),
+  valkey: Schema.optionalKey(ValkeyEntry),
+  services: Schema.Array(CartridgeJob),
+}).check(
+  Schema.makeFilter((cartridge) => {
+    const issues: Array<string> = [];
+    if ((cartridge.servers?.length ?? 0) > 0 && ((cartridge.postgres?.length ?? 0) > 0 || cartridge.valkey !== undefined)) {
+      issues.push("a cartridge cannot both declare servers and postgres/valkey");
+    }
+    const allJobNames = [
+      ...(cartridge.servers ?? []).map((server) => server.service.name),
+      ...cartridge.services.map((service) => service.name),
+    ];
+    const duplicateJobNames = allJobNames.filter((name, index) => allJobNames.indexOf(name) !== index);
+    issues.push(...duplicateJobNames.map((name) => `duplicate job name '${name}'`));
+    const dbNames = (cartridge.postgres ?? []).map((entry) => entry.database);
+    const duplicateDbNames = dbNames.filter((name, index) => dbNames.indexOf(name) !== index);
+    issues.push(...duplicateDbNames.map((name) => `duplicate database '${name}'`));
+    const appUnderscore = appIdentifier(cartridge.name);
+    issues.push(
+      ...(cartridge.postgres ?? [])
+        .map((entry) => entry.database)
+        .filter((database) => !(database === appUnderscore || database.startsWith(`${appUnderscore}_`)))
+        .map((database) => `Database '${database}' must equal or start with '${appUnderscore}_'`),
+    );
+    const allJobs = [...(cartridge.servers ?? []).map((server) => server.service), ...cartridge.services];
+    const secretIssues = allJobs.flatMap((job) =>
+      (job.secrets ?? []).flatMap((secret) => {
+        const result: Array<string> = [];
+        if (secret._tag === "PostgresCredentials") {
+          const found = (cartridge.postgres ?? []).some((entry) => entry.database === secret.database);
+          if (!found) result.push(`PostgresCredentials references database '${secret.database}' not in \`postgres\``);
+        }
+        if (secret._tag === "ValkeyCredentials" && cartridge.valkey === undefined) {
+          result.push("ValkeyCredentials requires `valkey`");
+        }
+        return result;
+      }),
+    );
+    issues.push(...secretIssues);
+    const seenServices = new Set<string>();
+    const connectionIssues = allJobs.flatMap((job) => {
+      const result = job.connections
+        .filter((connection) => !seenServices.has(connection.service))
+        .map((connection) => `Service '${job.name}' must follow its service dependency '${connection.service}'`);
+      seenServices.add(job.name);
+      return result;
+    });
+    issues.push(...connectionIssues);
+    return issues.length === 0 ? undefined : issues;
+  }),
+);
 export type Cartridge = typeof Cartridge.Type;
 
-const resourceOrderError = (resources: ReadonlyArray<typeof Resource.Type>) =>
-  resources.reduce(
-    (state, resource) =>
-      Option.match(state.error, {
-        onSome: () => state,
-        onNone: () =>
-          Match.value(resource).pipe(
-            Match.when({ _tag: "NomadService" }, ({ service }) => {
-              const duplicate = state.names.includes(service.name);
-              const missingService = Arr.findFirst(
-                service.connections,
-                (connection) => !state.services.includes(connection.service),
-              );
-              const missingDatabaseRole = Option.match(Option.fromNullishOr(service.vault), {
-                onNone: () => Option.none(),
-                onSome: (vault) =>
-                  Option.flatMap(
-                    Arr.findFirst(vault.secrets, (secret) =>
-                      Match.value(secret).pipe(
-                        Match.when({ _tag: "KvSecret" }, () => false),
-                        Match.when(
-                          { _tag: "PostgresCredentials" },
-                          (value) => !state.credentialRoles.includes(value.role),
-                        ),
-                        Match.when({ _tag: "ValkeyCredentials" }, () => false),
-                        Match.exhaustive,
-                      ),
-                    ),
-                    (secret) =>
-                      Match.value(secret).pipe(
-                        Match.when({ _tag: "KvSecret" }, () => Option.none<string>()),
-                        Match.when({ _tag: "PostgresCredentials" }, (value) =>
-                          Option.some(value.role),
-                        ),
-                        Match.when({ _tag: "ValkeyCredentials" }, () => Option.none<string>()),
-                        Match.exhaustive,
-                      ),
-                  ),
-              });
-              const missingValkeyAccess = Option.match(Option.fromNullishOr(service.vault), {
-                onNone: () => Option.none(),
-                onSome: (vault) =>
-                  Option.flatMap(
-                    Arr.findFirst(vault.secrets, (secret) =>
-                      Match.value(secret).pipe(
-                        Match.when(
-                          { _tag: "ValkeyCredentials" },
-                          (value) => !state.valkeyAccesses.includes(value.access),
-                        ),
-                        Match.when({ _tag: "KvSecret" }, () => false),
-                        Match.when({ _tag: "PostgresCredentials" }, () => false),
-                        Match.exhaustive,
-                      ),
-                    ),
-                    (secret) =>
-                      Match.value(secret).pipe(
-                        Match.when({ _tag: "ValkeyCredentials" }, (value) =>
-                          Option.some(value.access),
-                        ),
-                        Match.when({ _tag: "KvSecret" }, () => Option.none<string>()),
-                        Match.when({ _tag: "PostgresCredentials" }, () => Option.none<string>()),
-                        Match.exhaustive,
-                      ),
-                  ),
-              });
-              if (duplicate) {
-                return {
-                  ...state,
-                  error: Option.some(`Duplicate resource name '${service.name}'`),
-                };
-              }
-              return Option.match(missingService, {
-                onSome: (connection) => ({
-                  ...state,
-                  error: Option.some(
-                    `Service '${service.name}' must follow its service dependency '${connection.service}'`,
-                  ),
-                }),
-                onNone: () =>
-                  Option.match(missingDatabaseRole, {
-                    onSome: (role) => ({
-                      ...state,
-                      error: Option.some(
-                        `Service '${service.name}' must follow database role '${role}'`,
-                      ),
-                    }),
-                    onNone: () =>
-                      Option.match(missingValkeyAccess, {
-                        onSome: (access) => ({
-                          ...state,
-                          error: Option.some(
-                            `Service '${service.name}' must follow Valkey access '${access}'`,
-                          ),
-                        }),
-                        onNone: () => ({
-                          ...state,
-                          names: Arr.append(state.names, service.name),
-                          services: Arr.append(state.services, service.name),
-                        }),
-                      }),
-                  }),
-              });
-            }),
-            Match.when({ _tag: "PostgresDatabase" }, ({ database }) => {
-              if (state.names.includes(database.resourceName)) {
-                return {
-                  ...state,
-                  error: Option.some(`Duplicate resource name '${database.resourceName}'`),
-                };
-              }
-              if (!state.services.includes(database.server)) {
-                return {
-                  ...state,
-                  error: Option.some(
-                    `Database '${database.name}' must follow its PostgreSQL service '${database.server}'`,
-                  ),
-                };
-              }
-              const databaseRoles = [database.credentialRole, database.migrationCredentialRole];
-              const duplicate = databaseRoles.find((role) => state.credentialRoles.includes(role));
-              if (duplicate !== undefined) {
-                return {
-                  ...state,
-                  error: Option.some(`Duplicate PostgreSQL credential role '${duplicate}'`),
-                };
-              }
-              return {
-                ...state,
-                names: Arr.append(state.names, database.resourceName),
-                credentialRoles: Arr.appendAll(state.credentialRoles, databaseRoles),
-              };
-            }),
-            Match.when({ _tag: "ValkeyServer" }, ({ service }) => {
-              if (state.names.includes(service.name)) {
-                return {
-                  ...state,
-                  error: Option.some(`Duplicate resource name '${service.name}'`),
-                };
-              }
-              return Option.match(Option.fromNullishOr(service.vault), {
-                onNone: () => ({
-                  ...state,
-                  error: Option.some(
-                    `Valkey service '${service.name}' must declare a Nomad workload identity role`,
-                  ),
-                }),
-                onSome: () => ({
-                  ...state,
-                  names: Arr.append(state.names, service.name),
-                  services: Arr.append(state.services, service.name),
-                  valkeyServers: Arr.append(state.valkeyServers, service.name),
-                }),
-              });
-            }),
-            Match.when({ _tag: "ValkeyAccess" }, ({ access }) => {
-              if (state.names.includes(access.resourceName)) {
-                return {
-                  ...state,
-                  error: Option.some(`Duplicate resource name '${access.resourceName}'`),
-                };
-              }
-              if (!state.valkeyServers.includes(access.server)) {
-                return {
-                  ...state,
-                  error: Option.some(
-                    `Valkey access '${access.resourceName}' must follow its service '${access.server}'`,
-                  ),
-                };
-              }
-              if (state.valkeyAccesses.includes(access.resourceName)) {
-                return {
-                  ...state,
-                  error: Option.some(`Duplicate Valkey access '${access.resourceName}'`),
-                };
-              }
-              return {
-                ...state,
-                names: Arr.append(state.names, access.resourceName),
-                valkeyAccesses: Arr.append(state.valkeyAccesses, access.resourceName),
-              };
-            }),
-            Match.exhaustive,
-          ),
-      }),
-    {
-      names: Arr.empty<string>(),
-      services: Arr.empty<string>(),
-      credentialRoles: Arr.empty<string>(),
-      valkeyAccesses: Arr.empty<string>(),
-      valkeyServers: Arr.empty<string>(),
-      error: Option.none<string>(),
-    },
-  ).error;
+export type ExpandedResource =
+  | { readonly _tag: "PostgresServer"; readonly service: ExpandedJob }
+  | { readonly _tag: "ValkeyServer"; readonly service: ExpandedJob }
+  | { readonly _tag: "NomadService"; readonly service: ExpandedJob }
+  | { readonly _tag: "PostgresDatabase"; readonly database: PostgresDatabaseProps }
+  | { readonly _tag: "ValkeyAccess"; readonly access: ValkeyAccessConfig };
+
+export const postgresLoginRole = (database: string, login: "api" | "migration") =>
+  login === "api" ? `alchemy_${database}_api` : `alchemy_${database}_migration`;
+
+// PostgreSQL and Valkey identifiers allow "_" but not "-", so derived database and ACL user names use this form.
+export const appIdentifier = (name: string) => name.replace(/-/g, "_");
+
+const mapSecret = (
+  cartridge: Cartridge,
+  secret: CartridgeSecretReference,
+): ExpandedSecretReference => {
+  if (secret._tag === "KvSecret") return secret;
+  if (secret._tag === "PostgresCredentials") {
+    const database = secret.database;
+    const role = postgresLoginRole(database, secret.login);
+    const result: ExpandedSecretReference = {
+      _tag: "PostgresCredentials",
+      role,
+      usernameEnv: secret.usernameEnv,
+      passwordEnv: secret.passwordEnv,
+      url:
+        secret.urlEnv === undefined
+          ? undefined
+          : { env: secret.urlEnv },
+    };
+    return result;
+  }
+  // ValkeyCredentials
+  const appUnderscore = appIdentifier(cartridge.name);
+  const result: ExpandedSecretReference = {
+    _tag: "ValkeyCredentials",
+    access: appUnderscore,
+    usernameEnv: secret.usernameEnv,
+    passwordEnv: secret.passwordEnv,
+    url:
+      secret.urlEnv === undefined ? undefined : { env: secret.urlEnv },
+  };
+  return result;
+};
+
+const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => {
+  const secrets = (job.secrets ?? []).map((secret) => mapSecret(cartridge, secret));
+  const rendered: ExpandedJob = {
+    name: job.name,
+    image: job.image,
+    hostPort: job.hostPort,
+    containerPort: job.containerPort,
+    healthCheck: job.healthCheck,
+    cpu: job.cpu,
+    memoryMB: job.memoryMB,
+    networkMode: job.networkMode,
+    storage: job.storage,
+    environment: job.environment,
+    command: job.command,
+    args: job.args,
+    connections: job.connections,
+    secrets: secrets.length === 0 ? undefined : secrets,
+  };
+  return rendered;
+};
+
+export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> => {
+  const serverResources = (cartridge.servers ?? []).map((server) => {
+    const renderedJob = toRenderedJob(cartridge, server.service);
+    const tag = server._tag === "PostgresServer" ? "PostgresServer" : "ValkeyServer";
+    return { _tag: tag, service: renderedJob } as ExpandedResource;
+  });
+
+  const databaseResources = (cartridge.postgres ?? []).map((entry) => {
+    const database = entry.database;
+    const server = entry.server ?? "postgres";
+    const props: PostgresDatabaseProps = {
+      resourceName: database,
+      name: database,
+      server,
+      adminUsername: "postgres",
+      adminCredential: {
+        _tag: "KvSecret",
+        path: adminCredentialPath("postgres", server),
+        key: "password",
+        env: "POSTGRES_PASSWORD",
+      },
+      ownerRole: `${database}_owner`,
+      visitorRole: `${database}_visitor`,
+      connectionName: `alchemy_${database}`,
+      credentialRole: postgresLoginRole(database, "api"),
+      migrationCredentialRole: postgresLoginRole(database, "migration"),
+      defaultTtl: "1h",
+      maxTtl: "24h",
+    };
+    return { _tag: "PostgresDatabase", database: props } as ExpandedResource;
+  });
+
+  const valkeyResource: ReadonlyArray<ExpandedResource> =
+    cartridge.valkey === undefined
+      ? []
+      : [
+          {
+            _tag: "ValkeyAccess",
+            access: {
+              resourceName: appIdentifier(cartridge.name),
+              server: cartridge.valkey.server ?? "valkey",
+              adminUsername: "default",
+              keyPrefix: cartridge.name,
+              access: cartridge.valkey.access ?? "read-write",
+            },
+          } as ExpandedResource,
+        ];
+
+  const serviceResources = cartridge.services.map((job) => ({
+    _tag: "NomadService",
+    service: toRenderedJob(cartridge, job),
+  })) as ReadonlyArray<ExpandedResource>;
+
+  return [...serverResources, ...databaseResources, ...valkeyResource, ...serviceResources];
+};
 
 /** Read and validate the project-owned workload declaration. */
 export const load = Effect.fn(function* () {
@@ -243,9 +243,5 @@ export const load = Effect.fn(function* () {
   const cartridge = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Cartridge), {
     onExcessProperty: "error",
   })(contents).pipe(Effect.mapError((cause) => new Config.ConfigError(cause)));
-  return yield* Option.match(resourceOrderError(cartridge.resources), {
-    onNone: () => Effect.succeed(cartridge),
-    onSome: (message) =>
-      Effect.fail(new Config.ConfigError(new ConfigProvider.SourceError({ message }))),
-  });
+  return cartridge;
 });

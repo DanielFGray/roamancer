@@ -8,6 +8,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import { adminCredentialPath } from "./AdminCredential.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
 import { OperationJournal } from "./OperationJournal.ts";
@@ -137,10 +138,16 @@ const reconcile = Effect.fn("ValkeyAccess.reconcile")(function* (input: {
       ),
     ),
   );
-  const rootPassword = yield* input.openBao.readKv(
-    `secret/data/valkey/servers/${input.news.server}`,
-    "password",
+  const storedRootPassword = yield* input.openBao.readAdminCredential(
+    adminCredentialPath("valkey", input.news.server),
   );
+  const rootPassword = yield* Option.match(storedRootPassword, {
+    onNone: () =>
+      Effect.fail(
+        new ValkeyAccessError({ operation: "read admin credential", target: input.news.server }),
+      ),
+    onSome: Effect.succeed,
+  });
   const credentialPath = `secret/data/valkey/${input.news.resourceName}`;
   const existing = yield* input.openBao.readValkeyCredentials(credentialPath);
   const credentials = yield* Option.match(existing, {
@@ -242,10 +249,16 @@ export const ValkeyAccessProvider = () =>
                   ),
                 onSome: Effect.succeed,
               });
-              const rootPassword = yield* openBao.readKv(
-                `secret/data/valkey/servers/${olds.server}`,
-                "password",
+              const storedRootPassword = yield* openBao.readAdminCredential(
+                adminCredentialPath("valkey", olds.server),
               );
+              const rootPassword = yield* Option.match(storedRootPassword, {
+                onNone: () =>
+                  Effect.fail(
+                    new ValkeyAccessError({ operation: "read admin credential", target: olds.server }),
+                  ),
+                onSome: Effect.succeed,
+              });
               yield* runClient(
                 {
                   host: endpoint.Address,

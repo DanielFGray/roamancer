@@ -17,7 +17,7 @@ const route = siteRoute({
   root: "/srv/setlist/dist",
   apiUpstream: "127.0.0.1:3000",
   headers: { "Content-Security-Policy": "default-src 'self'" },
-}) as unknown as Node;
+}) as Node;
 
 // The top-level subroute: [0] is the API route, [1] is the static route.
 const siteRoutes = route.handle?.[0]?.routes ?? [];

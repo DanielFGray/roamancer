@@ -5,9 +5,9 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",
-    "plan": "alchemy plan --stage trial",
-    "deploy": "alchemy deploy --stage trial",
-    "destroy": "alchemy destroy --stage trial",
+    "plan": "alchemy plan",
+    "deploy": "alchemy deploy",
+    "destroy": "alchemy destroy",
     "staged:plan": "ALCHEMY_HOST_RUNNER=./staged-host-runner.sh ./staged-host-runner.sh plan",
     "staged:deploy": "./staged-host-runner.sh deploy",
     "staged:destroy": "./staged-host-runner.sh destroy",

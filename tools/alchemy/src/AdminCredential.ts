@@ -11,55 +11,61 @@ import { OperationJournal } from "./OperationJournal.ts";
 
 const ServerName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
 
-export const ValkeyAdminCredentialProps = Schema.Struct({ server: ServerName });
-export type ValkeyAdminCredentialProps = typeof ValkeyAdminCredentialProps.Type;
+export const AdminEngine = Schema.Literals(["postgres", "valkey"]);
+export type AdminEngine = typeof AdminEngine.Type;
 
-export interface ValkeyAdminCredential extends Alchemy.Resource<
-  "Valkey.AdminCredential",
-  ValkeyAdminCredentialProps,
+export const AdminCredentialProps = Schema.Struct({
+  engine: AdminEngine,
+  server: ServerName,
+});
+export type AdminCredentialProps = typeof AdminCredentialProps.Type;
+
+export interface AdminCredential extends Alchemy.Resource<
+  "Admin.Credential",
+  AdminCredentialProps,
   { id: string; path: string }
 > {}
 
-export const ValkeyAdminCredential =
-  Alchemy.Resource<ValkeyAdminCredential>("Valkey.AdminCredential");
+export const AdminCredential = Alchemy.Resource<AdminCredential>("Admin.Credential");
 
-const secretPath = (server: string) => `secret/data/valkey/servers/${server}`;
+export const adminCredentialPath = (engine: AdminEngine, server: string) =>
+  `secret/data/${engine}/servers/${server}`;
 
-const provision = Effect.fn("ValkeyAdminCredential.provision")(function* (input: {
+const provision = Effect.fn("AdminCredential.provision")(function* (input: {
   readonly id: string;
-  readonly props: ValkeyAdminCredentialProps;
+  readonly props: AdminCredentialProps;
   readonly openBao: typeof OpenBao.Service;
   readonly crypto: Crypto.Crypto;
 }) {
-  const path = secretPath(input.props.server);
-  const stored = yield* input.openBao.readValkeyAdminCredential(path);
+  const path = adminCredentialPath(input.props.engine, input.props.server);
+  const stored = yield* input.openBao.readAdminCredential(path);
   yield* Option.match(stored, {
     onSome: () => Effect.void,
     onNone: () =>
       Effect.gen(function* () {
         const password = Redacted.make(Hex.encode(yield* input.crypto.randomBytes(32)));
-        yield* input.openBao.writeValkeyAdminCredential(path, password);
+        yield* input.openBao.writeAdminCredential(path, password);
       }),
   });
   return { id: input.id, path };
 });
 
-export const ValkeyAdminCredentialProvider = () =>
+export const AdminCredentialProvider = () =>
   Provider.effect(
-    ValkeyAdminCredential,
+    AdminCredential,
     Effect.gen(function* () {
       const openBao = yield* OpenBao;
       const crypto = yield* Crypto.Crypto;
       const journal = yield* OperationJournal;
 
-      return ValkeyAdminCredential.Provider.of({
+      return AdminCredential.Provider.of({
         list: () => Effect.succeed([]),
         stables: ["id"],
         reconcile: Effect.fn(function* ({ news, fqn }) {
           return yield* journal.run(
             {
               resourceId: fqn,
-              provider: "Valkey.AdminCredential",
+              provider: "Admin.Credential",
               target: news.server,
               action: "reconcile",
             },
@@ -71,7 +77,7 @@ export const ValkeyAdminCredentialProvider = () =>
           yield* journal.run(
             {
               resourceId: fqn,
-              provider: "Valkey.AdminCredential",
+              provider: "Admin.Credential",
               target: olds.server,
               action: "delete",
             },

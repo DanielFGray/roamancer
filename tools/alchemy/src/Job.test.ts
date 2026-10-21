@@ -16,9 +16,7 @@ describe("Nomad workload rendering", () => {
       networkMode: "bridge",
       environment: [],
       connections: [{ service: "proof-postgres", hostEnv: "PGHOST", portEnv: "PGPORT" }],
-      vault: {
-        role: "alchemy-proof-app",
-        secrets: [
+      secrets: [
           {
             _tag: "KvSecret",
             path: "secret/data/proof-app",
@@ -40,7 +38,6 @@ describe("Nomad workload rendering", () => {
             passwordEnv: "VALKEY_PASSWORD",
           },
         ],
-      },
     });
 
     const spec = toJobSpec(job, "ProofStack/app");
@@ -82,9 +79,7 @@ describe("Nomad workload rendering", () => {
       networkMode: "bridge",
       environment: [],
       connections: [],
-      vault: {
-        role: "alchemy-proof-app",
-        secrets: [
+      secrets: [
           {
             _tag: "PostgresCredentials",
             role: "alchemy-proof-app-database",
@@ -94,7 +89,6 @@ describe("Nomad workload rendering", () => {
             url: { env: "DATABASE_URL", server: "shared-postgres", database: "proof_app" },
           },
         ],
-      },
     });
 
     const task = toJobSpec(job, "ProofStack/app").TaskGroups[0].Tasks[0];
@@ -119,9 +113,7 @@ describe("Nomad workload rendering", () => {
       networkMode: "bridge",
       environment: [],
       connections: [],
-      vault: {
-        role: "alchemy-proof-app",
-        secrets: [
+      secrets: [
           {
             _tag: "ValkeyCredentials",
             access: "proof_cache",
@@ -131,7 +123,6 @@ describe("Nomad workload rendering", () => {
             url: { env: "VALKEY_URL", server: "shared-valkey" },
           },
         ],
-      },
     });
 
     const task = toJobSpec(job, "ProofStack/app").TaskGroups[0].Tasks[0];
@@ -156,9 +147,7 @@ describe("Nomad workload rendering", () => {
       networkMode: "bridge",
       environment: [],
       connections: [],
-      vault: {
-        role: "alchemy-proof-app",
-        secrets: [
+      secrets: [
           {
             _tag: "PostgresCredentials",
             role: "alchemy-proof-app-database",
@@ -167,7 +156,6 @@ describe("Nomad workload rendering", () => {
             passwordEnv: "PGPASSWORD",
           },
         ],
-      },
     });
 
     const task = toJobSpec(job, "ProofStack/app").TaskGroups[0].Tasks[0];

@@ -1,0 +1,61 @@
+{
+  "apiVersion": "server-ansible/v2",
+  "name": "platform-data",
+  "servers": [
+    {
+      "_tag": "PostgresServer",
+      "service": {
+        "name": "postgres",
+        "image": "docker.io/library/postgres:17.6",
+        "hostPort": "dynamic",
+        "containerPort": 5432,
+        "healthCheck": {
+          "type": "tcp"
+        },
+        "cpu": 500,
+        "memoryMB": 512,
+        "networkMode": "bridge",
+        "storage": {
+          "volume": "postgres-data",
+          "mountPath": "/var/lib/postgresql/data"
+        },
+        "environment": [
+          {
+            "name": "PGDATA",
+            "value": "/var/lib/postgresql/data/pgdata"
+          }
+        ],
+        "connections": [],
+        "secrets": []
+      }
+    },
+    {
+      "_tag": "ValkeyServer",
+      "service": {
+        "name": "valkey",
+        "image": "docker.io/valkey/valkey:8.1.3",
+        "hostPort": "dynamic",
+        "containerPort": 6379,
+        "healthCheck": {
+          "type": "tcp"
+        },
+        "cpu": 500,
+        "memoryMB": 512,
+        "networkMode": "bridge",
+        "storage": {
+          "volume": "valkey-data",
+          "mountPath": "/data"
+        },
+        "environment": [],
+        "command": "sh",
+        "args": [
+          "-ec",
+          "if [ ! -s /data/users.acl ]; then printf 'user default on >%s ~* &* +@all\\n' \"$VALKEY_ADMIN_PASSWORD\" > /data/users.acl; fi; exec valkey-server --appendonly yes --aclfile /data/users.acl"
+        ],
+        "connections": [],
+        "secrets": []
+      }
+    }
+  ],
+  "services": []
+}
