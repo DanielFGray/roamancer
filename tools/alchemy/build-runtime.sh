@@ -20,8 +20,22 @@ readonly POLL_SECONDS=2
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 builder_dir="${NIX_BUILDER_DIR:-$HOME/.cache/server-ansible-builder}"
 image="${NIX_BUILDER_IMAGE:-nixos/nix:latest}"
-# A flake reference inside the source snapshot, such as path:/src/nixos/testground#default.
+# A flake reference inside the source snapshot, such as path:/src#testground-vm.
 build_target="${NIX_BUILD_TARGET:-path:/src#alchemy-staged}"
+# NixOS disk images run a VM while they build, so they need /dev/kvm. Opt in per build.
+kvm_args=()
+if [[ "${NIX_BUILDER_KVM:-0}" == "1" ]]; then
+  kvm_gid="$(getent group kvm | cut -d: -f3)"
+  if [[ -z "$kvm_gid" ]]; then
+    printf 'NIX_BUILDER_KVM=1 needs a kvm group on this host\n' >&2
+    exit 1
+  fi
+  kvm_args=(
+    --device /dev/kvm
+    --group-add "$kvm_gid"
+    --env "NIX_CONFIG=system-features = benchmark big-parallel nixos-test uid-range kvm"
+  )
+fi
 mkdir -p -- "$builder_dir/nix" "$builder_dir/tmp"
 builder_dir="$(cd -- "$builder_dir" && pwd)"
 
@@ -94,6 +108,7 @@ container="$(docker create --memory=2g --memory-swap=2g --cpus=1 --pids-limit=25
   --mount "type=bind,src=$snapshot,dst=/src,readonly" \
   --env TMPDIR=/build-tmp \
   --env "NIX_BUILD_TARGET=$build_target" \
+  ${kvm_args[@]+"${kvm_args[@]}"} \
   "$image" sh -c 'nix --extra-experimental-features "nix-command flakes" build --max-jobs 1 --cores 1 --option sandbox false --no-link --print-out-paths "$NIX_BUILD_TARGET" > /build-tmp/out-path')"
 if [[ -z "$container" ]]; then
   printf 'docker create returned no container id\n' >&2

@@ -299,12 +299,20 @@ assert_contains "$docker_log" '--memory-swap=2g' 'the container keeps no swap'
 assert_contains "$docker_log" '--cpus=1' 'the container keeps one CPU'
 assert_contains "$docker_log" '--max-jobs 1 --cores 1' 'the build keeps one Nix build'
 assert_contains "$docker_log" 'NIX_BUILD_TARGET=path:/src#alchemy-staged' 'the default target is the staged package'
+assert_not_contains "$docker_log" '/dev/kvm' 'a default build gets no KVM device'
 
 new_workspace
-extra_env=("NIX_BUILD_TARGET=path:/src/nixos/testground#default")
+extra_env=("NIX_BUILDER_KVM=1")
+run_builder
+assert_eq 0 "$status" 'a KVM build exits 0'
+assert_contains "$docker_log" '--device /dev/kvm' 'a KVM build passes /dev/kvm to the container'
+assert_contains "$docker_log" 'system-features = benchmark big-parallel nixos-test uid-range kvm' 'a KVM build adds the kvm system feature'
+
+new_workspace
+extra_env=("NIX_BUILD_TARGET=path:/src#testground-vm")
 run_builder
 assert_eq 0 "$status" 'a build can target another flake output'
-assert_contains "$docker_log" 'NIX_BUILD_TARGET=path:/src/nixos/testground#default' 'the chosen target reaches the container'
+assert_contains "$docker_log" 'NIX_BUILD_TARGET=path:/src#testground-vm' 'the chosen target reaches the container'
 assert_contains "$docker_log" 'dst=/src,readonly' 'the source snapshot is read-only in the container'
 assert_eq 0 "$(snapshot_leftovers)" 'a successful build leaves no source snapshot behind'
 
