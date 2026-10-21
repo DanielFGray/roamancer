@@ -73,9 +73,12 @@ export const ReleaseSetProvider = () =>
               });
               // The selected release goes first. During a promotion it gains
               // the stable tags, and Nomad reports it healthy, before the
-              // release it replaces loses them. Traefik applies each tag
-              // change on its own schedule, so this order makes a gap
-              // unlikely but does not rule one out.
+              // release it replaces loses them, so the stable host always has
+              // a router. Until the old tags go, both routers have the same
+              // rule and priority, and Traefik serves either one: it breaks
+              // the tie by map order, not by name. A priority tag cannot fix
+              // this, because the old tags were written while the old release
+              // was the selected one.
               const selected = yield* releaseFor(news, news.selectedRelease);
               yield* ensureRelease(nomad, news, selected, fqn);
               yield* Effect.forEach(
