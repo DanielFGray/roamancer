@@ -1,0 +1,96 @@
+{
+  "apiVersion": "server-ansible/v1",
+  "resources": [
+    {
+      "_tag": "NomadService",
+      "service": {
+        "name": "openobserve",
+        "image": "openobserve/openobserve:v1.1.2",
+        "hostPort": "dynamic",
+        "containerPort": 5080,
+        "healthCheck": {
+          "type": "tcp"
+        },
+        "cpu": 500,
+        "memoryMB": 768,
+        "networkMode": "bridge",
+        "storage": {
+          "volume": "openobserve-data",
+          "mountPath": "/data"
+        },
+        "environment": [
+          {
+            "name": "ZO_DATA_DIR",
+            "value": "/data"
+          },
+          {
+            "name": "ZO_ROOT_USER_EMAIL",
+            "value": "ops@example.com"
+          }
+        ],
+        "connections": [],
+        "vault": {
+          "role": "alchemy-openobserve",
+          "secrets": [
+            {
+              "_tag": "KvSecret",
+              "path": "secret/data/platform/openobserve",
+              "key": "root_password",
+              "env": "ZO_ROOT_USER_PASSWORD"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "_tag": "NomadService",
+      "service": {
+        "name": "otel-collector",
+        "image": "otel/opentelemetry-collector-contrib:0.131.0",
+        "hostPort": "dynamic",
+        "containerPort": 4318,
+        "healthCheck": {
+          "type": "tcp"
+        },
+        "cpu": 200,
+        "memoryMB": 256,
+        "networkMode": "bridge",
+        "environment": [
+          {
+            "name": "OTEL_CONFIG",
+            "value": "extensions:\n  basicauth/openobserve:\n    client_auth:\n      username: ${env:OPENOBSERVE_USERNAME}\n      password: ${env:OPENOBSERVE_PASSWORD}\n\nreceivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: 0.0.0.0:4318\n  prometheus:\n    config:\n      scrape_configs:\n        - job_name: nomad\n          scrape_interval: 15s\n          metrics_path: /v1/metrics\n          params:\n            format: [prometheus]\n          static_configs:\n            - targets: [\"${env:NOMAD_TARGET}\"]\n\nprocessors:\n  batch: {}\n\nexporters:\n  otlphttp/openobserve:\n    endpoint: http://${env:OPENOBSERVE_HOST}:${env:OPENOBSERVE_PORT}/api/default\n    auth:\n      authenticator: basicauth/openobserve\n\nservice:\n  extensions: [basicauth/openobserve]\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [batch]\n      exporters: [otlphttp/openobserve]\n    logs:\n      receivers: [otlp]\n      processors: [batch]\n      exporters: [otlphttp/openobserve]\n    metrics:\n      receivers: [otlp, prometheus]\n      processors: [batch]\n      exporters: [otlphttp/openobserve]\n"
+          },
+          {
+            "name": "NOMAD_TARGET",
+            "value": "host.containers.internal:4646"
+          },
+          {
+            "name": "OPENOBSERVE_USERNAME",
+            "value": "ops@example.com"
+          }
+        ],
+        "args": [
+          "--config=env:OTEL_CONFIG"
+        ],
+        "connections": [
+          {
+            "service": "openobserve",
+            "hostEnv": "OPENOBSERVE_HOST",
+            "portEnv": "OPENOBSERVE_PORT"
+          }
+        ],
+        "vault": {
+          "role": "alchemy-otel-collector",
+          "secrets": [
+            {
+              "_tag": "KvSecret",
+              "path": "secret/data/platform/openobserve",
+              "key": "root_password",
+              "env": "OPENOBSERVE_PASSWORD"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

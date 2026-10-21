@@ -190,6 +190,25 @@ Port `4647` is the fresh build. Port `4646` is the earlier VM with the Noneuclid
 
 Nomad's node and allocation metrics are available for a scraper. The endpoint does not retain resource history. Add a metrics store and dashboard before using resource use to choose where to move apps.
 
+## Platform observability
+
+`platform/observability/cartridge.json` declares two Nomad jobs that the platform runs for every app:
+
+- `openobserve` stores traces, logs and metrics. It uses the `openobserve-data` host volume and the `alchemy-openobserve` OpenBao role. Its root password comes from `secret/data/platform/openobserve`, key `root_password`.
+- `otel-collector` receives OTLP over HTTP on the job's dynamic port. It also scrapes Nomad's `/v1/metrics` endpoint and forwards everything to `openobserve`. It uses the `alchemy-otel-collector` role and the same password. Its config is the `OTEL_CONFIG` environment value, read with `--config=env:OTEL_CONFIG`.
+
+Apply it with its own state directory, because one cartridge describes one stack:
+
+```sh
+ALCHEMY_CARTRIDGE=$PWD/platform/observability/cartridge.json bun run plan
+```
+
+Before the first deploy, write the root password to OpenBao, then create the two job-bound roles and their policies the same way the PostgreSQL proof did.
+
+Checked on the workstation with OpenObserve v1.1.2 and the collector v0.131.0 image. OpenObserve accepted OTLP traces, logs and metrics. The collector scraped a stand-in Nomad endpoint and sent an app-style trace through its OTLP receiver. Both reached OpenObserve and were queryable. The collector config validates, and the loader rejects a collector declared before OpenObserve.
+
+Not checked: that Nomad's `/v1/metrics` returns data to the collector on the testground VM, that `host.containers.internal` reaches Nomad from a bridge network, that Nomad leaves the `${env:...}` references in `OTEL_CONFIG` unchanged, and the memory use of OpenObserve under real load. Cynic is not changed. Its Nomad config needs the same host volume, a Nomad ACL token for the scrape, and approval.
+
 ## Current limits
 
 The pinned runtime package and testground image build successfully. On 2026-10-20, a fresh disposable VM booted the host-owned controller, deployed the sample ReleaseSet as the `alchemy` account, restored a deleted preview route after controller restart, and reconciled both routes after reboot. A final plan reported no changes. The controller retried while Nomad was starting and then reconciled; this verifies recovery, not startup ordering. The package includes `util-linux` because the shared runner uses `flock`.
