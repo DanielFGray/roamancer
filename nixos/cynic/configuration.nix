@@ -26,8 +26,26 @@
 
   programs.zsh.enable = true;
 
-  # Git hosts the bare repositories that builds on this host read from.
-  environment.systemPackages = [ pkgs.git ];
+  # Git hosts the bare repositories that builds on this host read from. The rest are the
+  # command-line tools that the dotfiles' shell configs and the operator's workflow call.
+  environment.systemPackages = with pkgs; [
+    git
+    ripgrep
+    fd
+    jq
+    hyperfine
+    ast-grep
+    neovim
+    fzf
+    zoxide
+    bat
+    lsd
+    tree
+    rsync
+    lsof
+    psmisc
+    htop
+  ];
 
   users.users.dan = {
     isNormalUser = true;
