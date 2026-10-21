@@ -67,12 +67,8 @@ describe("Compose", () => {
   it("composes app-needs: postgres and valkey servers, credential paths, urls", async () => {
     const cartridge = readCartridge("../examples/app-needs/cartridge.json");
     const resources = expand(cartridge);
-    const {
-      constructors,
-      nomadJobCalls,
-      postgresDatabaseCalls,
-      valkeyAccessCalls,
-    } = makeConstructors();
+    const { constructors, nomadJobCalls, postgresDatabaseCalls, valkeyAccessCalls } =
+      makeConstructors();
 
     await Effect.runPromise(compose(resources, constructors));
 
@@ -91,8 +87,12 @@ describe("Compose", () => {
     assert.ok(appJob);
 
     const pgSecret = (appJob.props.secrets ?? []).find(
-      (s): s is Extract<NonNullable<typeof appJob.props.secrets>[number], { _tag: "PostgresCredentials" }> =>
-        s._tag === "PostgresCredentials",
+      (
+        s,
+      ): s is Extract<
+        NonNullable<typeof appJob.props.secrets>[number],
+        { _tag: "PostgresCredentials" }
+      > => s._tag === "PostgresCredentials",
     );
     assert.ok(pgSecret);
     assert.equal(pgSecret.credentialPath, "db/creds/alchemy_app_needs_api");
@@ -102,8 +102,12 @@ describe("Compose", () => {
     }
 
     const vkSecret = (appJob.props.secrets ?? []).find(
-      (s): s is Extract<NonNullable<typeof appJob.props.secrets>[number], { _tag: "ValkeyCredentials" }> =>
-        s._tag === "ValkeyCredentials",
+      (
+        s,
+      ): s is Extract<
+        NonNullable<typeof appJob.props.secrets>[number],
+        { _tag: "ValkeyCredentials" }
+      > => s._tag === "ValkeyCredentials",
     );
     assert.ok(vkSecret);
     assert.equal(vkSecret.credentialPath, "secret/data/valkey/app_needs");
@@ -158,14 +162,92 @@ describe("Compose", () => {
     assert.ok(appJob);
     const credentialPathByRole = new Map(
       (appJob.props.secrets ?? []).flatMap((secret) =>
-        secret._tag === "PostgresCredentials" ? [[secret.role, secret.credentialPath] as const] : [],
+        secret._tag === "PostgresCredentials"
+          ? [[secret.role, secret.credentialPath] as const]
+          : [],
       ),
     );
-    assert.equal(credentialPathByRole.get("alchemy_app_needs_api"), "db/creds/alchemy_app_needs_api");
+    assert.equal(
+      credentialPathByRole.get("alchemy_app_needs_api"),
+      "db/creds/alchemy_app_needs_api",
+    );
     assert.equal(
       credentialPathByRole.get("alchemy_app_needs_migration"),
       "db/creds/alchemy_app_needs_migration",
     );
+  });
+
+  it("resolves a migrate step's login to the migration credential path", async () => {
+    const cartridge = Schema.decodeUnknownSync(Cartridge)({
+      apiVersion: "server-ansible/v2",
+      name: "app-needs",
+      postgres: [{ database: "app_needs" }],
+      services: [
+        {
+          name: "app-needs",
+          image: "example/app-needs:latest",
+          hostPort: "dynamic",
+          containerPort: 8080,
+          cpu: 200,
+          memoryMB: 256,
+          networkMode: "bridge",
+          environment: [],
+          connections: [],
+          secrets: [
+            {
+              _tag: "PostgresCredentials",
+              database: "app_needs",
+              login: "api",
+              usernameEnv: "PGUSER",
+              passwordEnv: "PGPASSWORD",
+              urlEnv: "DATABASE_URL",
+            },
+          ],
+          migrate: {
+            command: "graphile-migrate",
+            args: ["migrate"],
+            secrets: [
+              {
+                _tag: "PostgresCredentials",
+                database: "app_needs",
+                login: "migration",
+                usernameEnv: "MIGUSER",
+                passwordEnv: "MIGPASSWORD",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const resources = expand(cartridge);
+    const { constructors, nomadJobCalls } = makeConstructors();
+
+    await Effect.runPromise(compose(resources, constructors));
+
+    const appJob = nomadJobCalls.find((call) => call.id === "app-needs");
+    assert.ok(appJob);
+
+    const mainSecret = (appJob.props.secrets ?? []).find(
+      (
+        s,
+      ): s is Extract<
+        NonNullable<typeof appJob.props.secrets>[number],
+        { _tag: "PostgresCredentials" }
+      > => s._tag === "PostgresCredentials",
+    );
+    assert.ok(mainSecret);
+    assert.equal(mainSecret.credentialPath, "db/creds/alchemy_app_needs_api");
+
+    const migrateSecret = (appJob.props.migrate?.secrets ?? []).find(
+      (
+        s,
+      ): s is Extract<
+        NonNullable<NonNullable<typeof appJob.props.migrate>["secrets"]>[number],
+        { _tag: "PostgresCredentials" }
+      > => s._tag === "PostgresCredentials",
+    );
+    assert.ok(migrateSecret);
+    assert.equal(migrateSecret.credentialPath, "db/creds/alchemy_app_needs_migration");
   });
 
   it("gives platform/data server jobs one admin KvSecret each", async () => {
@@ -203,9 +285,6 @@ describe("Compose", () => {
     const otelJob = nomadJobCalls.find((call) => call.id === "otel-collector");
     assert.ok(openobserveJob);
     assert.ok(otelJob);
-    assert.equal(
-      otelJob.props.connections[0].service,
-      "openobserve-nomad",
-    );
+    assert.equal(otelJob.props.connections[0].service, "openobserve-nomad");
   });
 });

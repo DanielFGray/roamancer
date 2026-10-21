@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { Job, secretPolicyPath, workloadRole } from "./Job.ts";
+import { Job, secretPolicyPaths, workloadRole } from "./Job.ts";
 import { Nomad } from "./Nomad.ts";
 import type { Deployment, JobSnapshot } from "./Nomad.ts";
 import { OperationJournal } from "./OperationJournal.ts";
@@ -107,14 +107,14 @@ export const NomadJobProvider = () =>
           });
         }),
         reconcile: Effect.fn(function* ({ news, output, fqn }) {
-          const secrets = news.secrets ?? [];
-          yield* (secrets.length === 0
+          const secretPaths = secretPolicyPaths(news);
+          yield* secretPaths.length === 0
             ? Effect.void
             : openBao.configureWorkloadRole({
                 name: workloadRole(news.name),
                 job: news.name,
-                secretPaths: secrets.map(secretPolicyPath),
-              }));
+                secretPaths,
+              });
           return yield* journal.run(
             {
               resourceId: fqn,

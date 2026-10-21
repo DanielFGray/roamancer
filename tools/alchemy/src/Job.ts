@@ -1,7 +1,9 @@
 import { Schema } from "effect";
 import * as Match from "effect/Match";
 
-export const ResourceName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
+export const ResourceName = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/),
+);
 const EnvironmentVariable = Schema.String.check(Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/));
 const SecretPath = Schema.String.check(
   Schema.isPattern(/^secret\/data\/[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)*$/),
@@ -62,16 +64,11 @@ export const SecretReference = Schema.Union([
 ]);
 export type SecretReference = typeof SecretReference.Type;
 
-const atLeastOneEnvironmentVariable = Schema.makeFilter((value: {
-  usernameEnv?: string;
-  passwordEnv?: string;
-  urlEnv?: string;
-}) =>
-  value.usernameEnv === undefined &&
-  value.passwordEnv === undefined &&
-  value.urlEnv === undefined
-    ? "at least one environment variable is required"
-    : undefined,
+const atLeastOneEnvironmentVariable = Schema.makeFilter(
+  (value: { usernameEnv?: string; passwordEnv?: string; urlEnv?: string }) =>
+    value.usernameEnv === undefined && value.passwordEnv === undefined && value.urlEnv === undefined
+      ? "at least one environment variable is required"
+      : undefined,
 );
 
 export const ValkeyCredentialsDeclaration = Schema.TaggedStruct("ValkeyCredentials", {
@@ -102,6 +99,10 @@ export const secretPolicyPath = (secret: SecretReference) =>
     Match.when({ _tag: "ValkeyCredentials" }, (value) => value.credentialPath),
     Match.exhaustive,
   );
+
+/** The OpenBao paths a job reads, across its service task and its migration task, for its one workload role. */
+export const secretPolicyPaths = (job: Job) =>
+  [...(job.secrets ?? []), ...(job.migrate?.secrets ?? [])].map(secretPolicyPath);
 
 const Storage = Schema.Struct({
   volume: ResourceName,
@@ -154,21 +155,32 @@ export const ExpandedSecretReference = Schema.Union([
 ]);
 export type ExpandedSecretReference = typeof ExpandedSecretReference.Type;
 
+// A step that runs to completion in the service image before the service starts, with its own secrets.
+const migrateStep = <S extends Schema.Top>(secret: S) =>
+  Schema.Struct({
+    command: Schema.optionalKey(Schema.String),
+    args: Schema.optionalKey(Schema.Array(Schema.String)),
+    secrets: Schema.optionalKey(Schema.Array(secret)),
+  });
+
 export const ExpandedJob = Schema.Struct({
   ...JobBaseFields,
   secrets: Schema.optionalKey(Schema.Array(ExpandedSecretReference)),
+  migrate: Schema.optionalKey(migrateStep(ExpandedSecretReference)),
 });
 export type ExpandedJob = typeof ExpandedJob.Type;
 
 export const Job = Schema.Struct({
   ...JobBaseFields,
   secrets: Schema.optionalKey(Schema.Array(SecretReference)),
+  migrate: Schema.optionalKey(migrateStep(SecretReference)),
 });
 export type Job = typeof Job.Type;
 
 export const CartridgeJob = Schema.Struct({
   ...JobBaseFields,
   secrets: Schema.optionalKey(Schema.Array(CartridgeSecretReference)),
+  migrate: Schema.optionalKey(migrateStep(CartridgeSecretReference)),
 });
 export type CartridgeJob = typeof CartridgeJob.Type;
 
@@ -231,8 +243,12 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
         Match.when({ _tag: "PostgresCredentials" }, (value) =>
           [
             '{{- with secret "' + value.credentialPath + '" -}}',
-            ...(value.usernameEnv === undefined ? [] : [value.usernameEnv + "={{ .Data.username | toJSON }}"]),
-            ...(value.passwordEnv === undefined ? [] : [value.passwordEnv + "={{ .Data.password | toJSON }}"]),
+            ...(value.usernameEnv === undefined
+              ? []
+              : [value.usernameEnv + "={{ .Data.username | toJSON }}"]),
+            ...(value.passwordEnv === undefined
+              ? []
+              : [value.passwordEnv + "={{ .Data.password | toJSON }}"]),
             ...(value.url === undefined ? [] : postgresUrlLines(value.url)),
             "{{- end }}",
           ].join("\n"),
@@ -240,8 +256,12 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
         Match.when({ _tag: "ValkeyCredentials" }, (value) =>
           [
             '{{- with secret "' + value.credentialPath + '" -}}',
-            ...(value.usernameEnv === undefined ? [] : [value.usernameEnv + "={{ .Data.data.username | toJSON }}"]),
-            ...(value.passwordEnv === undefined ? [] : [value.passwordEnv + "={{ .Data.data.password | toJSON }}"]),
+            ...(value.usernameEnv === undefined
+              ? []
+              : [value.usernameEnv + "={{ .Data.data.username | toJSON }}"]),
+            ...(value.passwordEnv === undefined
+              ? []
+              : [value.passwordEnv + "={{ .Data.data.password | toJSON }}"]),
             ...(value.url === undefined ? [] : valkeyUrlLines(value.url)),
             "{{- end }}",
           ].join("\n"),
@@ -277,12 +297,33 @@ const toHealthCheck = (healthCheck: HealthCheck) =>
 
 /** Render one workload job. Service references and secret paths are metadata, not values. */
 export const toJobSpec = (job: Job, owner: string) => {
-  const secrets = job.secrets ?? [];
-  const templates = (
-    job.connections.length === 0 ? [] : [toServiceTemplate(job.connections)]
-  ).concat(
-    secrets.length === 0 ? [] : [toSecretTemplate(secrets)],
-  );
+  const serverTask = toTask(job, {
+    name: "server",
+    ports: ["service"],
+    command: job.command,
+    args: job.args,
+    secrets: job.secrets ?? [],
+    templates: job.connections.length === 0 ? [] : [toServiceTemplate(job.connections)],
+  });
+  // Nomad runs a non-sidecar prestart task to completion before the server task
+  // starts, on every allocation start; if it fails, the server task never starts.
+  const migrateTasks =
+    job.migrate === undefined
+      ? []
+      : [
+          {
+            ...toTask(job, {
+              name: "migrate",
+              ports: [],
+              command: job.migrate.command,
+              args: job.migrate.args,
+              secrets: job.migrate.secrets ?? [],
+              templates: [],
+            }),
+            Lifecycle: { Hook: "prestart" as const, Sidecar: false },
+          },
+        ];
+  const tasks = [...migrateTasks, serverTask];
 
   return {
     ID: job.name,
@@ -307,32 +348,7 @@ export const toJobSpec = (job: Job, owner: string) => {
             Checks: job.healthCheck === undefined ? undefined : [toHealthCheck(job.healthCheck)],
           },
         ],
-        Tasks: [
-          {
-            Name: "server",
-            Driver: "podman",
-            Config: {
-              image: job.image,
-              network_mode: job.networkMode,
-              ports: ["service"],
-              command: job.command,
-              args: job.args,
-            },
-            Env: Object.fromEntries(
-              job.environment.map((variable) => [variable.name, variable.value]),
-            ),
-            VolumeMounts:
-              job.storage === undefined
-                ? []
-                : [{ Volume: "data", Destination: job.storage.mountPath, ReadOnly: false }],
-            Resources: { CPU: job.cpu, MemoryMB: job.memoryMB },
-            Vault:
-              secrets.length === 0
-                ? undefined
-                : { Role: workloadRole(job.name), Env: false, DisableFile: true },
-            Templates: templates,
-          },
-        ],
+        Tasks: tasks,
       },
     ],
     Update: {
@@ -345,3 +361,36 @@ export const toJobSpec = (job: Job, owner: string) => {
     },
   };
 };
+
+const toTask = (
+  job: Job,
+  task: {
+    readonly name: string;
+    readonly ports: ReadonlyArray<string>;
+    readonly command: string | undefined;
+    readonly args: ReadonlyArray<string> | undefined;
+    readonly secrets: ReadonlyArray<SecretReference>;
+    readonly templates: ReadonlyArray<ReturnType<typeof toServiceTemplate>>;
+  },
+) => ({
+  Name: task.name,
+  Driver: "podman" as const,
+  Config: {
+    image: job.image,
+    network_mode: job.networkMode,
+    ports: task.ports.length === 0 ? undefined : task.ports,
+    command: task.command,
+    args: task.args,
+  },
+  Env: Object.fromEntries(job.environment.map((variable) => [variable.name, variable.value])),
+  VolumeMounts:
+    job.storage === undefined
+      ? []
+      : [{ Volume: "data", Destination: job.storage.mountPath, ReadOnly: false }],
+  Resources: { CPU: job.cpu, MemoryMB: job.memoryMB },
+  Vault:
+    task.secrets.length === 0
+      ? undefined
+      : { Role: workloadRole(job.name), Env: false, DisableFile: true },
+  Templates: task.templates.concat(task.secrets.length === 0 ? [] : [toSecretTemplate(task.secrets)]),
+});

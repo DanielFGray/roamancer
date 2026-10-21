@@ -18,9 +18,7 @@ import { adminCredentialPath } from "./AdminCredential.ts";
 
 const AppName = Schema.String.check(
   Schema.isPattern(/^[a-z][a-z0-9-]{0,30}$/),
-  Schema.makeFilter((value) =>
-    value === "default" ? "must not be \"default\"" : undefined,
-  ),
+  Schema.makeFilter((value) => (value === "default" ? 'must not be "default"' : undefined)),
 );
 
 const DatabaseName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,39}$/));
@@ -54,14 +52,19 @@ export const Cartridge = Schema.Struct({
 }).check(
   Schema.makeFilter((cartridge) => {
     const issues: Array<string> = [];
-    if ((cartridge.servers?.length ?? 0) > 0 && ((cartridge.postgres?.length ?? 0) > 0 || cartridge.valkey !== undefined)) {
+    if (
+      (cartridge.servers?.length ?? 0) > 0 &&
+      ((cartridge.postgres?.length ?? 0) > 0 || cartridge.valkey !== undefined)
+    ) {
       issues.push("a cartridge cannot both declare servers and postgres/valkey");
     }
     const allJobNames = [
       ...(cartridge.servers ?? []).map((server) => server.service.name),
       ...cartridge.services.map((service) => service.name),
     ];
-    const duplicateJobNames = allJobNames.filter((name, index) => allJobNames.indexOf(name) !== index);
+    const duplicateJobNames = allJobNames.filter(
+      (name, index) => allJobNames.indexOf(name) !== index,
+    );
     issues.push(...duplicateJobNames.map((name) => `duplicate job name '${name}'`));
     const dbNames = (cartridge.postgres ?? []).map((entry) => entry.database);
     const duplicateDbNames = dbNames.filter((name, index) => dbNames.indexOf(name) !== index);
@@ -70,29 +73,47 @@ export const Cartridge = Schema.Struct({
     issues.push(
       ...(cartridge.postgres ?? [])
         .map((entry) => entry.database)
-        .filter((database) => !(database === appUnderscore || database.startsWith(`${appUnderscore}_`)))
+        .filter(
+          (database) => !(database === appUnderscore || database.startsWith(`${appUnderscore}_`)),
+        )
         .map((database) => `Database '${database}' must equal or start with '${appUnderscore}_'`),
     );
-    const allJobs = [...(cartridge.servers ?? []).map((server) => server.service), ...cartridge.services];
-    const secretIssues = allJobs.flatMap((job) =>
-      (job.secrets ?? []).flatMap((secret) => {
+    const allJobs = [
+      ...(cartridge.servers ?? []).map((server) => server.service),
+      ...cartridge.services,
+    ];
+    const secretIssues = allJobs.flatMap((job) => {
+      const jobSecrets = [...(job.secrets ?? []), ...(job.migrate?.secrets ?? [])];
+      return jobSecrets.flatMap((secret) => {
         const result: Array<string> = [];
         if (secret._tag === "PostgresCredentials") {
-          const found = (cartridge.postgres ?? []).some((entry) => entry.database === secret.database);
-          if (!found) result.push(`PostgresCredentials references database '${secret.database}' not in \`postgres\``);
+          const found = (cartridge.postgres ?? []).some(
+            (entry) => entry.database === secret.database,
+          );
+          if (!found)
+            result.push(
+              `PostgresCredentials references database '${secret.database}' not in \`postgres\``,
+            );
         }
         if (secret._tag === "ValkeyCredentials" && cartridge.valkey === undefined) {
           result.push("ValkeyCredentials requires `valkey`");
         }
         return result;
-      }),
-    );
+      });
+    });
+    const serverMigrateIssues = (cartridge.servers ?? [])
+      .filter((server) => server.service.migrate !== undefined)
+      .map(() => "server declarations may not declare `migrate`");
     issues.push(...secretIssues);
+    issues.push(...serverMigrateIssues);
     const seenServices = new Set<string>();
     const connectionIssues = allJobs.flatMap((job) => {
       const result = job.connections
         .filter((connection) => !seenServices.has(connection.service))
-        .map((connection) => `Service '${job.name}' must follow its service dependency '${connection.service}'`);
+        .map(
+          (connection) =>
+            `Service '${job.name}' must follow its service dependency '${connection.service}'`,
+        );
       seenServices.add(job.name);
       return result;
     });
@@ -128,10 +149,7 @@ const mapSecret = (
       role,
       usernameEnv: secret.usernameEnv,
       passwordEnv: secret.passwordEnv,
-      url:
-        secret.urlEnv === undefined
-          ? undefined
-          : { env: secret.urlEnv },
+      url: secret.urlEnv === undefined ? undefined : { env: secret.urlEnv },
     };
     return result;
   }
@@ -142,14 +160,22 @@ const mapSecret = (
     access: appUnderscore,
     usernameEnv: secret.usernameEnv,
     passwordEnv: secret.passwordEnv,
-    url:
-      secret.urlEnv === undefined ? undefined : { env: secret.urlEnv },
+    url: secret.urlEnv === undefined ? undefined : { env: secret.urlEnv },
   };
   return result;
 };
 
 const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => {
   const secrets = (job.secrets ?? []).map((secret) => mapSecret(cartridge, secret));
+  const migrateSecrets = (job.migrate?.secrets ?? []).map((secret) => mapSecret(cartridge, secret));
+  const migrate =
+    job.migrate === undefined
+      ? undefined
+      : {
+          command: job.migrate.command,
+          args: job.migrate.args,
+          secrets: migrateSecrets.length === 0 ? undefined : migrateSecrets,
+        };
   const rendered: ExpandedJob = {
     name: job.name,
     image: job.image,
@@ -165,6 +191,7 @@ const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => 
     args: job.args,
     connections: job.connections,
     secrets: secrets.length === 0 ? undefined : secrets,
+    migrate,
   };
   return rendered;
 };

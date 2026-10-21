@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Schema from "effect/Schema";
-import { Job, toJobSpec } from "./Job.ts";
+import { Job, toJobSpec, secretPolicyPaths } from "./Job.ts";
 
 describe("Nomad workload rendering", () => {
   it("renders a dynamic service port and runtime-only secret references", () => {
@@ -17,27 +17,27 @@ describe("Nomad workload rendering", () => {
       environment: [],
       connections: [{ service: "proof-postgres", hostEnv: "PGHOST", portEnv: "PGPORT" }],
       secrets: [
-          {
-            _tag: "KvSecret",
-            path: "secret/data/proof-app",
-            key: "database_password",
-            env: "APP_SECRET",
-          },
-          {
-            _tag: "PostgresCredentials",
-            role: "alchemy-proof-app-database",
-            credentialPath: "database/creds/alchemy-proof-app-database",
-            usernameEnv: "PGUSER",
-            passwordEnv: "PGPASSWORD",
-          },
-          {
-            _tag: "ValkeyCredentials",
-            access: "proof_cache",
-            credentialPath: "secret/data/valkey/proof_cache",
-            usernameEnv: "VALKEY_USER",
-            passwordEnv: "VALKEY_PASSWORD",
-          },
-        ],
+        {
+          _tag: "KvSecret",
+          path: "secret/data/proof-app",
+          key: "database_password",
+          env: "APP_SECRET",
+        },
+        {
+          _tag: "PostgresCredentials",
+          role: "alchemy-proof-app-database",
+          credentialPath: "database/creds/alchemy-proof-app-database",
+          usernameEnv: "PGUSER",
+          passwordEnv: "PGPASSWORD",
+        },
+        {
+          _tag: "ValkeyCredentials",
+          access: "proof_cache",
+          credentialPath: "secret/data/valkey/proof_cache",
+          usernameEnv: "VALKEY_USER",
+          passwordEnv: "VALKEY_PASSWORD",
+        },
+      ],
     });
 
     const spec = toJobSpec(job, "ProofStack/app");
@@ -80,15 +80,15 @@ describe("Nomad workload rendering", () => {
       environment: [],
       connections: [],
       secrets: [
-          {
-            _tag: "PostgresCredentials",
-            role: "alchemy-proof-app-database",
-            credentialPath: "database/creds/alchemy-proof-app-database",
-            usernameEnv: "PGUSER",
-            passwordEnv: "PGPASSWORD",
-            url: { env: "DATABASE_URL", server: "shared-postgres", database: "proof_app" },
-          },
-        ],
+        {
+          _tag: "PostgresCredentials",
+          role: "alchemy-proof-app-database",
+          credentialPath: "database/creds/alchemy-proof-app-database",
+          usernameEnv: "PGUSER",
+          passwordEnv: "PGPASSWORD",
+          url: { env: "DATABASE_URL", server: "shared-postgres", database: "proof_app" },
+        },
+      ],
     });
 
     const task = toJobSpec(job, "ProofStack/app").TaskGroups[0].Tasks[0];
@@ -114,15 +114,15 @@ describe("Nomad workload rendering", () => {
       environment: [],
       connections: [],
       secrets: [
-          {
-            _tag: "ValkeyCredentials",
-            access: "proof_cache",
-            credentialPath: "secret/data/valkey/proof_cache",
-            usernameEnv: "VALKEY_USER",
-            passwordEnv: "VALKEY_PASSWORD",
-            url: { env: "VALKEY_URL", server: "shared-valkey" },
-          },
-        ],
+        {
+          _tag: "ValkeyCredentials",
+          access: "proof_cache",
+          credentialPath: "secret/data/valkey/proof_cache",
+          usernameEnv: "VALKEY_USER",
+          passwordEnv: "VALKEY_PASSWORD",
+          url: { env: "VALKEY_URL", server: "shared-valkey" },
+        },
+      ],
     });
 
     const task = toJobSpec(job, "ProofStack/app").TaskGroups[0].Tasks[0];
@@ -148,14 +148,14 @@ describe("Nomad workload rendering", () => {
       environment: [],
       connections: [],
       secrets: [
-          {
-            _tag: "PostgresCredentials",
-            role: "alchemy-proof-app-database",
-            credentialPath: "database/creds/alchemy-proof-app-database",
-            usernameEnv: "PGUSER",
-            passwordEnv: "PGPASSWORD",
-          },
-        ],
+        {
+          _tag: "PostgresCredentials",
+          role: "alchemy-proof-app-database",
+          credentialPath: "database/creds/alchemy-proof-app-database",
+          usernameEnv: "PGUSER",
+          passwordEnv: "PGPASSWORD",
+        },
+      ],
     });
 
     const task = toJobSpec(job, "ProofStack/app").TaskGroups[0].Tasks[0];
@@ -179,5 +179,102 @@ describe("Nomad workload rendering", () => {
     });
 
     assert.equal(toJobSpec(job, "ProofStack/client").TaskGroups[0].Services[0].Checks, undefined);
+  });
+
+  it("derives policy paths from both main and migrate secrets", () => {
+    const job = Schema.decodeUnknownSync(Job)({
+      name: "proof-app",
+      image: "registry.example.test/proof-app:trial",
+      hostPort: "dynamic",
+      containerPort: 8080,
+      cpu: 250,
+      memoryMB: 256,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+      secrets: [
+        {
+          _tag: "PostgresCredentials",
+          role: "alchemy-proof-app-database",
+          credentialPath: "database/creds/alchemy-proof-app-api",
+          usernameEnv: "PGUSER",
+          passwordEnv: "PGPASSWORD",
+        },
+      ],
+      migrate: {
+        command: "graphile-migrate",
+        args: ["migrate"],
+        secrets: [
+          {
+            _tag: "PostgresCredentials",
+            role: "alchemy-proof-app-database",
+            credentialPath: "database/creds/alchemy-proof-app-migration",
+            usernameEnv: "MIGUSER",
+            passwordEnv: "MIGPASSWORD",
+          },
+        ],
+      },
+    });
+
+    assert.deepEqual(secretPolicyPaths(job), [
+      "database/creds/alchemy-proof-app-api",
+      "database/creds/alchemy-proof-app-migration",
+    ]);
+  });
+
+  it("renders a migrate prestart task with only its own secrets", () => {
+    const job = Schema.decodeUnknownSync(Job)({
+      name: "proof-app",
+      image: "registry.example.test/proof-app:trial",
+      hostPort: "dynamic",
+      containerPort: 8080,
+      cpu: 250,
+      memoryMB: 256,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+      secrets: [
+        {
+          _tag: "KvSecret",
+          path: "secret/data/proof-app",
+          key: "database_password",
+          env: "APP_SECRET",
+        },
+      ],
+      migrate: {
+        command: "graphile-migrate",
+        args: ["migrate"],
+        secrets: [
+          {
+            _tag: "KvSecret",
+            path: "secret/data/proof-app/migrate",
+            key: "database_password",
+            env: "MIG_SECRET",
+          },
+        ],
+      },
+    });
+
+    const spec = toJobSpec(job, "ProofStack/app");
+    const tasks = spec.TaskGroups[0].Tasks;
+    assert.equal(tasks.length, 2);
+
+    // toJobSpec lists the migration task before the server task.
+    const prestart = tasks[0];
+    assert.ok(prestart !== undefined && "Lifecycle" in prestart);
+    assert.equal(prestart.Name, "migrate");
+    assert.deepEqual(prestart.Lifecycle, { Hook: "prestart", Sidecar: false });
+    assert.equal(prestart.Config.image, "registry.example.test/proof-app:trial");
+    assert.equal(prestart.Config.command, "graphile-migrate");
+    assert.deepEqual(prestart.Config.args, ["migrate"]);
+    assert.equal(prestart.Templates.length, 1);
+    assert.match(prestart.Templates[0].EmbeddedTmpl, /secret\/data\/proof-app\/migrate/);
+    assert.doesNotMatch(prestart.Templates[0].EmbeddedTmpl, /secret\/data\/proof-app"/);
+
+    const main = tasks.find((task) => task.Name === "server");
+    assert.ok(main);
+    assert.equal(main.Templates.length, 1);
+    assert.match(main.Templates[0].EmbeddedTmpl, /secret\/data\/proof-app"/);
+    assert.doesNotMatch(main.Templates[0].EmbeddedTmpl, /secret\/data\/proof-app\/migrate/);
   });
 });

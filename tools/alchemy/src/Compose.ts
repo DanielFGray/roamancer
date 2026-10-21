@@ -50,7 +50,11 @@ export type DeployedState = {
   readonly services: ReadonlyArray<DeployedService>;
   readonly valkeyAccesses: ReadonlyArray<DeployedValkeyAccess>;
   readonly postgresDatabases: ReadonlyArray<DeployedPostgresDatabase>;
-  readonly outputs: ReadonlyArray<{ readonly kind: string; readonly id: string; readonly name: string }>;
+  readonly outputs: ReadonlyArray<{
+    readonly kind: string;
+    readonly id: string;
+    readonly name: string;
+  }>;
 };
 
 // The resource constructors composition calls. alchemy.run.ts passes the Alchemy resources;
@@ -90,7 +94,11 @@ export const compose = <R>(
             return {
               ...state,
               postgresDatabases: Arr.appendAll(state.postgresDatabases, [
-                { role: database.credentialRole, credentialPath: resource.credentialPath, resource },
+                {
+                  role: database.credentialRole,
+                  credentialPath: resource.credentialPath,
+                  resource,
+                },
                 {
                   role: database.migrationCredentialRole,
                   credentialPath: resource.migrationCredentialPath,
@@ -165,12 +173,8 @@ const resolveConnections = (service: ExpandedJob, state: DeployedState) =>
     ),
   );
 
-const resolveSecrets = (
-  service: ExpandedJob,
-  state: DeployedState,
-  extraSecrets: ReadonlyArray<ExpandedSecretReference>,
-) =>
-  Effect.forEach([...(service.secrets ?? []), ...extraSecrets], (secret) =>
+const resolveSecrets = (secrets: ReadonlyArray<ExpandedSecretReference>, state: DeployedState) =>
+  Effect.forEach(secrets, (secret) =>
     Match.value(secret).pipe(
       Match.when({ _tag: "ValkeyCredentials" }, (value) =>
         Option.match(
@@ -230,11 +234,17 @@ const declareJob = <R>(
 ) =>
   Effect.gen(function* () {
     const connections = yield* resolveConnections(service, state);
-    const secrets = yield* resolveSecrets(service, state, extraSecrets);
+    const secrets = yield* resolveSecrets([...(service.secrets ?? []), ...extraSecrets], state);
+    const migrateSecrets = yield* resolveSecrets(service.migrate?.secrets ?? [], state);
+    const migrate =
+      service.migrate === undefined
+        ? undefined
+        : { ...service.migrate, secrets: migrateSecrets.length === 0 ? undefined : migrateSecrets };
     const resource = yield* constructors.NomadJob(service.name, {
       ...service,
       connections,
       secrets: secrets.length === 0 ? undefined : secrets,
+      migrate,
     });
     const next: DeployedState = {
       ...state,

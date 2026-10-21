@@ -17,14 +17,16 @@ describe("cartridge v2", () => {
     });
     const resources = expand(cartridge);
     const db = resources.find(
-      (r): r is Extract<typeof resources[number], { _tag: "PostgresDatabase" }> => r._tag === "PostgresDatabase",
+      (r): r is Extract<(typeof resources)[number], { _tag: "PostgresDatabase" }> =>
+        r._tag === "PostgresDatabase",
     );
     assert.ok(db);
     assert.equal(db.database.resourceName, "app_needs");
     assert.equal(db.database.ownerRole, "app_needs_owner");
     assert.equal(db.database.visitorRole, "app_needs_visitor");
     const va = resources.find(
-      (r): r is Extract<typeof resources[number], { _tag: "ValkeyAccess" }> => r._tag === "ValkeyAccess",
+      (r): r is Extract<(typeof resources)[number], { _tag: "ValkeyAccess" }> =>
+        r._tag === "ValkeyAccess",
     );
     assert.ok(va);
     assert.equal(va.access.resourceName, "app_needs");
@@ -127,6 +129,79 @@ describe("cartridge v2", () => {
             ],
           },
         ],
+      }),
+    );
+  });
+
+  it("rejects a migrate PostgresCredentials naming an undeclared database", () => {
+    assert.throws(() =>
+      Schema.decodeUnknownSync(Cartridge)({
+        apiVersion: "server-ansible/v2",
+        name: "app-needs",
+        postgres: [{ database: "app_needs" }],
+        services: [
+          {
+            name: "svc",
+            image: "img",
+            hostPort: "dynamic",
+            containerPort: 80,
+            cpu: 100,
+            memoryMB: 128,
+            networkMode: "bridge",
+            environment: [],
+            connections: [],
+            secrets: [],
+            migrate: {
+              command: "graphile-migrate",
+              args: ["migrate"],
+              secrets: [
+                {
+                  _tag: "PostgresCredentials",
+                  database: "missing_db",
+                  login: "migration",
+                  usernameEnv: "U",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+  });
+
+  it("rejects migrate on a server declaration", () => {
+    assert.throws(() =>
+      Schema.decodeUnknownSync(Cartridge)({
+        apiVersion: "server-ansible/v2",
+        name: "app-needs",
+        servers: [
+          {
+            _tag: "PostgresServer",
+            service: {
+              name: "postgres",
+              image: "img",
+              hostPort: "dynamic",
+              containerPort: 5432,
+              cpu: 100,
+              memoryMB: 128,
+              networkMode: "bridge",
+              environment: [],
+              connections: [],
+              secrets: [],
+              migrate: {
+                secrets: [
+                  {
+                    _tag: "KvSecret",
+                    path: "secret/data/x",
+                    key: "k",
+                    env: "E",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        services: [],
       }),
     );
   });
@@ -278,7 +353,8 @@ describe("cartridge v2", () => {
     });
     const resources = expand(cartridge);
     const service = resources.find(
-      (r): r is Extract<typeof resources[number], { _tag: "NomadService" }> => r._tag === "NomadService",
+      (r): r is Extract<(typeof resources)[number], { _tag: "NomadService" }> =>
+        r._tag === "NomadService",
     );
     assert.ok(service);
     const pg = service.service.secrets?.find((s) => s._tag === "PostgresCredentials");
