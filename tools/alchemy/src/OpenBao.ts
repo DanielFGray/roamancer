@@ -17,7 +17,7 @@ export class OpenBaoError extends Schema.TaggedError<OpenBaoError>()("OpenBaoErr
 
 type DatabaseConnection = {
   readonly name: string;
-  readonly allowedRole: string;
+  readonly allowedRoles: ReadonlyArray<string>;
   readonly connectionUrl: string;
   readonly username: string;
   readonly password: Redacted.Redacted<string>;
@@ -28,9 +28,40 @@ type DatabaseRole = {
   readonly databaseConfig: string;
   readonly database: string;
   readonly ownerRole: string;
+  // The group role that each dynamic login joins.
+  readonly memberOf: string;
+  // A login that does not inherit must switch to the group role with SET ROLE before it reads
+  // or writes tables. Row-level security then applies to every request.
+  readonly inherit: boolean;
   readonly defaultTtl: string;
   readonly maxTtl: string;
 };
+
+// The SQL that OpenBao runs for each new login. OpenBao substitutes {{name}}, {{password}}
+// and {{expiration}}.
+export const databaseCreationStatements = (
+  role: Pick<DatabaseRole, "database" | "memberOf" | "inherit">,
+): string => {
+  const user = '"{{name}}"';
+  const options = role.inherit ? "LOGIN" : "LOGIN NOINHERIT";
+  return [
+    `CREATE ROLE ${user} WITH ${options} PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';`,
+    `GRANT "${role.memberOf}" TO ${user};`,
+    `GRANT CONNECT ON DATABASE "${role.database}" TO ${user};`,
+  ].join(" ");
+};
+
+// A login that created tables owns them, and DROP ROLE refuses while a role owns objects.
+// Hand the objects to the owner role first, so a revoked lease never leaves a role behind.
+// REASSIGN OWNED and DROP OWNED need the privileges of the login, so OpenBao's own role joins it
+// for the duration of the revocation.
+export const databaseRevocationStatements = (role: Pick<DatabaseRole, "ownerRole">): string =>
+  [
+    `GRANT "{{name}}" TO CURRENT_USER;`,
+    `REASSIGN OWNED BY "{{name}}" TO "${role.ownerRole}";`,
+    `DROP OWNED BY "{{name}}";`,
+    `DROP ROLE IF EXISTS "{{name}}";`,
+  ].join(" ");
 
 type WorkloadRole = {
   readonly name: string;
@@ -94,7 +125,7 @@ export class OpenBao extends Context.Service<
     ) => Effect.Effect<void, OpenBaoError>;
     readonly configurePostgres: (
       connection: DatabaseConnection,
-      role: DatabaseRole,
+      roles: ReadonlyArray<DatabaseRole>,
     ) => Effect.Effect<void, OpenBaoError>;
     readonly configureWorkloadRole: (role: WorkloadRole) => Effect.Effect<void, OpenBaoError>;
   }
@@ -285,11 +316,11 @@ export class OpenBao extends Context.Service<
 
       const configurePostgres = Effect.fn("OpenBao.configurePostgres")(function* (
         connection: DatabaseConnection,
-        role: DatabaseRole,
+        roles: ReadonlyArray<DatabaseRole>,
       ) {
         const encodedConnection = {
           plugin_name: "postgresql-database-plugin",
-          allowed_roles: connection.allowedRole,
+          allowed_roles: connection.allowedRoles.join(","),
           connection_url: connection.connectionUrl,
           username: connection.username,
           password: Redacted.value(connection.password),
@@ -303,30 +334,21 @@ export class OpenBao extends Context.Service<
           encodedConnection,
         );
 
-        const owner = '"' + role.ownerRole + '"';
-        const username = '"{{name}}"';
-        const create = [
-          `CREATE ROLE ${username} WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';`,
-          `GRANT CONNECT ON DATABASE ${role.database} TO ${username};`,
-          `GRANT USAGE ON SCHEMA public TO ${username};`,
-          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${username};`,
-          `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ${username};`,
-          `ALTER DEFAULT PRIVILEGES FOR ROLE ${owner} IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${username};`,
-          `ALTER DEFAULT PRIVILEGES FOR ROLE ${owner} IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO ${username};`,
-        ].join(" ");
-        yield* request(
-          "configure PostgreSQL credential role",
-          role.name,
-          "POST",
-          `database/roles/${encodeURIComponent(role.name)}`,
-          {
-            db_name: role.databaseConfig,
-            creation_statements: create,
-            revocation_statements: `DROP ROLE IF EXISTS ${username};`,
-            default_ttl: role.defaultTtl,
-            max_ttl: role.maxTtl,
-          },
-        );
+        for (const role of roles) {
+          yield* request(
+            "configure PostgreSQL credential role",
+            role.name,
+            "POST",
+            `database/roles/${encodeURIComponent(role.name)}`,
+            {
+              db_name: role.databaseConfig,
+              creation_statements: databaseCreationStatements(role),
+              revocation_statements: databaseRevocationStatements(role),
+              default_ttl: role.defaultTtl,
+              max_ttl: role.maxTtl,
+            },
+          );
+        }
       });
 
       const configureWorkloadRole = Effect.fn("OpenBao.configureWorkloadRole")(function* (

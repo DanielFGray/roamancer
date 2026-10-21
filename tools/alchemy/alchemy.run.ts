@@ -200,10 +200,10 @@ const stack = Alchemy.Stack(
               });
               return {
                 ...state,
-                postgresDatabases: Arr.append(state.postgresDatabases, {
-                  role: database.credentialRole,
-                  resource,
-                }),
+                postgresDatabases: Arr.appendAll(state.postgresDatabases, [
+                  { role: database.credentialRole, resource },
+                  { role: database.migrationCredentialRole, resource },
+                ]),
                 outputs: Arr.append(state.outputs, {
                   kind: "PostgresDatabase",
                   id: resource.id,

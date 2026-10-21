@@ -24,9 +24,15 @@ export const PostgresDatabaseProps = Schema.Struct({
   server: ResourceName,
   adminUsername: DatabaseIdentifier,
   adminCredential: KvSecretReference,
+  // Owns the database and its tables. Its members run migrations.
   ownerRole: DatabaseIdentifier,
+  // Holds the grants that application SQL uses. The API login switches to it with SET ROLE.
+  visitorRole: DatabaseIdentifier,
   connectionName: EngineName,
+  // The API login. It joins the visitor role and does not inherit its rights.
   credentialRole: CredentialRoleName,
+  // The migration login. It joins the owner role.
+  migrationCredentialRole: CredentialRoleName,
   defaultTtl: Schema.String.check(Schema.isPattern(/^[1-9][0-9]*(s|m|h)$/)),
   maxTtl: Schema.String.check(Schema.isPattern(/^[1-9][0-9]*(s|m|h)$/)),
 });
@@ -40,9 +46,12 @@ export interface PostgresDatabase extends Alchemy.Resource<
     name: string;
     server: string;
     ownerRole: string;
+    visitorRole: string;
     connectionName: string;
     credentialRole: string;
     credentialPath: string;
+    migrationCredentialRole: string;
+    migrationCredentialPath: string;
   }
 > {}
 
@@ -61,16 +70,47 @@ const attributes = (id: string, props: PostgresDatabaseProps) => ({
   name: props.name,
   server: props.server,
   ownerRole: props.ownerRole,
+  visitorRole: props.visitorRole,
   connectionName: props.connectionName,
   credentialRole: props.credentialRole,
   credentialPath: `database/creds/${props.credentialRole}`,
+  migrationCredentialRole: props.migrationCredentialRole,
+  migrationCredentialPath: `database/creds/${props.migrationCredentialRole}`,
 });
+
+// Creates a group role that cannot log in, or fails when the name already belongs to a login role.
+// Logins join group roles, so a group that someone can log in as would hand out its rights directly.
+const ensureGroupRole = (sql: SqlClient.SqlClient, role: string, target: string) =>
+  Effect.gen(function* () {
+    const roles = yield* sql<{ readonly rolcanlogin: boolean }>`
+      SELECT rolcanlogin FROM pg_roles WHERE rolname = ${role}
+    `.pipe(
+      Effect.mapError(() => new PostgresDatabaseError({ operation: "read group role", target })),
+    );
+    const existing = Option.map(Arr.head(roles), (row) => row.rolcanlogin);
+    yield* Option.match(existing, {
+      onNone: () =>
+        sql`CREATE ROLE ${sql(role)} NOLOGIN`.pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            () => new PostgresDatabaseError({ operation: "create group role", target }),
+          ),
+        ),
+      onSome: (canLogin) =>
+        canLogin
+          ? Effect.fail(
+              new PostgresDatabaseError({ operation: "validate group role", target: role }),
+            )
+          : Effect.void,
+    });
+  });
 
 const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (input: {
   readonly username: string;
   readonly password: Redacted.Redacted<string>;
   readonly name: string;
   readonly ownerRole: string;
+  readonly visitorRole: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const lock = `alchemy:${input.name}`;
@@ -82,32 +122,16 @@ const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (inp
     ),
   );
 
-  const owners = yield* sql<{ readonly rolcanlogin: boolean }>`
-      SELECT rolcanlogin FROM pg_roles WHERE rolname = ${input.ownerRole}
-    `.pipe(
+  yield* ensureGroupRole(sql, input.ownerRole, input.name);
+  yield* ensureGroupRole(sql, input.visitorRole, input.name);
+  // CREATE DATABASE ... OWNER requires the creator to be a member of the owner role, and a role
+  // that creates another role does not become its member on PostgreSQL 17.
+  yield* sql`GRANT ${sql(input.ownerRole)} TO CURRENT_USER`.pipe(
+    Effect.asVoid,
     Effect.mapError(
-      () => new PostgresDatabaseError({ operation: "read owner role", target: input.name }),
+      () => new PostgresDatabaseError({ operation: "grant owner role", target: input.name }),
     ),
   );
-  const ownerLogin = Option.map(Arr.head(owners), (role) => role.rolcanlogin);
-  yield* Option.match(ownerLogin, {
-    onNone: () =>
-      sql`CREATE ROLE ${sql(input.ownerRole)} NOLOGIN`.pipe(
-        Effect.asVoid,
-        Effect.mapError(
-          () => new PostgresDatabaseError({ operation: "create owner role", target: input.name }),
-        ),
-      ),
-    onSome: (canLogin) =>
-      canLogin
-        ? Effect.fail(
-            new PostgresDatabaseError({
-              operation: "validate owner role",
-              target: input.ownerRole,
-            }),
-          )
-        : Effect.void,
-  });
 
   const databases = yield* sql<{ readonly owner: string }>`
       SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = ${input.name}
@@ -178,6 +202,7 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
     password,
     name: input.news.name,
     ownerRole: input.news.ownerRole,
+    visitorRole: input.news.visitorRole,
   }).pipe(
     Effect.provide(databaseLayer),
     Effect.catchTag("SqlError", () =>
@@ -191,24 +216,36 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
   );
 
   const engineConfigName = input.news.connectionName;
-  const credentialRole = input.news.credentialRole;
   const url = `postgresql://{{username}}:{{password}}@${hostForConnectionUrl(location.Address)}:${location.Port}/${input.news.name}?sslmode=disable`;
+  const ttls = {
+    databaseConfig: engineConfigName,
+    database: input.news.name,
+    ownerRole: input.news.ownerRole,
+    defaultTtl: input.news.defaultTtl,
+    maxTtl: input.news.maxTtl,
+  };
   yield* input.openBao.configurePostgres(
     {
       name: engineConfigName,
-      allowedRole: credentialRole,
+      allowedRoles: [input.news.credentialRole, input.news.migrationCredentialRole],
       connectionUrl: url,
       username: input.news.adminUsername,
       password,
     },
-    {
-      name: credentialRole,
-      databaseConfig: engineConfigName,
-      database: input.news.name,
-      ownerRole: input.news.ownerRole,
-      defaultTtl: input.news.defaultTtl,
-      maxTtl: input.news.maxTtl,
-    },
+    [
+      {
+        ...ttls,
+        name: input.news.credentialRole,
+        memberOf: input.news.visitorRole,
+        inherit: false,
+      },
+      {
+        ...ttls,
+        name: input.news.migrationCredentialRole,
+        memberOf: input.news.ownerRole,
+        inherit: true,
+      },
+    ],
   );
   return attributes(input.id, input.news);
 });

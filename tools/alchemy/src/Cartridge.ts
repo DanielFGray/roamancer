@@ -149,18 +149,18 @@ const resourceOrderError = (resources: ReadonlyArray<typeof Resource.Type>) =>
                   ),
                 };
               }
-              if (state.credentialRoles.includes(database.credentialRole)) {
+              const databaseRoles = [database.credentialRole, database.migrationCredentialRole];
+              const duplicate = databaseRoles.find((role) => state.credentialRoles.includes(role));
+              if (duplicate !== undefined) {
                 return {
                   ...state,
-                  error: Option.some(
-                    `Duplicate PostgreSQL credential role '${database.credentialRole}'`,
-                  ),
+                  error: Option.some(`Duplicate PostgreSQL credential role '${duplicate}'`),
                 };
               }
               return {
                 ...state,
                 names: Arr.append(state.names, database.resourceName),
-                credentialRoles: Arr.append(state.credentialRoles, database.credentialRole),
+                credentialRoles: Arr.appendAll(state.credentialRoles, databaseRoles),
               };
             }),
             Match.when({ _tag: "ValkeyServer" }, ({ service }) => {
