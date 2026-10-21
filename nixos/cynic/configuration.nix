@@ -5,6 +5,7 @@
     ./nomad-podman.nix
     ./caddy.nix
     ./nomad-acl.nix
+    ./openbao.nix
     ./herdr.nix
   ];
 
@@ -24,6 +25,9 @@
   };
 
   programs.zsh.enable = true;
+
+  # Git hosts the bare repositories that builds on this host read from.
+  environment.systemPackages = [ pkgs.git ];
 
   users.users.dan = {
     isNormalUser = true;

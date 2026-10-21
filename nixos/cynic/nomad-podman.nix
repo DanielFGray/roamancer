@@ -51,6 +51,7 @@ in
     "d /var/lib/nomad/noneuclid-data 0770 nomad nomad -"
     "d /var/lib/nomad/postgres-data 0770 nomad nomad -"
     "d /var/lib/nomad/valkey-data 0770 nomad nomad -"
+    "d /var/lib/nomad/openobserve-data 0770 nomad nomad -"
   ];
 
   virtualisation.podman = {
@@ -127,6 +128,10 @@ in
       }
       host_volume "valkey-data" {
         path = "/var/lib/nomad/valkey-data"
+        read_only = false
+      }
+      host_volume "openobserve-data" {
+        path = "/var/lib/nomad/openobserve-data"
         read_only = false
       }
     }

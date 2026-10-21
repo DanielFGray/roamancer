@@ -40,6 +40,10 @@ let
     host_volume "valkey-data" {
       capabilities = ["mount-readwrite"]
     }
+
+    host_volume "openobserve-data" {
+      capabilities = ["mount-readwrite"]
+    }
   '';
 
   # Bootstrapping the ACL system is an operator action, never an automatic
