@@ -62,7 +62,11 @@ export class PostgresDatabaseError extends S.TaggedError<PostgresDatabaseError>(
     operation: S.String,
     target: S.String,
   },
-) {}
+) {
+  override get message() {
+    return `${this.operation}: ${this.target}`;
+  }
+}
 
 const attributes = (id: string, props: PostgresDatabaseProps) => ({
   id,

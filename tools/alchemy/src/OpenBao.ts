@@ -13,7 +13,11 @@ const AdminCredential = S.Struct({ password: S.String });
 export class OpenBaoError extends S.TaggedError<OpenBaoError>()("OpenBaoError", {
   operation: S.String,
   target: S.String,
-}) {}
+}) {
+  override get message() {
+    return `${this.operation}: ${this.target}`;
+  }
+}
 
 type DatabaseConnection = {
   readonly name: string;

@@ -8,7 +8,11 @@ import * as S from "effect/Schema";
 export class ServiceNotRegistered extends S.TaggedError<ServiceNotRegistered>()(
   "ServiceNotRegistered",
   { service: S.String },
-) {}
+) {
+  override get message() {
+    return `service ${this.service} is not registered in Nomad`;
+  }
+}
 
 export interface RegistrationRetry {
   readonly times: number;

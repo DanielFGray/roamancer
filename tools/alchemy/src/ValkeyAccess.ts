@@ -47,7 +47,11 @@ export const ValkeyAccess = Alchemy.Resource<ValkeyAccess>("Valkey.Access");
 export class ValkeyAccessError extends S.TaggedError<ValkeyAccessError>()("ValkeyAccessError", {
   operation: S.String,
   target: S.String,
-}) {}
+}) {
+  override get message() {
+    return `${this.operation}: ${this.target}`;
+  }
+}
 
 const attributes = (id: string, props: ValkeyAccessProps) => ({
   id,
