@@ -8,7 +8,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as S from "effect/Schema";
 import { Job, secretPolicyPaths, workloadRole } from "./Job.ts";
-import { settle, deploymentIsHealthy } from "./Deployment.ts";
+import { settle } from "./Deployment.ts";
 import { Nomad } from "./Nomad.ts";
 import type { JobSnapshot } from "./Nomad.ts";
 import { OperationJournal } from "./OperationJournal.ts";
@@ -71,34 +71,10 @@ export const NomadJobProvider = () =>
         diff: Effect.fn(function* ({ news, fqn }) {
           if (!isResolved(news)) return undefined;
           if (yield* journal.hasPending(fqn)) return { action: "update" as const };
-          const current = yield* nomad.job(news.name);
-          return yield* Option.match(current, {
-            onNone: () => Effect.succeed({ action: "update" as const }),
-            onSome: (job) =>
-              Option.match(ownerOf(job), {
-                onNone: () => Effect.succeed({ action: "update" as const }),
-                onSome: (owner) =>
-                  owner !== fqn
-                    ? Effect.succeed({ action: "update" as const })
-                    : nomad.plan(news, fqn).pipe(
-                        Effect.flatMap((plan) => {
-                          if (plan.Diff.Type !== "None")
-                            return Effect.succeed({ action: "update" as const });
-                          return nomad.deployment(news.name).pipe(
-                            Effect.map((deployment) =>
-                              Option.match(deployment, {
-                                onNone: () => ({ action: "update" as const }),
-                                onSome: (value) =>
-                                  deploymentIsHealthy(job, value)
-                                    ? { action: "noop" as const }
-                                    : { action: "update" as const },
-                              }),
-                            ),
-                          );
-                        }),
-                      ),
-              }),
-          });
+          const live = yield* liveState(nomad, news, fqn);
+          return live._tag === "Stable"
+            ? { action: "noop" as const }
+            : { action: "update" as const };
         }),
         reconcile: Effect.fn(function* ({ news, fqn }) {
           const secretPaths = secretPolicyPaths(news);
@@ -117,65 +93,32 @@ export const NomadJobProvider = () =>
               action: "reconcile",
             },
             Effect.gen(function* () {
-              const current = yield* nomad.job(news.name);
-              const alreadyHealthy = yield* Option.match(current, {
-                onNone: () => Effect.succeed(Option.none<JobSnapshot>()),
-                onSome: (job) =>
-                  Option.match(ownerOf(job), {
-                    onNone: () => Effect.succeed(Option.none<JobSnapshot>()),
-                    onSome: (owner) =>
-                      owner !== fqn
-                        ? Effect.succeed(Option.none<JobSnapshot>())
-                        : nomad
-                            .plan(news, fqn)
-                            .pipe(
-                              Effect.flatMap((plan) =>
-                                plan.Diff.Type !== "None"
-                                  ? Effect.succeed(Option.none<JobSnapshot>())
-                                  : nomad
-                                      .deployment(news.name)
-                                      .pipe(
-                                        Effect.map((deployment) =>
-                                          Option.flatMap(deployment, (value) =>
-                                            deploymentIsHealthy(job, value)
-                                              ? Option.some(job)
-                                              : Option.none(),
-                                          ),
-                                        ),
-                                      ),
-                              ),
-                            ),
-                  }),
+              const live = yield* liveState(nomad, news, fqn);
+              if (live._tag === "Stable") return attributes(live.job, fqn);
+              if (live._tag === "Unstable") {
+                return yield* new NomadJobDeployFailed({
+                  job: news.name,
+                  message:
+                    "Nomad already has this exact job version, and its deployment never succeeded. Nomad deploys only a changed job, so fix the cause and change the job, or stop it first.",
+                });
+              }
+              // A failed apply can leave Alchemy state behind Nomad. Use the live index
+              // so a retry can safely finish an update that Nomad already accepted.
+              const expectedModifyIndex = Option.match(live.current, {
+                onNone: () => 0,
+                onSome: (job) => job.JobModifyIndex,
               });
-
-              return yield* Option.match(alreadyHealthy, {
-                onSome: (job) => Effect.succeed(attributes(job, fqn)),
-                onNone: () => {
-                  // A failed apply can leave Alchemy state behind Nomad. Use the live index
-                  // so a retry can safely finish an update that Nomad already accepted.
-                  const expectedModifyIndex = Option.match(current, {
-                    onNone: () => 0,
-                    onSome: (job) => job.JobModifyIndex,
-                  });
-                  return nomad.register(news, fqn, expectedModifyIndex).pipe(
-                    Effect.flatMap((registration) =>
-                      settle(
-                        nomad,
-                        news.name,
-                        (job) => Option.getOrUndefined(ownerOf(job)) === fqn,
-                        registration.JobModifyIndex,
-                      ),
-                    ),
-                    Effect.flatMap((settled) =>
-                      settled._tag === "Healthy"
-                        ? Effect.succeed(attributes(settled.job, fqn))
-                        : Effect.fail(
-                            new NomadJobDeployFailed({ job: news.name, message: settled.reason }),
-                          ),
-                    ),
-                  );
-                },
-              });
+              const registration = yield* nomad.register(news, fqn, expectedModifyIndex);
+              const settled = yield* settle(
+                nomad,
+                news.name,
+                (job) => Option.getOrUndefined(ownerOf(job)) === fqn,
+                registration.JobModifyIndex,
+              );
+              if (settled._tag === "Failed") {
+                return yield* new NomadJobDeployFailed({ job: news.name, message: settled.reason });
+              }
+              return attributes(settled.job, fqn);
             }),
           );
         }),
@@ -231,3 +174,31 @@ export const NomadJobProvider = () =>
       });
     }),
   );
+
+/**
+ * How the live job compares with the desired one. Nomad registers nothing for an unchanged spec,
+ * so an unchanged job is final: Stable once a deployment of its version succeeded, Unstable if
+ * none did. Nomad keeps `Stable` on the job version but garbage-collects finished deployments,
+ * so the deployment record cannot answer this an hour later.
+ */
+type LiveState =
+  | { readonly _tag: "Changed"; readonly current: Option.Option<JobSnapshot> }
+  | { readonly _tag: "Stable"; readonly job: JobSnapshot }
+  | { readonly _tag: "Unstable"; readonly job: JobSnapshot };
+
+const liveState = Effect.fn("NomadJob.liveState")(function* (
+  nomad: typeof Nomad.Service,
+  news: Job,
+  fqn: string,
+) {
+  const current = yield* nomad.job(news.name);
+  const owned = Option.filter(current, (job) => Option.getOrUndefined(ownerOf(job)) === fqn);
+  const changed: LiveState = { _tag: "Changed", current };
+  if (Option.isNone(owned)) return changed;
+  const plan = yield* nomad.plan(news, fqn);
+  if (plan.Diff.Type !== "None") return changed;
+  const unchanged: LiveState = owned.value.Stable
+    ? { _tag: "Stable", job: owned.value }
+    : { _tag: "Unstable", job: owned.value };
+  return unchanged;
+});

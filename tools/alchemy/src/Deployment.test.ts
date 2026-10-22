@@ -9,6 +9,7 @@ const owner = "cartridge/platform-data/postgres";
 const job: JobSnapshot = {
   ID: "postgres",
   Version: 3,
+  Stable: false,
   JobModifyIndex: 41,
   Meta: { "alchemy.owner": owner, "alchemy.provider": "Nomad.Job" },
 };

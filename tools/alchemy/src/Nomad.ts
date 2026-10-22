@@ -20,6 +20,8 @@ const NomadMeta = S.Struct({
 const JobSnapshot = S.Struct({
   ID: S.String,
   Version: S.Number,
+  // Nomad sets this once a deployment of this version succeeds.
+  Stable: S.Boolean,
   JobModifyIndex: S.Number,
   Meta: S.NullOr(NomadMeta),
 });
