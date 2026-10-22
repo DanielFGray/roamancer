@@ -52,7 +52,8 @@ in
     "L+ /sbin/ip - - - - ${pkgs.iproute2}/bin/ip"
     "f /var/lib/systemd/linger/nomad 0644 root root -"
     "d /var/lib/nomad/noneuclid-data 0770 nomad nomad -"
-    # The official postgres image runs the server as uid 999. In nomad's rootless
+    # The platform postgres image (postgres-image.nix) runs the server as uid 999, as the
+    # official image does. In nomad's rootless
     # user namespace (subUidRanges above) container uid N maps to host uid
     # 100000 + N - 1, so 100998. The server must own its data volume's mount point;
     # the container's root (host nomad) still reaches it through the namespace.

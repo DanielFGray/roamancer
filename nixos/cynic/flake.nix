@@ -8,5 +8,7 @@
       system = "x86_64-linux";
       modules = [ ./configuration.nix ];
     };
+    packages.x86_64-linux.postgres-image =
+      import ./postgres-image.nix { pkgs = nixpkgs.legacyPackages.x86_64-linux; };
   };
 }

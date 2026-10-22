@@ -6,7 +6,7 @@
       "_tag": "PostgresServer",
       "service": {
         "name": "postgres",
-        "image": "docker.io/library/postgres:17.6",
+        "image": "127.0.0.1:5000/platform-postgres@sha256:3e142c7ca11dfc6ceab39bc278cdfca24879a39e43faead1fb6eea81d8c91570",
         "hostPort": "dynamic",
         "containerPort": 5432,
         "healthCheck": {
