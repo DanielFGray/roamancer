@@ -6,7 +6,7 @@ The Alchemy stack accepts an app-owned declaration while it keeps ownership of N
 
 ## Usage
 
-An app owns `deploy/cartridge.json`. A cartridge is a versioned JSON file that describes one Nomad job:
+An app owns `deploy/cartridge.json`. A cartridge is a versioned JSON file that describes services and their data needs. This example declares one service:
 
 ```json
 {
@@ -31,11 +31,11 @@ An app owns `deploy/cartridge.json`. A cartridge is a versioned JSON file that d
 }
 ```
 
-The operator points the Alchemy runner at this file with `ALCHEMY_CARTRIDGE`. The runner validates its version and fields, then plans the job through the existing `NomadJob` resource.
+The operator points the Alchemy runner at this file with `ALCHEMY_CARTRIDGE` and passes `--stage noneuclid`. The stage must match the cartridge's `name`. The runner validates its version and fields, then plans the job through the `NomadJob` resource.
 
 ## Shape
 
-`Cartridge.ts` owns the versioned input schema and file decoder. A cartridge declares `name`, optional `servers`, `postgres`, `valkey`, and an ordered `services` array of jobs. `alchemy.run.ts` expands the validated cartridge into the resource plan and composes it with the platform's providers. The app repository owns the cartridge data; the platform owns the Nomad mapping, resource state, host rules, credentials, and secret policy.
+`Cartridge.ts` owns the versioned input schema, file decoder, and expansion into resources. A cartridge declares `name`, optional `servers`, `postgres`, `valkey`, and a `services` array. It either provides servers or requests PostgreSQL and Valkey access. Services can appear in any declaration order: `effect/Graph` orders them by their connections, and the schema rejects missing providers and cycles. `Compose.ts` connects resource outputs to dependent jobs. `alchemy.run.ts` checks the stage and supplies the platform providers. The app repository owns the cartridge data; the platform owns the Nomad mapping, resource state, host rules, credentials, and secret policy.
 
 This is a project-owned declaration, not project-authored Alchemy code. It does not run app code in the deployment process. A cartridge describes a set of Nomad jobs plus declared Postgres and Valkey needs; the platform expands it into a resource plan and provisions databases, access, and credentials. `connections` can name another service declared in the same cartridge.
 
@@ -47,12 +47,12 @@ The TypeScript candidate offers editor types, but loading a TypeScript module ex
 
 ## Tradeoffs accepted
 
-- App authors declare one job in a narrow data format in exchange for a platform-controlled provider and runtime validation.
+- App authors declare services and data needs in a narrow data format in exchange for platform-controlled providers and runtime validation.
 - The image must be built and made available before deployment; image building is a separate lifecycle.
 - Noneuclid's existing Compose push flow remains separate from this testground path. Its deployment settings can drift from the cartridge until that flow is migrated or retired.
 - The first cartridge can name a host volume but cannot create that host resource. Nix remains its owner.
 - Image building and registry selection remain separate lifecycle work.
-- The initial runner keeps its existing Alchemy stack name and working directory to preserve the current local state.
+- The runner uses the `cartridge` stack and a stage named after each cartridge. Platform and app cartridges therefore have separate local resource state.
 
 ## Open questions and risks
 
@@ -62,4 +62,6 @@ The TypeScript candidate offers editor types, but loading a TypeScript module ex
 
 ## First implementation result
 
-The runner loads and validates Noneuclid's declaration and produces no change to the already-managed Nomad job. The remaining work is composition: map named app dependencies to managed Alchemy resources, then add providers for databases, secrets, image delivery, and multi-node networking.
+The initial Noneuclid proof loaded its declaration and produced no change to the managed job. The current v2 implementation also composes PostgreSQL databases, Valkey access, generated admin credentials, and jobs with runtime secrets and optional prestart migrations.
+
+On 2026-10-21, the platform-data cartridge deployed shared PostgreSQL and Valkey on cynic. Authentication, container replacement, and a final no-change plan passed; see [the saved proof](../../.audit/cynic-platform-data-proof.txt). App-scoped database and Valkey provisioning still need an end-to-end proof. Cross-cartridge server dependencies, image delivery, and multi-node data movement remain separate work.

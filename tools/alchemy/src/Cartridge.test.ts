@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
+import * as ConfigProvider from "effect/ConfigProvider";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
 import { expand, load, Cartridge } from "./Cartridge.ts";
@@ -428,15 +429,49 @@ describe("cartridge v2", () => {
     assert.equal(vk?.access, "app_needs");
   });
 
+  it("preserves ingress network, identity and mount declarations during expansion", async () => {
+    const cartridge = await Effect.runPromise(
+      load().pipe(
+        Effect.provide(NodeFileSystem.layer),
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({
+            ALCHEMY_CARTRIDGE: fileURLToPath(
+              new URL("../platform/ingress/cartridge.json", import.meta.url),
+            ),
+          }),
+        ),
+      ),
+    );
+    const resource = expand(cartridge).find((entry) => entry._tag === "NomadService");
+    assert.ok(resource);
+    assert.equal(resource.service.networkMode, "host");
+    assert.deepEqual(resource.service.identity, { env: true });
+    assert.deepEqual(resource.service.readOnlyMounts, [
+      { volume: "traefik-routes", mountPath: "/var/lib/traefik-routes" },
+      { volume: "nix-store", mountPath: "/nix/store" },
+    ]);
+  });
+
   const committed = [
     "../platform/observability/cartridge.json",
+    "../platform/ingress/cartridge.json",
     "../platform/data/cartridge.json",
     "../examples/app-needs/cartridge.json",
   ];
   for (const rel of committed) {
     it(`loads ${rel}`, async () => {
-      process.env.ALCHEMY_CARTRIDGE = fileURLToPath(new URL(rel, import.meta.url));
-      const cartridge = await Effect.runPromise(load().pipe(Effect.provide(NodeFileSystem.layer)));
+      const cartridge = await Effect.runPromise(
+        load().pipe(
+          Effect.provide(NodeFileSystem.layer),
+          Effect.provideService(
+            ConfigProvider.ConfigProvider,
+            ConfigProvider.fromUnknown({
+              ALCHEMY_CARTRIDGE: fileURLToPath(new URL(rel, import.meta.url)),
+            }),
+          ),
+        ),
+      );
       assert.ok(cartridge);
     });
   }

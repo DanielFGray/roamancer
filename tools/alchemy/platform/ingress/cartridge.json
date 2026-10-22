@@ -1,0 +1,36 @@
+{
+  "apiVersion": "server-ansible/v2",
+  "name": "platform-ingress",
+  "services": [
+    {
+      "name": "traefik",
+      "image": "docker.io/library/traefik:v3.7.13",
+      "hostPort": 18080,
+      "containerPort": 18080,
+      "healthCheck": { "type": "http", "path": "/_traefik/health" },
+      "cpu": 250,
+      "memoryMB": 256,
+      "networkMode": "host",
+      "identity": { "env": true },
+      "readOnlyMounts": [
+        { "volume": "traefik-routes", "mountPath": "/var/lib/traefik-routes" },
+        { "volume": "nix-store", "mountPath": "/nix/store" }
+      ],
+      "environment": [],
+      "connections": [],
+      "args": [
+        "--global.checknewversion=false",
+        "--global.sendanonymoususage=false",
+        "--log.level=ERROR",
+        "--entrypoints.web.address=:18080",
+        "--ping.manualrouting=true",
+        "--providers.nomad=true",
+        "--providers.nomad.endpoint.address=http://127.0.0.1:4646",
+        "--providers.nomad.exposedbydefault=false",
+        "--providers.nomad.refreshinterval=5s",
+        "--providers.file.directory=/var/lib/traefik-routes",
+        "--providers.file.watch=true"
+      ]
+    }
+  ]
+}

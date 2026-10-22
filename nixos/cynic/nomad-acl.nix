@@ -39,13 +39,22 @@ let
       capabilities = ["mount-readwrite"]
     }
 
+    host_volume "traefik-routes" {
+      capabilities = ["mount-readonly"]
+    }
+
+    host_volume "nix-store" {
+      capabilities = ["mount-readonly"]
+    }
+
     host_volume "openobserve-data" {
       capabilities = ["mount-readwrite"]
     }
   '';
 
-  # Traefik lists Nomad services and follows the service event stream. Both
-  # calls check read-job, and Traefik makes no other call.
+  # The systemd Traefik service uses this client-token policy for discovery.
+  # A Nomad task's default workload identity can list services, but needs this
+  # job-associated policy to watch service events.
   traefikPolicy = ''
     namespace "default" {
       capabilities = ["read-job"]
@@ -91,16 +100,28 @@ let
     echo "Bootstrap token stored in $file"
   '';
 
+  applyPolicies = pkgs.writeShellScriptBin "nomad-acl-apply-policies" ''
+    set -euo pipefail
+    bootstrap=${credentialDir}/bootstrap.token
+    if [ ! -s "$bootstrap" ]; then
+      echo "No bootstrap token at $bootstrap. Run nomad-acl-bootstrap first." >&2
+      exit 1
+    fi
+    NOMAD_TOKEN=$(cat "$bootstrap")
+    export NOMAD_TOKEN
+    nomad acl policy apply alchemy-controller ${pkgs.writeText "alchemy-controller-policy.hcl" controllerPolicy}
+    # Service listing is implicit in workload identity; the event stream requires read-job.
+    nomad acl policy apply -namespace default -job traefik -group service -task server \
+      traefik ${pkgs.writeText "traefik-policy.hcl" traefikPolicy}
+  '';
+
   # Issues a client token from the stored bootstrap token. The policy is
   # applied first, so the token and the policy never drift apart. The token
   # goes to <file>.token and an environment file holding NOMAD_TOKEN goes to
   # <file>.env. readerGroup, when that group exists, may read the environment
   # file; otherwise only root can, which is enough for a systemd
   # EnvironmentFile.
-  issueScript = { command, policyName, policyText, file, readerGroup ? null }:
-    let
-      policy = pkgs.writeText "${policyName}-policy.hcl" policyText;
-    in
+  issueScript = { command, policyName, file, readerGroup ? null }:
     pkgs.writeShellScriptBin command (''
       set -euo pipefail
 
@@ -123,7 +144,7 @@ let
       NOMAD_TOKEN=$(cat "$bootstrap")
       export NOMAD_TOKEN
 
-      nomad acl policy apply "$name" ${policy} > /dev/null
+      ${applyPolicies}/bin/nomad-acl-apply-policies > /dev/null
       nomad acl token create \
         -name="$name" \
         -type=client \
@@ -162,7 +183,6 @@ let
   issueController = issueScript {
     command = "nomad-acl-issue-controller";
     policyName = "alchemy-controller";
-    policyText = controllerPolicy;
     file = "controller";
     readerGroup = "alchemy";
   };
@@ -170,7 +190,6 @@ let
   issueTraefik = issueScript {
     command = "nomad-acl-issue-traefik";
     policyName = "traefik";
-    policyText = traefikPolicy;
     file = "traefik";
   };
 in
@@ -199,6 +218,7 @@ in
 
   environment.systemPackages = [
     bootstrapScript
+    applyPolicies
     issueController
     issueTraefik
   ];

@@ -1,17 +1,26 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
+import * as ConfigProvider from "effect/ConfigProvider";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
 import { expand, load } from "./Cartridge.ts";
 
 describe("platform observability cartridge", () => {
   it("loads, and declares OpenObserve before the collector that sends to it", async () => {
-    process.env.ALCHEMY_CARTRIDGE = fileURLToPath(
-      new URL("../platform/observability/cartridge.json", import.meta.url),
+    const cartridge = await Effect.runPromise(
+      load().pipe(
+        Effect.provide(NodeFileSystem.layer),
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({
+            ALCHEMY_CARTRIDGE: fileURLToPath(
+              new URL("../platform/observability/cartridge.json", import.meta.url),
+            ),
+          }),
+        ),
+      ),
     );
-
-    const cartridge = await Effect.runPromise(load().pipe(Effect.provide(NodeFileSystem.layer)));
 
     const resources = expand(cartridge);
     assert.deepEqual(

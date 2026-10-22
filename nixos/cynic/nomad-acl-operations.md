@@ -18,8 +18,8 @@ operator runs it once, by hand.
 | --- | --- | --- |
 | `nixos/cynic/nomad-acl.nix` | this slice | the module |
 | `/etc/nomad.d/acl.hcl` | Nix | the ACL block |
-| `/nix/store/...-alchemy-controller-policy.hcl` | Nix | the controller policy, applied by `nomad-acl-issue-controller` |
-| `/nix/store/...-traefik-policy.hcl` | Nix | the Traefik policy, applied by `nomad-acl-issue-traefik` |
+| `/nix/store/...-alchemy-controller-policy.hcl` | Nix | the controller policy, applied by `nomad-acl-apply-policies` |
+| `/nix/store/...-traefik-policy.hcl` | Nix | the Traefik policy and workload association, applied by `nomad-acl-apply-policies` |
 | `/var/lib/nomad-acl/` | runtime | mode 0710 root:alchemy when that group exists; otherwise 0700 root:root |
 
 The Nix store holds the policies and the operator scripts. No token is written to
@@ -73,6 +73,24 @@ shell history.
 sudo sh -c 'export NOMAD_TOKEN="$(cat /var/lib/nomad-acl/bootstrap.token)"; exec nomad status'
 ```
 
+## Refresh policies without rotating credentials
+
+After activating a change to `nomad-acl.nix`, run:
+
+```sh
+sudo nomad-acl-apply-policies
+```
+
+This uses the stored management credential to refresh both declared policies.
+It creates no token and leaves existing token files unchanged. It associates
+the Traefik policy with Nomad job `traefik`, group `service`, task `server`,
+so its default workload identity can watch service events. Service listing
+alone does not prove event-stream permission. The token-issuance commands also
+run this policy refresh before creating their token.
+
+The existing systemd Traefik service still uses its stored client token until
+live ingress is moved. The high-port Nomad readiness job uses workload identity.
+
 ## The staged Alchemy token
 
 The staged Alchemy commands do not use the management token. They get a client
@@ -114,8 +132,9 @@ environment file before it starts Traefik as the `traefik` user, and the
 NixOS module substitutes `NOMAD_TOKEN` into the static configuration under
 `/run/traefik`. The unit does not start while the file is missing.
 
-Traefik makes three kinds of call, and each checks `read-job`. Checked on cynic
-with a token bound to that policy alone:
+Traefik makes three kinds of call. The existing client token passes these checks
+with `read-job`. A workload identity can list services implicitly, but the service
+event stream also needs the job-associated policy:
 
 | Traefik call | Result |
 | --- | --- |

@@ -116,8 +116,10 @@ const JobBaseFields = {
   healthCheck: S.optionalKey(HealthCheck),
   cpu: S.Number.check(S.isInt(), S.isGreaterThan(0)),
   memoryMB: S.Number.check(S.isInt(), S.isGreaterThan(0)),
-  networkMode: S.Literals(["bridge", "pasta"]),
+  networkMode: S.Literals(["bridge", "pasta", "host"]),
+  identity: S.optionalKey(S.Struct({ env: S.Boolean })),
   storage: S.optionalKey(Storage),
+  readOnlyMounts: S.optionalKey(S.Array(Storage)),
   environment: S.Array(S.Struct({ name: EnvironmentVariable, value: S.String })),
   command: S.optionalKey(S.String),
   args: S.optionalKey(S.Array(S.String)),
@@ -151,25 +153,32 @@ const migrateStep = <S extends S.Top>(secret: S) =>
     secrets: S.optionalKey(S.Array(secret)),
   });
 
+const hostNetworkPorts = S.makeFilter(
+  (job: { networkMode: string; hostPort: string | number; containerPort: number }) =>
+    job.networkMode === "host" && job.hostPort !== job.containerPort
+      ? "host networking requires a fixed hostPort equal to containerPort"
+      : undefined,
+);
+
 export const ExpandedJob = S.Struct({
   ...JobBaseFields,
   secrets: S.optionalKey(S.Array(ExpandedSecretReference)),
   migrate: S.optionalKey(migrateStep(ExpandedSecretReference)),
-});
+}).check(hostNetworkPorts);
 export type ExpandedJob = typeof ExpandedJob.Type;
 
 export const Job = S.Struct({
   ...JobBaseFields,
   secrets: S.optionalKey(S.Array(SecretReference)),
   migrate: S.optionalKey(migrateStep(SecretReference)),
-});
+}).check(hostNetworkPorts);
 export type Job = typeof Job.Type;
 
 export const CartridgeJob = S.Struct({
   ...JobBaseFields,
   secrets: S.optionalKey(S.Array(CartridgeSecretReference)),
   migrate: S.optionalKey(migrateStep(CartridgeSecretReference)),
-});
+}).check(hostNetworkPorts);
 export type CartridgeJob = typeof CartridgeJob.Type;
 
 const toServiceTemplate = (connections: ReadonlyArray<ServiceConnection>) => ({
@@ -263,7 +272,15 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
 const toNetwork = (job: Job) =>
   job.hostPort === "dynamic"
     ? { DynamicPorts: [{ Label: "service", To: job.containerPort }] }
-    : { ReservedPorts: [{ Label: "service", Value: job.hostPort, To: job.containerPort }] };
+    : {
+        ReservedPorts: [
+          {
+            Label: "service",
+            Value: job.hostPort,
+            To: job.networkMode === "host" ? undefined : job.containerPort,
+          },
+        ],
+      };
 
 const toHealthCheck = (healthCheck: HealthCheck) =>
   healthCheck.type === "http"
@@ -327,10 +344,17 @@ export const toJobSpec = (job: Job, owner: string) => {
         Name: "service",
         Count: 1,
         Networks: [toNetwork(job)],
-        Volumes:
-          job.storage === undefined
-            ? {}
-            : { data: { Name: "data", Type: "host", Source: job.storage.volume, ReadOnly: false } },
+        Volumes: Object.fromEntries(
+          toMounts(job).map((mount) => [
+            mount.name,
+            {
+              Name: mount.name,
+              Type: "host",
+              Source: mount.volume,
+              ReadOnly: mount.readOnly,
+            },
+          ]),
+        ),
         Services: [
           {
             Name: job.name,
@@ -353,6 +377,15 @@ export const toJobSpec = (job: Job, owner: string) => {
   };
 };
 
+const toMounts = (job: Job) => [
+  ...(job.storage === undefined ? [] : [{ ...job.storage, name: "data", readOnly: false }]),
+  ...(job.readOnlyMounts ?? []).map((mount, index) => ({
+    ...mount,
+    name: `readonly-${index}`,
+    readOnly: true,
+  })),
+];
+
 const toTask = (
   job: Job,
   task: {
@@ -369,15 +402,17 @@ const toTask = (
   Config: {
     image: job.image,
     network_mode: job.networkMode,
-    ports: task.ports.length === 0 ? undefined : task.ports,
+    ports: job.networkMode === "host" || task.ports.length === 0 ? undefined : task.ports,
     command: task.command,
     args: task.args,
   },
+  Identity: job.identity === undefined ? undefined : { Env: job.identity.env },
   Env: Object.fromEntries(job.environment.map((variable) => [variable.name, variable.value])),
-  VolumeMounts:
-    job.storage === undefined
-      ? []
-      : [{ Volume: "data", Destination: job.storage.mountPath, ReadOnly: false }],
+  VolumeMounts: toMounts(job).map((mount) => ({
+    Volume: mount.name,
+    Destination: mount.mountPath,
+    ReadOnly: mount.readOnly,
+  })),
   Resources: { CPU: job.cpu, MemoryMB: job.memoryMB },
   Vault:
     task.secrets.length === 0

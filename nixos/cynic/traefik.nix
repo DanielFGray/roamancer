@@ -50,12 +50,13 @@ let
 
     providers = {
       # Alchemy declares every Nomad application route as tags on the
-      # release's Nomad service. Traefik reads them from Nomad as they
-      # change, so a route follows an allocation to its new address and
-      # port without a reconcile.
+      # release's Nomad service. Traefik polls Nomad for them, so a route
+      # follows an allocation to its new address and port without a
+      # reconcile. Polling, not watch: Traefik v3.7 ignores errors on the
+      # Nomad event stream and then queries Nomad in a tight loop.
       nomad = {
         exposedByDefault = false;
-        watch = true;
+        refreshInterval = "5s";
         endpoint = {
           address = "http://127.0.0.1:4646";
           # The NixOS module substitutes this from tokenEnvFile at start, so

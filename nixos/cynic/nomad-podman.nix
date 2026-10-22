@@ -47,6 +47,9 @@ in
   users.groups.nomad = { };
 
   systemd.tmpfiles.rules = [
+    # A unit bind mount would hide Nomad's secrets tmpfs from rootless Podman.
+    # Keep the ip executable visible without giving Nomad a private mount namespace.
+    "L+ /sbin/ip - - - - ${pkgs.iproute2}/bin/ip"
     "f /var/lib/systemd/linger/nomad 0644 root root -"
     "d /var/lib/nomad/noneuclid-data 0770 nomad nomad -"
     # The official postgres image runs the server as uid 999. In nomad's rootless
@@ -90,7 +93,6 @@ in
     requires = [ "user@1001.service" ];
     serviceConfig = {
       ExecStart = "${nomad}/bin/nomad agent -config=/etc/nomad.d";
-      BindReadOnlyPaths = [ "${pkgs.iproute2}/bin/ip:/sbin/ip" ];
       Restart = "on-failure";
       LimitNOFILE = 65536;
     };
@@ -133,6 +135,15 @@ in
       host_volume "valkey-data" {
         path = "/var/lib/nomad/valkey-data"
         read_only = false
+      }
+      # Route files include absolute symlinks into the Nix store.
+      host_volume "traefik-routes" {
+        path = "/var/lib/traefik-routes"
+        read_only = true
+      }
+      host_volume "nix-store" {
+        path = "/nix/store"
+        read_only = true
       }
       host_volume "openobserve-data" {
         path = "/var/lib/nomad/openobserve-data"

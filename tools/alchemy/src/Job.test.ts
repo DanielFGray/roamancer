@@ -4,6 +4,39 @@ import * as S from "effect/Schema";
 import { Job, toJobSpec, secretPolicyPaths } from "./Job.ts";
 
 describe("Nomad workload rendering", () => {
+  it("exposes the default workload identity without port translation for a host-network task", () => {
+    const job = S.decodeUnknownSync(Job)({
+      name: "ingress",
+      image: "docker.io/library/traefik:v3.7.13",
+      hostPort: 18080,
+      containerPort: 18080,
+      cpu: 100,
+      memoryMB: 128,
+      networkMode: "host",
+      identity: { env: true },
+      environment: [],
+      connections: [],
+      readOnlyMounts: [{ volume: "traefik-routes", mountPath: "/etc/traefik/routes" }],
+    });
+    const spec = toJobSpec(job, "platform-ingress/ingress");
+    assert.deepEqual(spec.TaskGroups[0].Networks, [
+      { ReservedPorts: [{ Label: "service", Value: 18080, To: undefined }] },
+    ]);
+    const task = spec.TaskGroups[0].Tasks[0];
+    assert.equal(task.Config.network_mode, "host");
+    assert.equal(task.Config.ports, undefined);
+    assert.deepEqual(task.Identity, { Env: true });
+    assert.deepEqual(task.Env, {});
+    assert.deepEqual(spec.TaskGroups[0].Volumes, {
+      "readonly-0": { Name: "readonly-0", Type: "host", Source: "traefik-routes", ReadOnly: true },
+    });
+    assert.deepEqual(task.VolumeMounts, [
+      { Volume: "readonly-0", Destination: "/etc/traefik/routes", ReadOnly: true },
+    ]);
+    for (const hostPort of ["dynamic", 18081]) {
+      assert.equal(S.decodeUnknownOption(Job)({ ...job, hostPort })._tag, "None");
+    }
+  });
   it("renders a dynamic service port and runtime-only secret references", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "proof-app",
