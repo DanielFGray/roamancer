@@ -3,6 +3,7 @@
   imports = [
     ./hardware-configuration.nix
     ./nomad-podman.nix
+    ./registry.nix
     ./traefik.nix
     ./static-sites.nix
     ./nomad-acl.nix
