@@ -429,6 +429,20 @@ describe("cartridge v2", () => {
     assert.equal(vk?.access, "app_needs");
   });
 
+  it("passes declared extensions to the database and rejects names that are not identifiers", () => {
+    const declare = (extensions: ReadonlyArray<string>) => ({
+      apiVersion: "server-ansible/v2",
+      name: "app-needs",
+      postgres: [{ database: "app_needs", extensions }],
+      services: [],
+    });
+    const resources = expand(S.decodeUnknownSync(Cartridge)(declare(["uuid-ossp", "pgtap"])));
+    const database = resources.find((r) => r._tag === "PostgresDatabase");
+    assert.ok(database);
+    assert.deepEqual(database.database.extensions, ["uuid-ossp", "pgtap"]);
+    assert.throws(() => S.decodeUnknownSync(Cartridge)(declare(['pgtap"; DROP'])));
+  });
+
   it("preserves ingress network, identity and mount declarations during expansion", async () => {
     const cartridge = await Effect.runPromise(
       load().pipe(

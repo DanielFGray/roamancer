@@ -16,7 +16,7 @@ describe("PostgreSQL credential statements", () => {
     );
   });
 
-  it("creates the migration login as a member of the owner role, inheriting its rights", () => {
+  it("creates the migration login as a member of the owner role that starts each session as it", () => {
     const sql = databaseCreationStatements({
       database: "setlist",
       memberOf: "setlist_owner",
@@ -25,7 +25,7 @@ describe("PostgreSQL credential statements", () => {
 
     assert.equal(
       sql,
-      `CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT "setlist_owner" TO "{{name}}"; GRANT CONNECT ON DATABASE "setlist" TO "{{name}}";`,
+      `CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT "setlist_owner" TO "{{name}}"; GRANT CONNECT ON DATABASE "setlist" TO "{{name}}"; ALTER ROLE "{{name}}" SET role = "setlist_owner";`,
     );
   });
 

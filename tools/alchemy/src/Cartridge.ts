@@ -11,7 +11,7 @@ import {
   ExpandedSecretReference,
   ResourceName,
 } from "./Job.ts";
-import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
+import { ExtensionName, PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { adminCredentialPath } from "./AdminCredential.ts";
 
@@ -32,6 +32,8 @@ const ValkeyServerDeclaration = S.TaggedStruct("ValkeyServer", {
 const PostgresEntry = S.Struct({
   database: DatabaseName,
   server: S.optionalKey(ResourceName),
+  // Created in the database before migrations run. Each must be in the server's image.
+  extensions: S.optionalKey(S.Array(ExtensionName)),
 });
 
 const ValkeyEntry = S.Struct({
@@ -211,6 +213,7 @@ export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> =>
     const props: PostgresDatabaseProps = {
       name: database,
       server,
+      extensions: entry.extensions ?? [],
       adminUsername: "postgres",
       adminCredential: {
         _tag: "KvSecret",

@@ -35,7 +35,8 @@ type DatabaseRole = {
   // The group role that each dynamic login joins.
   readonly memberOf: string;
   // A login that does not inherit must switch to the group role with SET ROLE before it reads
-  // or writes tables. Row-level security then applies to every request.
+  // or writes tables. Row-level security then applies to every request. A login that inherits
+  // starts each session as the group role, so the objects it creates belong to that role.
   readonly inherit: boolean;
   readonly defaultTtl: string;
   readonly maxTtl: string;
@@ -52,6 +53,9 @@ export const databaseCreationStatements = (
     `CREATE ROLE ${user} WITH ${options} PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';`,
     `GRANT "${role.memberOf}" TO ${user};`,
     `GRANT CONNECT ON DATABASE "${role.database}" TO ${user};`,
+    // Each release gets a new migration login. Tables owned by an earlier login would refuse
+    // ALTER from the next one, so the login creates them as the owner role instead.
+    ...(role.inherit ? [`ALTER ROLE ${user} SET role = "${role.memberOf}";`] : []),
   ].join(" ");
 };
 

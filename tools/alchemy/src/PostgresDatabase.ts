@@ -17,10 +17,12 @@ const DatabaseIdentifier = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,62}$/))
 const ResourceName = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
 const EngineName = S.String.check(S.isPattern(/^alchemy_[a-z][a-z0-9_]{0,54}$/));
 const CredentialRoleName = S.String.check(S.isPattern(/^alchemy_[a-z][a-z0-9_]{0,54}$/));
+export const ExtensionName = S.String.check(S.isPattern(/^[a-z][a-z0-9_-]{0,62}$/));
 
 export const PostgresDatabaseProps = S.Struct({
   name: DatabaseIdentifier,
   server: ResourceName,
+  extensions: S.Array(ExtensionName),
   adminUsername: DatabaseIdentifier,
   adminCredential: KvSecretReference,
   // Owns the database and its tables. Its members run migrations.
@@ -163,6 +165,41 @@ const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (inp
   return yield* Effect.void;
 });
 
+// Runs as the admin, a superuser, so untrusted extensions work too. It checks every name before
+// it creates any, so an extension missing from the server image changes nothing.
+const createExtensions = Effect.fn("PostgresDatabase.createExtensions")(function* (input: {
+  readonly database: string;
+  readonly extensions: ReadonlyArray<string>;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const available = yield* sql<{ readonly name: string }>`
+      SELECT name FROM pg_available_extensions WHERE name IN ${sql.in(input.extensions)}
+    `.pipe(
+    Effect.mapError(
+      () => new PostgresDatabaseError({ operation: "read extensions", target: input.database }),
+    ),
+  );
+  const missing = input.extensions.filter(
+    (extension) => !available.some((row) => row.name === extension),
+  );
+  if (missing.length > 0) {
+    return yield* new PostgresDatabaseError({
+      operation: "find extensions in the server image",
+      target: missing.join(", "),
+    });
+  }
+  yield* Effect.forEach(
+    input.extensions,
+    (extension) =>
+      sql`CREATE EXTENSION IF NOT EXISTS ${sql(extension)}`.pipe(
+        Effect.mapError(
+          () => new PostgresDatabaseError({ operation: "create extension", target: extension }),
+        ),
+      ),
+    { discard: true },
+  );
+});
+
 const hostForConnectionUrl = (address: string) =>
   address.includes(":") ? `[${address}]` : address;
 
@@ -190,33 +227,38 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
     input.news.adminCredential.path,
     input.news.adminCredential.key,
   );
-  const databaseLayer = PgClient.layerFrom(
-    PgClient.makeClient({
-      host: location.Address,
-      port: location.Port,
-      database: "postgres",
-      username: input.news.adminUsername,
-      password,
-      applicationName: "alchemy-postgres-provider",
-    }),
-  );
+  const adminLayer = (database: string) =>
+    PgClient.layerFrom(
+      PgClient.makeClient({
+        host: location.Address,
+        port: location.Port,
+        database,
+        username: input.news.adminUsername,
+        password,
+        applicationName: "alchemy-postgres-provider",
+      }),
+    );
+  const connectError = () =>
+    Effect.fail(
+      new PostgresDatabaseError({
+        operation: "connect to PostgreSQL",
+        target: input.news.server,
+      }),
+    );
   yield* provisionDatabase({
     username: input.news.adminUsername,
     password,
     name: input.news.name,
     ownerRole: input.news.ownerRole,
     visitorRole: input.news.visitorRole,
-  }).pipe(
-    Effect.provide(databaseLayer),
-    Effect.catchTag("SqlError", () =>
-      Effect.fail(
-        new PostgresDatabaseError({
-          operation: "connect to PostgreSQL",
-          target: input.news.server,
-        }),
-      ),
-    ),
-  );
+  }).pipe(Effect.provide(adminLayer("postgres")), Effect.catchTag("SqlError", connectError));
+  // CREATE EXTENSION acts on the database of the connection, so this one opens the app's database.
+  if (input.news.extensions.length > 0) {
+    yield* createExtensions({ database: input.news.name, extensions: input.news.extensions }).pipe(
+      Effect.provide(adminLayer(input.news.name)),
+      Effect.catchTag("SqlError", connectError),
+    );
+  }
 
   const engineConfigName = input.news.connectionName;
   const url = `postgresql://{{username}}:{{password}}@${hostForConnectionUrl(location.Address)}:${location.Port}/${input.news.name}?sslmode=disable`;
