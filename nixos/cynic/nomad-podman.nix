@@ -116,6 +116,14 @@ in
       bootstrap_expect = 1
     }
 
+    # The platform's OpenTelemetry collector scrapes /v1/metrics in Prometheus format
+    # (tools/alchemy/platform/observability). Nomad serves only JSON without this.
+    telemetry {
+      prometheus_metrics = true
+      publish_allocation_metrics = true
+      publish_node_metrics = true
+    }
+
     client {
       enabled = true
       servers = ["127.0.0.1:4647"]
