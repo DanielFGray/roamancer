@@ -113,6 +113,10 @@ const aclCommand = (props: ValkeyAccessProps, password: Redacted.Redacted<string
   "+quit",
   "+select",
   "+client|setinfo",
+  // Cached Lua scripts, as Effect's RateLimiter store sends them. Valkey checks each command a
+  // script runs against this user's rules, key pattern included, so a script stays in the prefix.
+  "+script|load",
+  "+evalsha",
   "+@read",
   ...(props.access === "read-write" ? ["+@write", "+@transaction"] : []),
   "-@dangerous",
