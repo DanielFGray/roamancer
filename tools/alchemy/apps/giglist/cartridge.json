@@ -5,7 +5,7 @@
   "services": [
     {
       "name": "giglist-api",
-      "image": "127.0.0.1:5000/giglist@sha256:57e8f2b808539b15e9b0c54df8f2e88d2b15978150ce93e7ab25896ae10a26b8",
+      "image": "127.0.0.1:5000/giglist@sha256:27ebc788cb7730aca32a0547f35d4f280d4843f2ec764c663e2ec553a2553248",
       "hostPort": "dynamic",
       "containerPort": 3000,
       "healthCheck": { "type": "http", "path": "/api/health" },
@@ -51,12 +51,13 @@
           "path": "secret/data/giglist",
           "key": "cloudflare_email_api_token",
           "env": "CLOUDFLARE_EMAIL_API_TOKEN"
-        }
+        },
+        { "_tag": "ValkeyCredentials", "urlEnv": "VALKEY_URL" }
       ]
     },
     {
       "name": "giglist-worker",
-      "image": "127.0.0.1:5000/giglist@sha256:57e8f2b808539b15e9b0c54df8f2e88d2b15978150ce93e7ab25896ae10a26b8",
+      "image": "127.0.0.1:5000/giglist@sha256:27ebc788cb7730aca32a0547f35d4f280d4843f2ec764c663e2ec553a2553248",
       "hostPort": "dynamic",
       "containerPort": 3000,
       "cpu": 200,
@@ -83,8 +84,10 @@
           "path": "secret/data/giglist",
           "key": "cloudflare_email_api_token",
           "env": "CLOUDFLARE_EMAIL_API_TOKEN"
-        }
+        },
+        { "_tag": "ValkeyCredentials", "urlEnv": "VALKEY_URL" }
       ]
     }
-  ]
+  ],
+  "valkey": {}
 }
