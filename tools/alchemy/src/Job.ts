@@ -25,6 +25,19 @@ export const HealthCheck = S.Union([
 ]);
 export type HealthCheck = typeof HealthCheck.Type;
 
+// A public route to the service through Traefik. Path prefixes narrow the host, and a longer
+// rule wins in Traefik, so an API under a static site's host takes its paths from the site.
+export const Route = S.Struct({
+  host: S.String.check(
+    S.isPattern(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/),
+  ),
+  pathPrefixes: S.optionalKey(S.NonEmptyArray(S.String.check(S.isPattern(/^\/[A-Za-z0-9_./-]*$/)))),
+  responseHeaders: S.optionalKey(
+    S.Array(S.Struct({ name: S.String.check(S.isPattern(/^[A-Za-z0-9-]+$/)), value: S.String })),
+  ),
+});
+export type Route = typeof Route.Type;
+
 export const KvSecretReference = S.TaggedStruct("KvSecret", {
   path: SecretPath,
   key: SecretKey,
@@ -120,6 +133,7 @@ const JobBaseFields = {
   identity: S.optionalKey(S.Struct({ env: S.Boolean })),
   storage: S.optionalKey(Storage),
   readOnlyMounts: S.optionalKey(S.Array(Storage)),
+  routes: S.optionalKey(S.Array(Route)),
   environment: S.Array(S.Struct({ name: EnvironmentVariable, value: S.String })),
   command: S.optionalKey(S.String),
   args: S.optionalKey(S.Array(S.String)),
@@ -368,6 +382,7 @@ export const toJobSpec = (job: Job, owner: string) => {
             Name: job.name,
             PortLabel: "service",
             Provider: "nomad",
+            Tags: routeTags(job),
             Checks: job.healthCheck === undefined ? undefined : [toHealthCheck(job.healthCheck)],
           },
         ],
@@ -430,3 +445,46 @@ const toTask = (
     task.secrets.length === 0 ? [] : [toSecretTemplate(task.secrets)],
   ),
 });
+
+/**
+ * The Traefik tags for a job's routes. Traefik's Nomad provider reads them from the service
+ * registration, so a route follows the allocation's address and port with no reconcile.
+ * Nomad registers a service before it is ready, so a job with an HTTP check has Traefik
+ * check the same path too.
+ */
+export const routeTags = (job: Job): ReadonlyArray<string> => {
+  const routes = job.routes ?? [];
+  if (routes.length === 0) return [];
+  const service = job.name;
+  const healthTags =
+    job.healthCheck?.type === "http"
+      ? [
+          `traefik.http.services.${service}.loadbalancer.healthcheck.path=${job.healthCheck.path}`,
+          `traefik.http.services.${service}.loadbalancer.healthcheck.interval=5s`,
+        ]
+      : [];
+  const routerTags = routes.flatMap((route, index) => {
+    const router = `${service}-${index}`;
+    const paths = route.pathPrefixes?.map((prefix) => `PathPrefix(\`${prefix}\`)`) ?? [];
+    const rule =
+      paths.length === 0
+        ? `Host(\`${route.host}\`)`
+        : `Host(\`${route.host}\`) && (${paths.join(" || ")})`;
+    const headers = route.responseHeaders ?? [];
+    return [
+      `traefik.http.routers.${router}.rule=${rule}`,
+      `traefik.http.routers.${router}.entrypoints=web`,
+      `traefik.http.routers.${router}.service=${service}`,
+      ...(headers.length === 0
+        ? []
+        : [
+            ...headers.map(
+              (header) =>
+                `traefik.http.middlewares.${router}-headers.headers.customresponseheaders.${header.name}=${header.value}`,
+            ),
+            `traefik.http.routers.${router}.middlewares=${router}-headers`,
+          ]),
+    ];
+  });
+  return ["traefik.enable=true", ...healthTags, ...routerTags];
+};

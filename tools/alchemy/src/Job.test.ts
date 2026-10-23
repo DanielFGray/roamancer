@@ -4,6 +4,45 @@ import * as S from "effect/Schema";
 import { Job, toJobSpec, secretPolicyPaths } from "./Job.ts";
 
 describe("Nomad workload rendering", () => {
+  it("routes a host and its API paths through Traefik tags, checked on the service's health path", () => {
+    const job = S.decodeUnknownSync(Job)({
+      name: "giglist-api",
+      image: "127.0.0.1:5000/giglist@sha256:0",
+      hostPort: "dynamic",
+      containerPort: 3000,
+      healthCheck: { type: "http", path: "/api/health" },
+      cpu: 200,
+      memoryMB: 256,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+      routes: [
+        {
+          host: "giglist.dfg.rocks",
+          pathPrefixes: ["/api"],
+          responseHeaders: [{ name: "X-Frame-Options", value: "DENY" }],
+        },
+      ],
+    });
+    assert.deepEqual(toJobSpec(job, "giglist/giglist-api").TaskGroups[0].Services[0].Tags, [
+      "traefik.enable=true",
+      "traefik.http.services.giglist-api.loadbalancer.healthcheck.path=/api/health",
+      "traefik.http.services.giglist-api.loadbalancer.healthcheck.interval=5s",
+      "traefik.http.routers.giglist-api-0.rule=Host(`giglist.dfg.rocks`) && (PathPrefix(`/api`))",
+      "traefik.http.routers.giglist-api-0.entrypoints=web",
+      "traefik.http.routers.giglist-api-0.service=giglist-api",
+      "traefik.http.middlewares.giglist-api-0-headers.headers.customresponseheaders.X-Frame-Options=DENY",
+      "traefik.http.routers.giglist-api-0.middlewares=giglist-api-0-headers",
+    ]);
+    assert.deepEqual(
+      toJobSpec({ ...job, routes: undefined }, "o").TaskGroups[0].Services[0].Tags,
+      [],
+    );
+    assert.equal(
+      S.decodeUnknownOption(Job)({ ...job, routes: [{ host: "a`) || Host(`b" }] })._tag,
+      "None",
+    );
+  });
   it("exposes the default workload identity without port translation for a host-network task", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "ingress",
