@@ -2,6 +2,7 @@
 {
   imports = [
     ./hardware-configuration.nix
+    ./disk-config.nix
     ./nomad-podman.nix
     ./registry.nix
     ./traefik.nix
@@ -11,8 +12,8 @@
     ./herdr.nix
   ];
 
+  # disko sets the GRUB device from disk-config.nix.
   boot.loader.grub.enable = true;
-  boot.loader.grub.device = "/dev/sda";
 
   networking.hostName = "cynic";
   networking.networkmanager.enable = true;
