@@ -12,5 +12,9 @@
     "sr_mod"
   ];
 
+  # The agent reports guest memory to Proxmox, which then counts page cache as free rather than
+  # used. The VM needs `agent: 1` in its Proxmox config as well.
+  services.qemuGuest.enable = true;
+
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
 }
