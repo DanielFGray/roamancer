@@ -1,0 +1,89 @@
+# Static sites copied from atheist's /srv/www on 2026-10-22. Each X-Site-Release names a
+# folder under /srv/www that is never changed; a new release adds a folder and edits this file.
+
+[http.routers.danielfgray-com]
+entryPoints = ["web"]
+rule = "Host(`danielfgray.com`)"
+service = "static-sites@file"
+middlewares = ["danielfgray-com-release"]
+
+[http.middlewares.danielfgray-com-release.headers.customRequestHeaders]
+X-Site-Release = "danielfgray.com/atheist-2026-10-22"
+X-Site-Fallback = ""
+
+[http.routers.dfg-rocks]
+entryPoints = ["web"]
+rule = "Host(`dfg.rocks`)"
+service = "static-sites@file"
+middlewares = ["dfg-rocks-release"]
+
+[http.middlewares.dfg-rocks-release.headers.customRequestHeaders]
+X-Site-Release = "dfg.rocks/atheist-2026-10-22"
+X-Site-Fallback = ""
+
+[http.routers.eddie-dfg-rocks]
+entryPoints = ["web"]
+rule = "Host(`eddie.dfg.rocks`)"
+service = "static-sites@file"
+middlewares = ["eddie-dfg-rocks-release"]
+
+[http.middlewares.eddie-dfg-rocks-release.headers.customRequestHeaders]
+X-Site-Release = "eddie.dfg.rocks/atheist-2026-10-22"
+X-Site-Fallback = ""
+
+[http.routers.quill-dfg-rocks]
+entryPoints = ["web"]
+rule = "Host(`quill.dfg.rocks`)"
+service = "static-sites@file"
+middlewares = ["quill-dfg-rocks-release"]
+
+[http.middlewares.quill-dfg-rocks-release.headers.customRequestHeaders]
+X-Site-Release = "quill.dfg.rocks/atheist-2026-10-22"
+X-Site-Fallback = ""
+
+[http.routers.giglist-dfg-rocks]
+entryPoints = ["web"]
+rule = "Host(`giglist.dfg.rocks`)"
+service = "static-sites@file"
+middlewares = ["giglist-dfg-rocks-release"]
+
+[http.middlewares.giglist-dfg-rocks-release.headers.customRequestHeaders]
+X-Site-Release = "giglist.dfg.rocks/atheist-2026-10-22"
+X-Site-Fallback = "/__spa-fallback.html"
+
+[http.routers.blog-danielfgray-com]
+entryPoints = ["web"]
+rule = "Host(`blog.danielfgray.com`)"
+service = "static-sites@file"
+middlewares = ["blog-danielfgray-com-release", "blog-isolation"]
+
+[http.middlewares.blog-danielfgray-com-release.headers.customRequestHeaders]
+X-Site-Release = "blog.danielfgray.com/atheist-2026-10-22"
+X-Site-Fallback = "/__spa-fallback.html"
+
+# The node preview page loads cross-origin workers, which need require-corp.
+[http.routers.blog-node-preview]
+entryPoints = ["web"]
+rule = "Host(`blog.danielfgray.com`) && PathPrefix(`/node-preview`)"
+service = "static-sites@file"
+middlewares = ["blog-danielfgray-com-release", "blog-node-preview-isolation"]
+
+[http.middlewares.blog-isolation.headers.customResponseHeaders]
+Cross-Origin-Opener-Policy = "same-origin"
+Cross-Origin-Embedder-Policy = "credentialless"
+
+[http.middlewares.blog-node-preview-isolation.headers.customResponseHeaders]
+Cross-Origin-Opener-Policy = "same-origin"
+Cross-Origin-Embedder-Policy = "require-corp"
+
+# dfg.rocks/drumdrive is a temporary link to a shared folder.
+[http.routers.dfg-rocks-drumdrive]
+entryPoints = ["web"]
+rule = "Host(`dfg.rocks`) && Path(`/drumdrive`)"
+service = "noop@internal"
+middlewares = ["dfg-rocks-drumdrive"]
+
+[http.middlewares.dfg-rocks-drumdrive.redirectRegex]
+regex = ".*"
+replacement = "https://drive.google.com/folderview?id=1zz_6dYuiLLK2Lxo7nULuiVcY9a_nWck4"
+permanent = false

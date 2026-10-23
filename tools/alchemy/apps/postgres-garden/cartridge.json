@@ -1,0 +1,12 @@
+{
+  "apiVersion": "server-ansible/v2",
+  "name": "postgres-garden",
+  "postgres": [
+    {
+      "database": "postgres_garden",
+      "extensions": ["btree_gin", "citext", "fuzzystrmatch", "pg_trgm", "pgcrypto", "uuid-ossp"]
+    }
+  ],
+  "valkey": {},
+  "services": []
+}

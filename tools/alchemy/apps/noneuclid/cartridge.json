@@ -1,0 +1,29 @@
+{
+  "apiVersion": "server-ansible/v2",
+  "name": "noneuclid",
+  "services": [
+    {
+      "name": "noneuclid",
+      "image": "127.0.0.1:5000/noneuclid-noneuclid@sha256:be7d99961a3e76c0793b4f0b92a9208ceafc0df47a89da00925ace0eaeb0e05b",
+      "hostPort": "dynamic",
+      "containerPort": 5181,
+      "healthCheck": { "type": "tcp" },
+      "cpu": 200,
+      "memoryMB": 256,
+      "networkMode": "bridge",
+      "command": "bun",
+      "args": ["server.js"],
+      "storage": { "volume": "noneuclid-data", "mountPath": "/data" },
+      "routes": [{ "host": "game.dfg.rocks" }],
+      "environment": [
+        { "name": "PORT", "value": "5181" },
+        { "name": "PLAY_DIR", "value": "/app/public" },
+        { "name": "LEVELS_DIR", "value": "/app/seed/levels" },
+        { "name": "TUNABLES_PATH", "value": "/app/seed/tunables.json" },
+        { "name": "DB_PATH", "value": "/data/noneuclid.sqlite" }
+      ],
+      "connections": [],
+      "secrets": []
+    }
+  ]
+}
