@@ -43,6 +43,26 @@ describe("Nomad workload rendering", () => {
       "None",
     );
   });
+  it("gives every task the node's OTLP collector address, which the job's own environment overrides", () => {
+    const job = S.decodeUnknownSync(Job)({
+      name: "app",
+      image: "127.0.0.1:5000/app@sha256:0",
+      hostPort: "dynamic",
+      containerPort: 3000,
+      cpu: 100,
+      memoryMB: 128,
+      networkMode: "bridge",
+      environment: [
+        { name: "OTEL_TRACES_EXPORTER", value: "otlp" },
+        { name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "http://collector.example:4318" },
+      ],
+      connections: [],
+    });
+    assert.deepEqual(toJobSpec(job, "app/app").TaskGroups[0].Tasks[0].Env, {
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.example:4318",
+      OTEL_TRACES_EXPORTER: "otlp",
+    });
+  });
   it("exposes the default workload identity without port translation for a host-network task", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "ingress",
@@ -65,7 +85,9 @@ describe("Nomad workload rendering", () => {
     assert.equal(task.Config.network_mode, "host");
     assert.equal(task.Config.ports, undefined);
     assert.deepEqual(task.Identity, { Env: true });
-    assert.deepEqual(task.Env, {});
+    assert.deepEqual(task.Env, {
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.containers.internal:4318",
+    });
     assert.deepEqual(spec.TaskGroups[0].Volumes, {
       "readonly-0": { Name: "readonly-0", Type: "host", Source: "traefik-routes", ReadOnly: true },
     });

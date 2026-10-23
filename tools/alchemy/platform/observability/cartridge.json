@@ -40,22 +40,22 @@
     {
       "name": "otel-collector",
       "image": "otel/opentelemetry-collector-contrib:0.131.0",
-      "hostPort": "dynamic",
+      "hostPort": 4318,
       "containerPort": 4318,
       "healthCheck": {
         "type": "tcp"
       },
       "cpu": 200,
       "memoryMB": 256,
-      "networkMode": "bridge",
+      "networkMode": "host",
       "environment": [
         {
           "name": "OTEL_CONFIG",
-          "value": "extensions:\n  basicauth/openobserve:\n    client_auth:\n      username: ${env:OPENOBSERVE_USERNAME}\n      password: ${env:OPENOBSERVE_PASSWORD}\n\nreceivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: 0.0.0.0:4318\n  prometheus:\n    config:\n      scrape_configs:\n        - job_name: nomad\n          scrape_interval: 15s\n          metrics_path: /v1/metrics\n          params:\n            format: [prometheus]\n          static_configs:\n            - targets: [\"${env:NOMAD_TARGET}\"]\n\nprocessors:\n  batch: {}\n\nexporters:\n  otlphttp/openobserve:\n    endpoint: http://${env:OPENOBSERVE_HOST}:${env:OPENOBSERVE_PORT}/api/default\n    auth:\n      authenticator: basicauth/openobserve\n\nservice:\n  extensions: [basicauth/openobserve]\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [batch]\n      exporters: [otlphttp/openobserve]\n    logs:\n      receivers: [otlp]\n      processors: [batch]\n      exporters: [otlphttp/openobserve]\n    metrics:\n      receivers: [otlp, prometheus]\n      processors: [batch]\n      exporters: [otlphttp/openobserve]\n"
+          "value": "extensions:\n  basicauth/openobserve:\n    client_auth:\n      username: ${env:OPENOBSERVE_USERNAME}\n      password: ${env:OPENOBSERVE_PASSWORD}\n\nreceivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: ${env:NOMAD_ADDR_service}\n  prometheus:\n    config:\n      scrape_configs:\n        - job_name: nomad\n          scrape_interval: 15s\n          metrics_path: /v1/metrics\n          params:\n            format: [prometheus]\n          static_configs:\n            - targets: [\"${env:NOMAD_TARGET}\"]\n\nprocessors:\n  batch: {}\n\nexporters:\n  otlphttp/openobserve:\n    endpoint: http://${env:OPENOBSERVE_HOST}:${env:OPENOBSERVE_PORT}/api/default\n    auth:\n      authenticator: basicauth/openobserve\n\nservice:\n  extensions: [basicauth/openobserve]\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [batch]\n      exporters: [otlphttp/openobserve]\n    logs:\n      receivers: [otlp]\n      processors: [batch]\n      exporters: [otlphttp/openobserve]\n    metrics:\n      receivers: [otlp, prometheus]\n      processors: [batch]\n      exporters: [otlphttp/openobserve]\n"
         },
         {
           "name": "NOMAD_TARGET",
-          "value": "host.containers.internal:4646"
+          "value": "127.0.0.1:4646"
         },
         {
           "name": "OPENOBSERVE_USERNAME",

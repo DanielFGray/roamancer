@@ -409,6 +409,13 @@ const toMounts = (job: Job) => [
   })),
 ];
 
+// The platform's OpenTelemetry collector holds OTLP/HTTP's standard port on every node
+// (platform/observability/cartridge.json). Inside a rootless Podman container the node's LAN address
+// is the container's own, so a task reaches the host only through host.containers.internal. The
+// value never changes, so no job restarts when the collector does. An app exports only the signals
+// its own OTEL_<SIGNAL>_EXPORTER variables turn on.
+const otlpEndpoint = "http://host.containers.internal:4318";
+
 const toTask = (
   job: Job,
   task: {
@@ -430,7 +437,10 @@ const toTask = (
     args: task.args,
   },
   Identity: job.identity === undefined ? undefined : { Env: job.identity.env },
-  Env: Object.fromEntries(job.environment.map((variable) => [variable.name, variable.value])),
+  Env: {
+    OTEL_EXPORTER_OTLP_ENDPOINT: otlpEndpoint,
+    ...Object.fromEntries(job.environment.map((variable) => [variable.name, variable.value])),
+  },
   VolumeMounts: toMounts(job).map((mount) => ({
     Volume: mount.name,
     Destination: mount.mountPath,
