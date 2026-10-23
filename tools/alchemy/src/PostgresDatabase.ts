@@ -1,6 +1,8 @@
 import * as Alchemy from "alchemy";
+import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
 import * as Arr from "effect/Array";
+import * as Equal from "effect/Equal";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
@@ -98,13 +100,20 @@ const ensureGroupRole = (sql: SqlClient.SqlClient, role: string, target: string)
         sql`CREATE ROLE ${sql(role)} NOLOGIN`.pipe(
           Effect.asVoid,
           Effect.mapError(
-            () => new PostgresDatabaseError({ operation: "create group role", target }),
+            () =>
+              new PostgresDatabaseError({
+                operation: "create group role",
+                target,
+              }),
           ),
         ),
       onSome: (canLogin) =>
         canLogin
           ? Effect.fail(
-              new PostgresDatabaseError({ operation: "validate group role", target: role }),
+              new PostgresDatabaseError({
+                operation: "validate group role",
+                target: role,
+              }),
             )
           : Effect.void,
     });
@@ -123,7 +132,11 @@ const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (inp
   yield* sql`SELECT pg_advisory_lock(hashtextextended(${lock}, 0))`.pipe(
     Effect.asVoid,
     Effect.mapError(
-      () => new PostgresDatabaseError({ operation: "lock database", target: input.name }),
+      () =>
+        new PostgresDatabaseError({
+          operation: "lock database",
+          target: input.name,
+        }),
     ),
   );
 
@@ -134,7 +147,11 @@ const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (inp
   yield* sql`GRANT ${sql(input.ownerRole)} TO CURRENT_USER`.pipe(
     Effect.asVoid,
     Effect.mapError(
-      () => new PostgresDatabaseError({ operation: "grant owner role", target: input.name }),
+      () =>
+        new PostgresDatabaseError({
+          operation: "grant owner role",
+          target: input.name,
+        }),
     ),
   );
 
@@ -142,7 +159,11 @@ const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (inp
       SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = ${input.name}
     `.pipe(
     Effect.mapError(
-      () => new PostgresDatabaseError({ operation: "read database", target: input.name }),
+      () =>
+        new PostgresDatabaseError({
+          operation: "read database",
+          target: input.name,
+        }),
     ),
   );
   const databaseOwner = Option.map(Arr.head(databases), (database) => database.owner);
@@ -151,14 +172,21 @@ const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (inp
       sql`CREATE DATABASE ${sql(input.name)} OWNER ${sql(input.ownerRole)}`.pipe(
         Effect.asVoid,
         Effect.mapError(
-          () => new PostgresDatabaseError({ operation: "create database", target: input.name }),
+          () =>
+            new PostgresDatabaseError({
+              operation: "create database",
+              target: input.name,
+            }),
         ),
       ),
     onSome: (owner) =>
       owner === input.ownerRole
         ? Effect.void
         : Effect.fail(
-            new PostgresDatabaseError({ operation: "validate database owner", target: input.name }),
+            new PostgresDatabaseError({
+              operation: "validate database owner",
+              target: input.name,
+            }),
           ),
   });
 
@@ -176,7 +204,11 @@ const createExtensions = Effect.fn("PostgresDatabase.createExtensions")(function
       SELECT name FROM pg_available_extensions WHERE name IN ${sql.in(input.extensions)}
     `.pipe(
     Effect.mapError(
-      () => new PostgresDatabaseError({ operation: "read extensions", target: input.database }),
+      () =>
+        new PostgresDatabaseError({
+          operation: "read extensions",
+          target: input.database,
+        }),
     ),
   );
   const missing = input.extensions.filter(
@@ -193,7 +225,11 @@ const createExtensions = Effect.fn("PostgresDatabase.createExtensions")(function
     (extension) =>
       sql`CREATE EXTENSION IF NOT EXISTS ${sql(extension)}`.pipe(
         Effect.mapError(
-          () => new PostgresDatabaseError({ operation: "create extension", target: extension }),
+          () =>
+            new PostgresDatabaseError({
+              operation: "create extension",
+              target: extension,
+            }),
         ),
       ),
     { discard: true },
@@ -202,6 +238,13 @@ const createExtensions = Effect.fn("PostgresDatabase.createExtensions")(function
 
 const hostForConnectionUrl = (address: string) =>
   address.includes(":") ? `[${address}]` : address;
+
+// OpenBao fills in {{username}} and {{password}} for each credential it issues.
+const connectionUrl = (
+  location: { readonly Address: string; readonly Port: number },
+  database: string,
+) =>
+  `postgresql://{{username}}:{{password}}@${hostForConnectionUrl(location.Address)}:${location.Port}/${database}?sslmode=disable`;
 
 const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
   readonly id: string;
@@ -254,14 +297,14 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
   }).pipe(Effect.provide(adminLayer("postgres")), Effect.catchTag("SqlError", connectError));
   // CREATE EXTENSION acts on the database of the connection, so this one opens the app's database.
   if (input.news.extensions.length > 0) {
-    yield* createExtensions({ database: input.news.name, extensions: input.news.extensions }).pipe(
-      Effect.provide(adminLayer(input.news.name)),
-      Effect.catchTag("SqlError", connectError),
-    );
+    yield* createExtensions({
+      database: input.news.name,
+      extensions: input.news.extensions,
+    }).pipe(Effect.provide(adminLayer(input.news.name)), Effect.catchTag("SqlError", connectError));
   }
 
   const engineConfigName = input.news.connectionName;
-  const url = `postgresql://{{username}}:{{password}}@${hostForConnectionUrl(location.Address)}:${location.Port}/${input.news.name}?sslmode=disable`;
+  const url = connectionUrl(location, input.news.name);
   const ttls = {
     databaseConfig: engineConfigName,
     database: input.news.name,
@@ -306,6 +349,21 @@ export const PostgresDatabaseProvider = () =>
       return PostgresDatabase.Provider.of({
         list: () => Effect.succeed([]),
         stables: ["id"],
+        // OpenBao keeps the server address it was given, so props alone cannot show that the
+        // PostgreSQL job moved. Compare the stored URL with the address Nomad lists now.
+        diff: Effect.fn(function* ({ news }) {
+          if (!isResolved(news)) return undefined;
+          const [locations, stored] = yield* Effect.all([
+            nomad.service(news.server),
+            openBao.readPostgresConnectionUrl(news.connectionName),
+          ]);
+          const current = Option.map(Arr.head(locations), (location) =>
+            connectionUrl(location, news.name),
+          );
+          return Option.isSome(current) && Equal.equals(current, stored)
+            ? undefined
+            : { action: "update" as const };
+        }),
         reconcile: Effect.fn(function* ({ news, fqn }) {
           return yield* journal.run(
             {

@@ -4,6 +4,11 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 const KvValue = S.Struct({
   data: S.Struct({ data: S.Record(S.String, S.String) }),
 });
+const DatabaseConfig = S.Struct({
+  data: S.Struct({
+    connection_details: S.Struct({ connection_url: S.String }),
+  }),
+});
 const ValkeyCredentials = S.Struct({
   username: S.String,
   password: S.String,
@@ -99,7 +104,10 @@ type WriteBody =
   | {
       readonly role_type: "jwt";
       readonly bound_audiences: ReadonlyArray<string>;
-      readonly bound_claims: { readonly nomad_namespace: string; readonly nomad_job_id: string };
+      readonly bound_claims: {
+        readonly nomad_namespace: string;
+        readonly nomad_job_id: string;
+      };
       readonly user_claim: string;
       readonly user_claim_json_pointer: boolean;
       readonly token_policies: ReadonlyArray<string>;
@@ -114,10 +122,11 @@ export class OpenBao extends Context.Service<
       path: string,
       key: string,
     ) => Effect.Effect<Redacted.Redacted<string>, OpenBaoError>;
-    readonly readValkeyCredentials: (
-      path: string,
-    ) => Effect.Effect<
-      Option.Option<{ readonly username: string; readonly password: Redacted.Redacted<string> }>,
+    readonly readValkeyCredentials: (path: string) => Effect.Effect<
+      Option.Option<{
+        readonly username: string;
+        readonly password: Redacted.Redacted<string>;
+      }>,
       OpenBaoError
     >;
     readonly readAdminCredential: (
@@ -131,6 +140,9 @@ export class OpenBao extends Context.Service<
       path: string,
       credentials: typeof ValkeyCredentials.Type,
     ) => Effect.Effect<void, OpenBaoError>;
+    readonly readPostgresConnectionUrl: (
+      name: string,
+    ) => Effect.Effect<Option.Option<string>, OpenBaoError>;
     readonly configurePostgres: (
       connection: DatabaseConnection,
       roles: ReadonlyArray<DatabaseRole>,
@@ -185,17 +197,17 @@ export class OpenBao extends Context.Service<
         return response;
       });
 
-      const readValkeyCredentials = Effect.fn("OpenBao.readValkeyCredentials")(function* (
+      // Reads a path that may not exist yet: OpenBao answers 404 for it, which becomes None.
+      const getOptional = Effect.fn("OpenBao.getOptional")(function* (
+        operation: string,
         path: string,
       ) {
         const baseAddress = yield* Option.match(address, {
-          onNone: () =>
-            Effect.fail(new OpenBaoError({ operation: "read credentials", target: path })),
+          onNone: () => Effect.fail(new OpenBaoError({ operation, target: path })),
           onSome: Effect.succeed,
         });
         const authToken = yield* Option.match(token, {
-          onNone: () =>
-            Effect.fail(new OpenBaoError({ operation: "read credentials", target: path })),
+          onNone: () => Effect.fail(new OpenBaoError({ operation, target: path })),
           onSome: Effect.succeed,
         });
         const client = http.pipe(
@@ -206,30 +218,58 @@ export class OpenBao extends Context.Service<
         );
         const response = yield* client
           .execute(HttpClientRequest.get(`/v1/${path}`))
-          .pipe(
-            Effect.mapError(
-              () => new OpenBaoError({ operation: "read credentials", target: path }),
-            ),
-          );
+          .pipe(Effect.mapError(() => new OpenBaoError({ operation, target: path })));
         if (response.status === 404) {
           return yield* response.text.pipe(
             Effect.as(Option.none()),
-            Effect.mapError(
-              () => new OpenBaoError({ operation: "read credentials", target: path }),
-            ),
+            Effect.mapError(() => new OpenBaoError({ operation, target: path })),
           );
         }
         const ok = yield* HttpClientResponse.filterStatusOk(response).pipe(
-          Effect.mapError(() => new OpenBaoError({ operation: "read credentials", target: path })),
+          Effect.mapError(() => new OpenBaoError({ operation, target: path })),
         );
-        const value = yield* HttpClientResponse.schemaBodyJson(KvValue)(ok).pipe(
+        return Option.some(ok);
+      });
+
+      const readPostgresConnectionUrl = Effect.fn("OpenBao.readPostgresConnectionUrl")(function* (
+        name: string,
+      ) {
+        const path = `database/config/${encodeURIComponent(name)}`;
+        const found = yield* getOptional("read PostgreSQL connection", path);
+        if (Option.isNone(found)) return Option.none();
+        const value = yield* HttpClientResponse.schemaBodyJson(DatabaseConfig)(found.value).pipe(
           Effect.mapError(
-            () => new OpenBaoError({ operation: "decode credentials", target: path }),
+            () =>
+              new OpenBaoError({
+                operation: "decode PostgreSQL connection",
+                target: name,
+              }),
+          ),
+        );
+        return Option.some(value.data.connection_details.connection_url);
+      });
+
+      const readValkeyCredentials = Effect.fn("OpenBao.readValkeyCredentials")(function* (
+        path: string,
+      ) {
+        const found = yield* getOptional("read credentials", path);
+        if (Option.isNone(found)) return Option.none();
+        const value = yield* HttpClientResponse.schemaBodyJson(KvValue)(found.value).pipe(
+          Effect.mapError(
+            () =>
+              new OpenBaoError({
+                operation: "decode credentials",
+                target: path,
+              }),
           ),
         );
         const credentials = yield* S.decodeUnknownEffect(ValkeyCredentials)(value.data.data).pipe(
           Effect.mapError(
-            () => new OpenBaoError({ operation: "decode credentials", target: path }),
+            () =>
+              new OpenBaoError({
+                operation: "decode credentials",
+                target: path,
+              }),
           ),
         );
         return Option.some({
@@ -242,56 +282,32 @@ export class OpenBao extends Context.Service<
         path: string,
         credentials: typeof ValkeyCredentials.Type,
       ) {
-        yield* request("write credentials", path, "PUT", path, { data: credentials });
+        yield* request("write credentials", path, "PUT", path, {
+          data: credentials,
+        });
       });
 
       const readAdminCredential = Effect.fn("OpenBao.readAdminCredential")(function* (
         path: string,
       ) {
-        const baseAddress = yield* Option.match(address, {
-          onNone: () =>
-            Effect.fail(new OpenBaoError({ operation: "read admin credential", target: path })),
-          onSome: Effect.succeed,
-        });
-        const authToken = yield* Option.match(token, {
-          onNone: () =>
-            Effect.fail(new OpenBaoError({ operation: "read admin credential", target: path })),
-          onSome: Effect.succeed,
-        });
-        const client = http.pipe(
-          HttpClient.mapRequest((request) =>
-            HttpClientRequest.setHeader("X-Vault-Token", Redacted.value(authToken))(request),
-          ),
-          HttpClient.mapRequest(HttpClientRequest.prependUrl(baseAddress)),
-        );
-        const response = yield* client
-          .execute(HttpClientRequest.get(`/v1/${path}`))
-          .pipe(
-            Effect.mapError(
-              () => new OpenBaoError({ operation: "read admin credential", target: path }),
-            ),
-          );
-        if (response.status === 404) {
-          return yield* response.text.pipe(
-            Effect.as(Option.none()),
-            Effect.mapError(
-              () => new OpenBaoError({ operation: "read admin credential", target: path }),
-            ),
-          );
-        }
-        const ok = yield* HttpClientResponse.filterStatusOk(response).pipe(
+        const found = yield* getOptional("read admin credential", path);
+        if (Option.isNone(found)) return Option.none();
+        const value = yield* HttpClientResponse.schemaBodyJson(KvValue)(found.value).pipe(
           Effect.mapError(
-            () => new OpenBaoError({ operation: "read admin credential", target: path }),
-          ),
-        );
-        const value = yield* HttpClientResponse.schemaBodyJson(KvValue)(ok).pipe(
-          Effect.mapError(
-            () => new OpenBaoError({ operation: "decode admin credential", target: path }),
+            () =>
+              new OpenBaoError({
+                operation: "decode admin credential",
+                target: path,
+              }),
           ),
         );
         const credential = yield* S.decodeUnknownEffect(AdminCredential)(value.data.data).pipe(
           Effect.mapError(
-            () => new OpenBaoError({ operation: "decode admin credential", target: path }),
+            () =>
+              new OpenBaoError({
+                operation: "decode admin credential",
+                target: path,
+              }),
           ),
         );
         return Option.some(Redacted.make(credential.password));
@@ -313,7 +329,10 @@ export class OpenBao extends Context.Service<
         );
         const value = decoded.data.data[key];
         if (value === undefined) {
-          return yield* new OpenBaoError({ operation: "read secret key", target: path });
+          return yield* new OpenBaoError({
+            operation: "read secret key",
+            target: path,
+          });
         }
         return Redacted.make(value);
       });
@@ -376,7 +395,10 @@ export class OpenBao extends Context.Service<
           {
             role_type: "jwt",
             bound_audiences: ["vault.io"],
-            bound_claims: { nomad_namespace: "default", nomad_job_id: role.job },
+            bound_claims: {
+              nomad_namespace: "default",
+              nomad_job_id: role.job,
+            },
             user_claim: "/nomad_job_id",
             user_claim_json_pointer: true,
             token_policies: [role.name],
@@ -392,6 +414,7 @@ export class OpenBao extends Context.Service<
         writeValkeyCredentials,
         readAdminCredential,
         writeAdminCredential,
+        readPostgresConnectionUrl,
         configurePostgres,
         configureWorkloadRole,
       });

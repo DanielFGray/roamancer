@@ -7,7 +7,7 @@
       "service": {
         "name": "postgres",
         "image": "127.0.0.1:5000/platform-postgres@sha256:df59380b3191e876706a7dda6df75be6dff8672b25a2663114b5ffbe947595e3",
-        "hostPort": "dynamic",
+        "hostPort": 5432,
         "containerPort": 5432,
         "healthCheck": {
           "type": "tcp"
