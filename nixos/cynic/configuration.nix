@@ -59,7 +59,12 @@
     ];
   };
 
-  security.sudo.wheelNeedsPassword = false;
+  # sudo is the line between dan's shell, which coding agents can reach through dan's ssh
+  # key, and root, which holds the Nomad and OpenBao tokens. The password lives only in
+  # /etc/shadow (users.mutableUsers), set with `sudo passwd dan` before this takes effect:
+  # root is locked, so without it nobody can become root. A fresh install has no password
+  # either, so the install has to deliver one.
+  security.sudo.wheelNeedsPassword = true;
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
