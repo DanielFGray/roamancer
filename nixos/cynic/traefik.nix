@@ -43,6 +43,10 @@ let
     log.level = "ERROR";
 
     entryPoints.web.address = ":80";
+    # atheist's Caddy holds the public TLS certificates and proxies here over the LAN.
+    # Traefik keeps the X-Forwarded-* headers only from trusted addresses, so without this
+    # the apps would see atheist as every client and http as the scheme.
+    entryPoints.web.forwardedHeaders.trustedIPs = [ "10.13.37.83" ];
 
     # manualRouting keeps Traefik from adding its own /ping router on the
     # web entry point, which would hide an application's /ping.
