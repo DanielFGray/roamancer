@@ -4,7 +4,7 @@
   "services": [
     {
       "name": "noneuclid",
-      "image": "127.0.0.1:5000/noneuclid-noneuclid@sha256:e36532d28def1e4945b00c9c5009f9f560f93ec286ecda83ff8ee3209d050690",
+      "image": "127.0.0.1:5000/noneuclid-noneuclid@sha256:e7cba4b6214b1df5676f6eb660355d3a255fdef4675e943e28e8cfb5be14b058",
       "hostPort": "dynamic",
       "containerPort": 5181,
       "healthCheck": { "type": "tcp" },
@@ -20,7 +20,9 @@
         { "name": "PLAY_DIR", "value": "/app/public" },
         { "name": "LEVELS_DIR", "value": "/app/seed/levels" },
         { "name": "TUNABLES_PATH", "value": "/app/seed/tunables.json" },
-        { "name": "DB_PATH", "value": "/data/noneuclid.sqlite" }
+        { "name": "DB_PATH", "value": "/data/noneuclid.sqlite" },
+        { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
+        { "name": "OTEL_LOGS_EXPORTER", "value": "otlp" }
       ],
       "connections": [],
       "secrets": []

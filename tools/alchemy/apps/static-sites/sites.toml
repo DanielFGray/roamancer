@@ -48,7 +48,7 @@ service = "static-sites@file"
 middlewares = ["giglist-dfg-rocks-release"]
 
 [http.middlewares.giglist-dfg-rocks-release.headers.customRequestHeaders]
-X-Site-Release = "giglist.dfg.rocks/2026-10-23-da2192c"
+X-Site-Release = "giglist.dfg.rocks/2026-10-23-32e78aa"
 X-Site-Fallback = "/__spa-fallback.html"
 
 [http.routers.blog-danielfgray-com]

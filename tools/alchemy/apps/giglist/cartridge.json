@@ -5,7 +5,7 @@
   "services": [
     {
       "name": "giglist-api",
-      "image": "127.0.0.1:5000/giglist@sha256:27ebc788cb7730aca32a0547f35d4f280d4843f2ec764c663e2ec553a2553248",
+      "image": "127.0.0.1:5000/giglist@sha256:b29a64a0203f230d283bb96970abe5d249b7df666f9588110d7511774d76fa22",
       "hostPort": "dynamic",
       "containerPort": 3000,
       "healthCheck": { "type": "http", "path": "/api/health" },
@@ -24,7 +24,9 @@
         { "name": "EMAIL_FROM", "value": "GigList <noreply@dfg.rocks>" },
         { "name": "DATABASE_NAME", "value": "giglist" },
         { "name": "DATABASE_OWNER", "value": "giglist_owner" },
-        { "name": "DATABASE_VISITOR", "value": "giglist_visitor" }
+        { "name": "DATABASE_VISITOR", "value": "giglist_visitor" },
+        { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
+        { "name": "OTEL_LOGS_EXPORTER", "value": "otlp" }
       ],
       "connections": [],
       "secrets": [
@@ -57,7 +59,7 @@
     },
     {
       "name": "giglist-worker",
-      "image": "127.0.0.1:5000/giglist@sha256:27ebc788cb7730aca32a0547f35d4f280d4843f2ec764c663e2ec553a2553248",
+      "image": "127.0.0.1:5000/giglist@sha256:b29a64a0203f230d283bb96970abe5d249b7df666f9588110d7511774d76fa22",
       "hostPort": "dynamic",
       "containerPort": 3000,
       "cpu": 200,
@@ -69,7 +71,9 @@
         { "name": "NODE_ENV", "value": "production" },
         { "name": "VITE_ROOT_URL", "value": "https://giglist.dfg.rocks" },
         { "name": "MAIL_PROVIDER", "value": "cloudflare" },
-        { "name": "EMAIL_FROM", "value": "GigList <noreply@dfg.rocks>" }
+        { "name": "EMAIL_FROM", "value": "GigList <noreply@dfg.rocks>" },
+        { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
+        { "name": "OTEL_LOGS_EXPORTER", "value": "otlp" }
       ],
       "connections": [],
       "secrets": [
