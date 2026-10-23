@@ -181,6 +181,11 @@ export const CartridgeJob = S.Struct({
 }).check(hostNetworkPorts);
 export type CartridgeJob = typeof CartridgeJob.Type;
 
+// Ends each environment line in a rendered template. A trim marker (`{{-`) strips the template
+// text before it, so a plain newline would be lost to the next block's `{{- with` and two
+// variables would share a line. The output of an action is never trimmed.
+const lineEnd = '{{ "\\n" }}';
+
 const toServiceTemplate = (connections: ReadonlyArray<ServiceConnection>) => ({
   DestPath: "secrets/services.env",
   Envvars: true,
@@ -189,8 +194,8 @@ const toServiceTemplate = (connections: ReadonlyArray<ServiceConnection>) => ({
     .map((connection) =>
       [
         '{{- range nomadService "' + connection.service + '" -}}',
-        connection.hostEnv + "={{ .Address }}",
-        connection.portEnv + "={{ .Port }}",
+        connection.hostEnv + "={{ .Address }}" + lineEnd,
+        connection.portEnv + "={{ .Port }}" + lineEnd,
         "{{- end }}",
       ].join("\n"),
     )
@@ -210,7 +215,8 @@ const postgresUrlLines = (url: typeof PostgresUrlReference.Type) => [
   url.env +
     '={{ printf "postgresql://%s:%s@%s:%d/' +
     url.database +
-    '?sslmode=disable" $username $password .Address .Port | toJSON }}',
+    '?sslmode=disable" $username $password .Address .Port | toJSON }}' +
+    lineEnd,
   "{{- end }}",
 ];
 
@@ -219,7 +225,9 @@ const valkeyUrlLines = (url: typeof ValkeyUrlReference.Type) => [
   "{{- $username := .Data.data.username }}",
   "{{- $password := .Data.data.password }}",
   '{{- range nomadService "' + url.server + '" }}',
-  url.env + '={{ printf "redis://%s:%s@%s:%d" $username $password .Address .Port | toJSON }}',
+  url.env +
+    '={{ printf "redis://%s:%s@%s:%d" $username $password .Address .Port | toJSON }}' +
+    lineEnd,
   "{{- end }}",
 ];
 
@@ -233,7 +241,7 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
         Match.when({ _tag: "KvSecret" }, (value) =>
           [
             '{{- with secret "' + value.path + '" -}}',
-            value.env + '={{ index .Data.data "' + value.key + '" | toJSON }}',
+            value.env + '={{ index .Data.data "' + value.key + '" | toJSON }}' + lineEnd,
             "{{- end }}",
           ].join("\n"),
         ),
@@ -242,10 +250,10 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
             '{{- with secret "' + value.credentialPath + '" -}}',
             ...(value.usernameEnv === undefined
               ? []
-              : [value.usernameEnv + "={{ .Data.username | toJSON }}"]),
+              : [value.usernameEnv + "={{ .Data.username | toJSON }}" + lineEnd]),
             ...(value.passwordEnv === undefined
               ? []
-              : [value.passwordEnv + "={{ .Data.password | toJSON }}"]),
+              : [value.passwordEnv + "={{ .Data.password | toJSON }}" + lineEnd]),
             ...(value.url === undefined ? [] : postgresUrlLines(value.url)),
             "{{- end }}",
           ].join("\n"),
@@ -255,10 +263,10 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
             '{{- with secret "' + value.credentialPath + '" -}}',
             ...(value.usernameEnv === undefined
               ? []
-              : [value.usernameEnv + "={{ .Data.data.username | toJSON }}"]),
+              : [value.usernameEnv + "={{ .Data.data.username | toJSON }}" + lineEnd]),
             ...(value.passwordEnv === undefined
               ? []
-              : [value.passwordEnv + "={{ .Data.data.password | toJSON }}"]),
+              : [value.passwordEnv + "={{ .Data.data.password | toJSON }}" + lineEnd]),
             ...(value.url === undefined ? [] : valkeyUrlLines(value.url)),
             "{{- end }}",
           ].join("\n"),
