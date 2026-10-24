@@ -13,6 +13,8 @@
     ./backups.nix
   ];
 
+  nixpkgs.overlays = [ (import ./bun.nix) ];
+
   # disko sets the GRUB device from disk-config.nix.
   boot.loader.grub.enable = true;
 
@@ -35,7 +37,9 @@
 
   # Git hosts the bare repositories that builds on this host read from. The rest are the
   # command-line tools that the dotfiles' shell configs and the operator's workflow call.
+  # Bun runs Alchemy and scripts/ops-on-host.sh.
   environment.systemPackages = with pkgs; [
+    bun
     git
     ripgrep
     fd

@@ -20,17 +20,7 @@
         inherit system;
         overlays = [
           bun2nix.overlays.default
-          # The pinned nixpkgs ships Bun 1.3.13. The Alchemy runtime was verified on Bun 1.4.2,
-          # and its version 1 bun lock is read by Bun 1.4. Applies to this flake's packages only.
-          (final: prev: {
-            bun = prev.bun.overrideAttrs (_: {
-              version = "1.4.2";
-              src = prev.fetchurl {
-                url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip";
-                hash = "sha256-NjaPrvdSeHXV/6UuU81IAhdB8qg+tiCKjdZAaNQiqRM=";
-              };
-            });
-          })
+          (import ./nixos/cynic/bun.nix)
         ];
       };
     in {
