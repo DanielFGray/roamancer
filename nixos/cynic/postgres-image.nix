@@ -24,7 +24,7 @@ let
     ps.pgsodium
   ]);
 
-  # The data volume's mount point is owned by container uid 999 (nixos/cynic/nomad-podman.nix),
+  # The data volume's mount point is owned by container uid 999 (nixos/cynic/nomad.nix),
   # the uid the official postgres image used, so this image keeps it.
   uid = "999";
 

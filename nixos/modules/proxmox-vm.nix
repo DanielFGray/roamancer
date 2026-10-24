@@ -1,4 +1,4 @@
-# Generated for the Proxmox VM. disk-config.nix declares the disks.
+# Hardware of the Proxmox VMs (cynic, atheist): SeaBIOS, virtio SCSI disk and network. disk-config.nix declares the disks.
 { config, lib, pkgs, modulesPath, ... }:
 {
   imports = [ (modulesPath + "/profiles/qemu-guest.nix") ];

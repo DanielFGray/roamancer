@@ -8,7 +8,9 @@ set -euo pipefail
 #
 # Usage: nixos/install-host.sh <flake host> <ssh target> [extra nixos-anywhere args...]
 # Files under ~/.local/state/server-ansible/extra-files/<host> (SSH host keys, Tailscale
-# state) are copied onto the new root, so the host keeps its identity across the reinstall.
+# state, and for a cluster node its CA certificates and password hash) are copied onto the
+# new root, so the host keeps its identity across the reinstall. The host's config sets the
+# owners and modes of the files it reads; this script sets only those of /etc/ssh and Tailscale.
 # Folder modes are copied too: sshd reads authorized_keys.d as the user, so etc/ssh must be 0755.
 
 host="${1:?flake host, such as cynic}"
@@ -39,5 +41,5 @@ exec docker run --rm --network host \
   nixos/nix:latest sh -euc '
     install -d -m700 /root/.ssh && install -m600 /key /root/.ssh/id
     printf "Host *\n  IdentityFile /root/.ssh/id\n  StrictHostKeyChecking accept-new\n" > /root/.ssh/config
-    exec nix run "$0" -- --flake "path:/src/$1#$1" --target-host "$2" "${@:3}"
+    exec nix run "$0" -- --flake "path:/src#$1" --target-host "$2" "${@:3}"
   ' "$anywhere" "$host" "$target" "${extra_args[@]}" "$@"

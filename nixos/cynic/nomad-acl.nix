@@ -51,6 +51,10 @@ let
     host_volume "openobserve-data" {
       capabilities = ["mount-readwrite"]
     }
+
+    host_volume "traefik-acme" {
+      capabilities = ["mount-readwrite"]
+    }
   '';
 
   # The systemd Traefik service uses this client-token policy for discovery.

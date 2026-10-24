@@ -1,6 +1,6 @@
 # Cluster TLS operations
 
-cynic is the only Nomad server. Other machines join as Nomad clients over the LAN. Three listeners face the LAN, all on cynic's address (`cluster.nix`), and all accept only clients with a certificate from the cluster CA:
+cynic is the only Nomad server. Other machines join as Nomad clients over the LAN. Three listeners face the LAN, all on cynic's address (`nixos/cluster.nix`), and all accept only clients with a certificate from the cluster CA:
 
 | Port | Service | Clients |
 |---|---|---|
@@ -49,7 +49,7 @@ Then push with `docker push registry.cluster:5000/<name>:<tag>`, and pin the pus
 
 The address comes from fw's DHCP. A new lease breaks the server certificate's IP, Raft's peer address, every client's `servers` entry and the `registry.cluster` entries in `/etc/hosts`, all at the same time. To recover:
 
-1. Set `lanAddress` in `cluster.nix` to the new address.
+1. Set `lanAddress` in `nixos/cluster.nix` to the new address.
 2. Stop Nomad and write `/var/lib/nomad/server/raft/peers.json` with the new address. This is the same step as in the first cluster rebuild.
 3. Rebuild cynic. cluster-tls issues a certificate for the new address, and cynic's `/etc/hosts` follows `lanAddress`.
 4. Update each client's `servers` entry and `/etc/hosts`, and the workstation's `/etc/hosts`.

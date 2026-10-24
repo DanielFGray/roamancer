@@ -6,11 +6,12 @@
   # From fw's DHCP, which has kept it stable. If the lease ever changes, the server
   # certificate, Raft's peer address and every client's `servers` entry break together.
   lanAddress = "10.13.37.196";
-  # Machines that run Nomad clients: atheist. The firewall lets them reach every TCP port
-  # here, so their jobs reach services such as Postgres's fixed 5432 and Nomad's dynamic
-  # ports. Every listener on the LAN has its own authentication; the address list only
-  # narrows who can try, on a bridge where addresses can be forged.
-  nodes = [ "10.13.37.83" ];
+  # Machines that run Nomad clients, by Nomad node name. The firewall lets them reach
+  # every TCP port here, so their jobs reach services such as Postgres's fixed 5432
+  # and Nomad's dynamic ports. Every listener on the LAN has its own authentication;
+  # the address list only narrows who can try, on a bridge where addresses can be
+  # forged.
+  nodes = { atheist = "10.13.37.83"; };
   # The laptop's WireGuard address. It may reach only the listeners behind the cluster CA
   # (cluster-tls.nix): images are pushed from it, and test VMs on the laptop join from it.
   workstation = "10.10.10.3";

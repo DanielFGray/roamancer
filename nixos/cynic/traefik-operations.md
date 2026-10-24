@@ -10,7 +10,7 @@ This host has no public domain, no ACME certificate and no TLS listener. `tailsc
 | --- | --- | --- |
 | Traefik process, entry point, providers | NixOS | `nixos/cynic/traefik.nix` |
 | Host health route, `static-sites` service | NixOS | `host.toml` in the routes folder, a link into the Nix store |
-| Caddy file server and its Caddyfile | NixOS | `nixos/cynic/static-sites.nix` |
+| Caddy file server and its Caddyfile | NixOS | `nixos/modules/static-sites.nix` |
 | Nomad application routes | Alchemy | tags on each release's Nomad service (`routeTags` in `tools/alchemy/src/ReleaseJob.ts`) |
 | Static site routes | the site's owner | one file per site in `/var/lib/traefik-routes` |
 | Static site releases | the site's owner | `/srv/www/<site>/<release>/` |

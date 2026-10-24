@@ -12,7 +12,7 @@
 { pkgs, ... }:
 let
   sealKeyCredential = "/var/lib/openbao-seal/seal-key.cred";
-  cluster = import ./cluster.nix;
+  cluster = import ../cluster.nix;
 in
 {
   services.openbao = {

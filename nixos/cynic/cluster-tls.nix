@@ -12,8 +12,8 @@
 # certificate, so back it up in the password manager (cluster-tls-operations.md).
 { pkgs, ... }:
 let
-  cluster = import ./cluster.nix;
-  nomad = pkgs.callPackage ./nomad-package.nix { };
+  cluster = import ../cluster.nix;
+  nomad = pkgs.callPackage ../modules/nomad-package.nix { };
   listeners = [ "nomad.service" "openbao.service" "docker-registry.service" ];
 in
 {
@@ -91,7 +91,7 @@ in
   networking.firewall.extraCommands = builtins.concatStringsSep "\n" (
     map (node: ''
       iptables -A nixos-fw -i ${cluster.lanInterface} -s ${node} -p tcp -j nixos-fw-accept
-    '') cluster.nodes
+    '') (builtins.attrValues cluster.nodes)
     ++ [ ''
       iptables -A nixos-fw -i ${cluster.lanInterface} -s ${cluster.workstation} -p tcp -m multiport --dports 4647,8200,${toString cluster.registryPort} -j nixos-fw-accept
     '' ]

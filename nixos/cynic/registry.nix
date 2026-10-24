@@ -1,7 +1,6 @@
 { ... }:
 let
-  cluster = import ./cluster.nix;
-  registry = "${cluster.registryName}:${toString cluster.registryPort}";
+  cluster = import ../cluster.nix;
   credentials = "/run/credentials/docker-registry.service";
 in
 {
@@ -37,10 +36,4 @@ in
       Restart = "on-failure";
     };
   };
-
-  networking.hosts.${cluster.lanAddress} = [ cluster.registryName ];
-
-  # Podman reads a registry's CA (ca.crt) and client pair (client.cert, client.key) from
-  # this folder. cluster-tls.service writes them.
-  environment.etc."containers/certs.d/${registry}".source = cluster.registryClientDir;
 }
