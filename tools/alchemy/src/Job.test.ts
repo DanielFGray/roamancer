@@ -4,6 +4,25 @@ import * as S from "effect/Schema";
 import { Job, toJobSpec, secretPolicyPaths } from "./Job.ts";
 
 describe("Nomad workload rendering", () => {
+  it("pins a job to its named node, and leaves placement to Nomad without one", () => {
+    const job = S.decodeUnknownSync(Job)({
+      name: "edge",
+      image: "127.0.0.1:5000/edge@sha256:0",
+      hostPort: 80,
+      containerPort: 80,
+      cpu: 100,
+      memoryMB: 64,
+      networkMode: "host",
+      environment: [],
+      connections: [],
+      node: "atheist",
+    });
+    assert.deepEqual(toJobSpec(job, "o").Constraints, [
+      { LTarget: "${node.unique.name}", RTarget: "atheist", Operand: "=" },
+    ]);
+    assert.equal(toJobSpec({ ...job, node: undefined }, "o").Constraints, undefined);
+    assert.equal(S.decodeUnknownOption(Job)({ ...job, node: "" })._tag, "None");
+  });
   it("routes a host and its API paths through Traefik tags, checked on the service's health path", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "giglist-api",

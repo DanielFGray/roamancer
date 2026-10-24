@@ -133,6 +133,9 @@ const JobBaseFields = {
   identity: S.optionalKey(S.Struct({ env: S.Boolean })),
   storage: S.optionalKey(Storage),
   readOnlyMounts: S.optionalKey(S.Array(Storage)),
+  // The Nomad node name (its agent `name`) the job must run on. Without it, Nomad
+  // places the job on any eligible node; host volumes still pin stateful jobs.
+  node: S.optionalKey(S.NonEmptyString),
   routes: S.optionalKey(S.Array(Route)),
   environment: S.Array(S.Struct({ name: EnvironmentVariable, value: S.String })),
   command: S.optionalKey(S.String),
@@ -360,6 +363,10 @@ export const toJobSpec = (job: Job, owner: string) => {
     Name: job.name,
     Type: "service",
     Datacenters: ["dc1"],
+    Constraints:
+      job.node === undefined
+        ? undefined
+        : [{ LTarget: "${node.unique.name}", RTarget: job.node, Operand: "=" }],
     Meta: { "alchemy.owner": owner, "alchemy.provider": "Nomad.Job" },
     TaskGroups: [
       {
