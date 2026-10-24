@@ -83,13 +83,10 @@ sudo nomad-acl-apply-policies
 
 This uses the stored management credential to refresh both declared policies.
 It creates no token and leaves existing token files unchanged. It associates
-the Traefik policy with Nomad job `traefik`, group `service`, task `server`,
-so its default workload identity can watch service events. Service listing
-alone does not prove event-stream permission. The token-issuance commands also
-run this policy refresh before creating their token.
-
-The existing systemd Traefik service still uses its stored client token until
-live ingress is moved. The high-port Nomad readiness job uses workload identity.
+the Traefik policy with Nomad job `traefik`, group `service`, task `server`:
+the ingress job in `tools/alchemy/platform/ingress`, which reads services with
+its default workload identity. The token-issuance command also runs this policy
+refresh before creating its token.
 
 ## The staged Alchemy token
 
@@ -120,32 +117,12 @@ sudo.
 The token has no expiry. It can be revoked at any time with
 `nomad acl token delete <accessor-id>`.
 
-## The Traefik token
+## The Traefik policy
 
-Traefik reads Nomad services to build its routes. It gets its own client token
-bound to the `traefik` policy, which grants `read-job` in the `default`
-namespace and nothing else.
-
-```sh
-sudo nomad-acl-issue-traefik
-sudo systemctl start traefik
-```
-
-The script writes `/var/lib/nomad-acl/traefik.token` and
-`/var/lib/nomad-acl/traefik.env`, both mode 0600 root. systemd reads the
-environment file before it starts Traefik as the `traefik` user, and the
-NixOS module substitutes `NOMAD_TOKEN` into the static configuration under
-`/run/traefik`. The unit does not start while the file is missing.
-
-Traefik makes three kinds of call. The existing client token passes these checks
-with `read-job`. A workload identity can list services implicitly, but the service
-event stream also needs the job-associated policy:
-
-| Traefik call | Result |
-| --- | --- |
-| `GET /v1/services` | 200 |
-| `GET /v1/service/:name` | 200 |
-| `GET /v1/event/stream?topic=Service` | 200 |
+The ingress job reads Nomad services to build its routes. Its workload identity
+can list services implicitly; reading one service needs `read-job`, which the
+job-associated `traefik` policy grants in the `default` namespace, and nothing
+else. The job needs no token file.
 
 ## What the controller policy allows
 

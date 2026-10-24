@@ -3,7 +3,7 @@
 # The Nomad listeners are bound to loopback, so only local processes can reach
 # the API. Loopback is not an identity: a workload that can reach the host
 # loopback can call the API. This module turns on Nomad's ACL enforcement and
-# gives the staged Alchemy commands and Traefik each their own narrow token.
+# gives the staged Alchemy commands a narrow token and the ingress job a narrow policy.
 #
 # Credentials never enter the Nix store. The store holds the ACL policy and
 # the operator scripts; the tokens live in root-owned runtime files under
@@ -57,9 +57,9 @@ let
     }
   '';
 
-  # The systemd Traefik service uses this client-token policy for discovery.
-  # A Nomad task's default workload identity can list services, but needs this
-  # job-associated policy to watch service events.
+  # The ingress job (tools/alchemy/platform/ingress) reads Nomad services with its
+  # workload identity. Listing services is implicit, but reading one service needs
+  # read-job, which this job-associated policy grants.
   traefikPolicy = ''
     namespace "default" {
       capabilities = ["read-job"]
@@ -115,7 +115,7 @@ let
     NOMAD_TOKEN=$(cat "$bootstrap")
     export NOMAD_TOKEN
     nomad acl policy apply alchemy-controller ${pkgs.writeText "alchemy-controller-policy.hcl" controllerPolicy}
-    # Service listing is implicit in workload identity; the event stream requires read-job.
+    # The ingress job reads single services, which needs read-job.
     nomad acl policy apply -namespace default -job traefik -group service -task server \
       traefik ${pkgs.writeText "traefik-policy.hcl" traefikPolicy}
   '';
@@ -191,12 +191,6 @@ let
     file = "controller";
     readerGroup = "alchemy";
   };
-
-  issueTraefik = issueScript {
-    command = "nomad-acl-issue-traefik";
-    policyName = "traefik";
-    file = "traefik";
-  };
 in
 {
   # Nomad merges every .hcl file in its configuration directory, so the ACL
@@ -225,6 +219,5 @@ in
     bootstrapScript
     applyPolicies
     issueController
-    issueTraefik
   ];
 }

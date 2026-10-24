@@ -52,7 +52,7 @@ Noneuclid stores editable levels in one SQLite file on the shared host volume. D
 
 ## Staged release proof
 
-`staged.run.ts` declares one `Nomad.ReleaseSet` from a JSON manifest. Each release uses a separate Nomad job with a dynamic host port. Routes are Traefik tags on each release job's Nomad service: the selected release carries the stable host and the candidate carries the preview host. Other releases carry no tags. Traefik reads the tags from Nomad, so a moved allocation keeps its route without an Alchemy run. See `nixos/cynic/traefik-operations.md`. Promotion and rollback change the selected release in the manifest. Keep the previous release in `releases` to keep it available for rollback.
+`staged.run.ts` declares one `Nomad.ReleaseSet` from a JSON manifest. Each release uses a separate Nomad job with a dynamic host port. Routes are Traefik tags on each release job's Nomad service: the selected release carries the stable host and the candidate carries the preview host. Other releases carry no tags. Traefik reads the tags from Nomad, so a moved allocation keeps its route without an Alchemy run. See `platform/ingress/README.md`. Promotion and rollback change the selected release in the manifest. Keep the previous release in `releases` to keep it available for rollback.
 
 A successful staged deploy records the exact applied manifest at `.alchemy/staged-active.json`, so edits to the working manifest do not cause an automatic promotion. A failed deploy attempts to re-apply the accepted manifest and then returns the original failure. No controller re-applies it automatically at boot.
 

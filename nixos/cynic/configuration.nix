@@ -4,8 +4,6 @@
     ../modules/base.nix
     ./nomad.nix
     ./registry.nix
-    ./traefik.nix
-    ../modules/static-sites.nix
     ./nomad-acl.nix
     ./openbao.nix
     ./herdr.nix

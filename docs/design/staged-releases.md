@@ -72,8 +72,8 @@ Alchemy sets the route tags in each release job spec. The selected release gets 
 
 The job spec is the whole desired state. No route state exists outside the job spec. Alchemy does not repair routes. A plan with no job change means the routes match the desired state.
 
-One Caddy process serves static sites behind Traefik. Caddy is a loopback static-site file server in this design. Caddy listens on `127.0.0.1:8080` only. A client outside the host reaches Caddy only through a Traefik route. The route selects the site release folder under `/srv/www`. See `nixos/cynic/traefik-operations.md` for the static-site route and header rules.
+One Caddy process on atheist serves static sites behind Traefik. Caddy is a loopback static-site file server in this design. Caddy listens on `127.0.0.1:8080` only. A client outside the host reaches Caddy only through a Traefik route. The route selects the site release folder under `/srv/www`. See `nixos/atheist/static-sites-operations.md` for the static-site route and header rules.
 
 History: the existing `tools/infra` path used Caddy as the ingress. It demonstrated preview URLs, health-checked promotion, and rollback. It wrote managed Caddyfile snippets and ran `caddy reload`. It did not use the Caddy admin API. A later design used the Caddy admin API as the ingress. Commit `2b4a453` replaced that design with Traefik on cynic.
 
-References: `nixos/cynic/traefik-operations.md`, `tools/alchemy/src/ReleaseJob.ts` (`routeTags`), and `tools/alchemy/src/ReleaseSet.ts`.
+References: `tools/alchemy/platform/ingress/README.md`, `tools/alchemy/src/ReleaseJob.ts` (`routeTags`), and `tools/alchemy/src/ReleaseSet.ts`.

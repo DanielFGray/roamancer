@@ -69,15 +69,6 @@ in
         path = "/var/lib/nomad/valkey-data"
         read_only = false
       }
-      # Route files include absolute symlinks into the Nix store.
-      host_volume "traefik-routes" {
-        path = "/var/lib/traefik-routes"
-        read_only = true
-      }
-      host_volume "nix-store" {
-        path = "/nix/store"
-        read_only = true
-      }
       host_volume "openobserve-data" {
         path = "/var/lib/nomad/openobserve-data"
         read_only = false
