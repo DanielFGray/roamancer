@@ -1,8 +1,8 @@
 # OpenBao, the secret store for the platform jobs.
 #
-# The listener binds loopback and serves plain HTTP. Nomad reaches it on the same
-# host (its Vault integration points at 127.0.0.1:8200 in nomad-podman.nix), so TLS
-# would only protect loopback traffic.
+# The default listener binds loopback and serves plain HTTP for this host: Nomad's
+# Vault integration, Alchemy and the unseal check. The lan listener serves other
+# machines' Nomad clients over mutual TLS.
 #
 # OpenBao unseals itself at start with a static seal key. The key sits on disk only as a
 # systemd credential encrypted with the VM's TPM, so a copy of the disk without the TPM
@@ -12,6 +12,7 @@
 { pkgs, ... }:
 let
   sealKeyCredential = "/var/lib/openbao-seal/seal-key.cred";
+  cluster = import ./cluster.nix;
 in
 {
   services.openbao = {
@@ -22,6 +23,16 @@ in
         type = "tcp";
         address = "127.0.0.1:8200";
         tls_disable = true;
+      };
+      # Nomad clients on other machines fetch their jobs' secrets here. Only holders of a
+      # cluster client certificate (cluster-tls.nix) get past the handshake.
+      listener.lan = {
+        type = "tcp";
+        address = "${cluster.lanAddress}:8200";
+        tls_cert_file = "/run/credentials/openbao.service/cert";
+        tls_key_file = "/run/credentials/openbao.service/key";
+        tls_client_ca_file = "/run/credentials/openbao.service/ca";
+        tls_require_and_verify_client_cert = true;
       };
       api_addr = "http://127.0.0.1:8200";
       cluster_addr = "http://127.0.0.1:8201";
@@ -72,7 +83,14 @@ in
     })
   ];
 
-  systemd.services.openbao.serviceConfig.LoadCredentialEncrypted = "seal-key:${sealKeyCredential}";
+  systemd.services.openbao.serviceConfig = {
+    LoadCredentialEncrypted = "seal-key:${sealKeyCredential}";
+    LoadCredential = [
+      "cert:${cluster.tlsDir}/global-server-nomad.pem"
+      "key:${cluster.tlsDir}/global-server-nomad-key.pem"
+      "ca:${cluster.tlsDir}/nomad-agent-ca.pem"
+    ];
+  };
 
   # A job whose allocation starts while OpenBao is sealed fails its Vault hook, and Nomad
   # does not retry that failure. Nomad therefore waits until OpenBao reports unsealed.

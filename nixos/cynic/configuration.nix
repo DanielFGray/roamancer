@@ -11,6 +11,7 @@
     ./openbao.nix
     ./herdr.nix
     ./backups.nix
+    ./cluster-tls.nix
   ];
 
   nixpkgs.overlays = [ (import ./bun.nix) ];

@@ -1,9 +1,8 @@
 { lib, pkgs, ... }:
 let
-  # cynic's private LAN interface. The firewall opens port 80 on this
-  # interface only, so the ingress is reachable from the LAN and from nowhere
-  # else.
-  lanInterface = "ens18";
+  # The firewall opens port 80 on cynic's LAN interface only, so the ingress is
+  # reachable from the LAN and from nowhere else.
+  inherit (import ./cluster.nix) lanInterface;
 
   # The health path belongs to the host and answers on every host name.
   # Application routes match by host name, and this router has the highest

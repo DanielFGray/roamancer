@@ -1,21 +1,7 @@
 { config, pkgs, ... }:
 let
-  nomad = pkgs.stdenvNoCC.mkDerivation {
-    pname = "nomad";
-    version = "2.0.7";
-    src = pkgs.fetchurl {
-      url = "https://releases.hashicorp.com/nomad/2.0.7/nomad_2.0.7_linux_amd64.zip";
-      hash = "sha256-TJuKCFDW/Zyq27qwmz5v34t3qnd3KVQ8cMYbhazKaME=";
-    };
-    nativeBuildInputs = [ pkgs.autoPatchelfHook pkgs.unzip ];
-    buildInputs = [ pkgs.glibc pkgs.zlib ];
-    dontUnpack = true;
-    dontBuild = true;
-    installPhase = ''
-      unzip -p $src nomad > nomad
-      install -Dm755 nomad $out/bin/nomad
-    '';
-  };
+  nomad = pkgs.callPackage ./nomad-package.nix { };
+  cluster = import ./cluster.nix;
 
   podmanDriver = pkgs.stdenvNoCC.mkDerivation {
     pname = "nomad-driver-podman";
@@ -102,13 +88,29 @@ in
   environment.etc."nomad.d/nomad.hcl".text = ''
     data_dir = "/var/lib/nomad"
     plugin_dir = "${podmanDriver}/bin"
-    # Local Alchemy commands and the agent share this host. Remote operators
-    # use SSH, so control-plane listeners need no LAN or tailnet exposure.
+    # HTTP stays on loopback: Alchemy, Traefik, the ACL scripts and OpenBao's JWKS
+    # fetch all run on this host. RPC is how other machines' Nomad clients reach this
+    # server, so it listens on the LAN behind mutual TLS (cluster-tls.nix). Serf
+    # carries only server-to-server traffic; it advertises the LAN address because
+    # Raft takes the server's peer address from it.
     bind_addr = "127.0.0.1"
+    addresses {
+      rpc = "${cluster.lanAddress}"
+      serf = "${cluster.lanAddress}"
+    }
     advertise {
       http = "127.0.0.1"
-      rpc = "127.0.0.1"
-      serf = "127.0.0.1"
+      rpc = "${cluster.lanAddress}"
+      serf = "${cluster.lanAddress}"
+    }
+
+    tls {
+      http = false
+      rpc = true
+      ca_file = "${cluster.tlsDir}/nomad-agent-ca.pem"
+      cert_file = "${cluster.tlsDir}/global-server-nomad.pem"
+      key_file = "${cluster.tlsDir}/global-server-nomad-key.pem"
+      verify_server_hostname = true
     }
 
     server {
@@ -126,8 +128,8 @@ in
 
     client {
       enabled = true
-      servers = ["127.0.0.1:4647"]
-      network_interface = "ens18"
+      servers = ["${cluster.lanAddress}:4647"]
+      network_interface = "${cluster.lanInterface}"
       options = {
         "driver.raw_exec.enable" = "0"
         "driver.exec.enable" = "0"
