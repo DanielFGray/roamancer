@@ -24,6 +24,9 @@
     enable = true;
     settings = {
       PasswordAuthentication = false;
+      # Without this, sshd still offers keyboard-interactive login, which PAM
+      # answers with a password prompt.
+      KbdInteractiveAuthentication = false;
       PermitRootLogin = "no";
     };
   };

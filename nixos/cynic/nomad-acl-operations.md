@@ -163,6 +163,8 @@ each one.
 | `POST /v1/job/:id/plan` | `submit-job` | `nomad/job_endpoint.go:1794` |
 | `POST /v1/jobs` | `submit-job` | `nomad/job_endpoint.go:154` |
 | `DELETE /v1/job/:id?purge=true` | `submit-job` | `nomad/job_endpoint.go:798` |
+| `GET /v1/job/:id/allocations` | `read-job` | `nomad/job_endpoint.go:1514` |
+| `GET /v1/client/fs/logs/:alloc` | `read-logs` | `client/fs_endpoint.go:385` |
 | job with a `host` volume | `mount-readwrite` on that volume | `nomad/job_endpoint.go:168` |
 
 The policy grants nothing else. The token cannot read nodes

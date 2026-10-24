@@ -24,6 +24,7 @@ let
         "list-jobs",
         "read-job",
         "submit-job",
+        "read-logs",
       ]
     }
 
