@@ -163,6 +163,9 @@ in
     plugin "nomad-driver-podman" {
       config {
         socket_path = "unix:///run/user/1001/podman.sock"
+        # Labels each container com.hashicorp.nomad.job_name and .task_name, so
+        # host tools (backups.nix) can find a job's container without a Nomad token.
+        extra_labels = ["job_name", "task_name"]
         volumes {
           enabled = true
         }
