@@ -118,6 +118,16 @@ const Storage = S.Struct({
   mountPath: S.String.check(S.isPattern(/^\/[A-Za-z0-9_./-]+$/)),
 });
 
+// Where Nomad runs the job. Without a placement, Nomad picks any eligible node, and a host
+// volume still keeps a stateful job on the machine that holds the volume.
+export const Placement = S.Union([
+  // One copy on each node, such as an agent that serves the node it runs on.
+  S.TaggedStruct("EveryNode", {}),
+  // Only the node with this Nomad agent `name`, such as the machine with a public address.
+  S.TaggedStruct("Node", { name: S.NonEmptyString }),
+]);
+export type Placement = typeof Placement.Type;
+
 const JobBaseFields = {
   name: ResourceName,
   image: S.String,
@@ -133,9 +143,7 @@ const JobBaseFields = {
   identity: S.optionalKey(S.Struct({ env: S.Boolean })),
   storage: S.optionalKey(Storage),
   readOnlyMounts: S.optionalKey(S.Array(Storage)),
-  // The Nomad node name (its agent `name`) the job must run on. Without it, Nomad
-  // places the job on any eligible node; host volumes still pin stateful jobs.
-  node: S.optionalKey(S.NonEmptyString),
+  placement: S.optionalKey(Placement),
   routes: S.optionalKey(S.Array(Route)),
   environment: S.Array(S.Struct({ name: EnvironmentVariable, value: S.String })),
   command: S.optionalKey(S.String),
@@ -361,12 +369,8 @@ export const toJobSpec = (job: Job, owner: string) => {
   return {
     ID: job.name,
     Name: job.name,
-    Type: "service",
+    ...toScheduling(job.placement),
     Datacenters: ["dc1"],
-    Constraints:
-      job.node === undefined
-        ? undefined
-        : [{ LTarget: "${node.unique.name}", RTarget: job.node, Operand: "=" }],
     Meta: { "alchemy.owner": owner, "alchemy.provider": "Nomad.Job" },
     TaskGroups: [
       {
@@ -406,6 +410,21 @@ export const toJobSpec = (job: Job, owner: string) => {
     },
   };
 };
+
+// Nomad's system scheduler runs one allocation on each eligible node; its service scheduler
+// places Count allocations wherever the constraints allow.
+const toScheduling = (placement: Placement | undefined) =>
+  placement === undefined
+    ? { Type: "service" as const, Constraints: undefined }
+    : Match.value(placement).pipe(
+        Match.tagsExhaustive({
+          EveryNode: () => ({ Type: "system" as const, Constraints: undefined }),
+          Node: ({ name }) => ({
+            Type: "service" as const,
+            Constraints: [{ LTarget: "${node.unique.name}", RTarget: name, Operand: "=" }],
+          }),
+        }),
+      );
 
 const toMounts = (job: Job) => [
   ...(job.storage === undefined ? [] : [{ ...job.storage, name: "data", readOnly: false }]),

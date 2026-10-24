@@ -196,7 +196,7 @@ const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => 
     identity: job.identity,
     storage: job.storage,
     readOnlyMounts: job.readOnlyMounts,
-    node: job.node,
+    placement: job.placement,
     routes: job.routes,
     environment: job.environment,
     command: job.command,

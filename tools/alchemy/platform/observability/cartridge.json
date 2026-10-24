@@ -48,6 +48,9 @@
       "cpu": 200,
       "memoryMB": 256,
       "networkMode": "host",
+      "placement": {
+        "_tag": "EveryNode"
+      },
       "environment": [
         {
           "name": "OTEL_CONFIG",
@@ -62,7 +65,9 @@
           "value": "ops@example.com"
         }
       ],
-      "args": ["--config=env:OTEL_CONFIG"],
+      "args": [
+        "--config=env:OTEL_CONFIG"
+      ],
       "connections": [
         {
           "service": "openobserve",
