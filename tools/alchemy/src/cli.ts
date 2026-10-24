@@ -43,8 +43,10 @@ const login = Command.make(
       const bao = yield* OpenBao;
       return yield* bao.createToken("2h");
     }).pipe(
+      // fresh: the program already shares an OpenBao built without a token; this one
+      // must read the root token from the prompt instead.
       Effect.provide(
-        OpenBao.layer.pipe(
+        Layer.fresh(OpenBao.layer).pipe(
           Layer.provide(
             ConfigProvider.layerAdd(
               ConfigProvider.fromEnvRecord({ OPENBAO_TOKEN: Redacted.value(rootToken) }),
