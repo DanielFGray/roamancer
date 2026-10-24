@@ -18,8 +18,8 @@ operator runs it once, by hand.
 | --- | --- | --- |
 | `nixos/cynic/nomad-acl.nix` | this slice | the module |
 | `/etc/nomad.d/acl.hcl` | Nix | the ACL block |
-| `/nix/store/...-alchemy-controller-policy.hcl` | Nix | the controller policy, applied by `nomad-acl-apply-policies` |
-| `/nix/store/...-traefik-policy.hcl` | Nix | the Traefik policy and workload association, applied by `nomad-acl-apply-policies` |
+| `/nix/store/...-alchemy-controller-policy.hcl` | Nix | the controller policy, applied by `nomad-cluster-apply` |
+| `/nix/store/...-traefik-policy.hcl` | Nix | the Traefik policy and workload association, applied by `nomad-cluster-apply` |
 | `/var/lib/nomad-acl/` | runtime | mode 0710 root:alchemy when that group exists; otherwise 0700 root:root |
 
 The Nix store holds the policies and the operator scripts. No token is written to
@@ -73,15 +73,17 @@ shell history.
 sudo sh -c 'export NOMAD_TOKEN="$(cat /var/lib/nomad-acl/bootstrap.token)"; exec nomad status'
 ```
 
-## Refresh policies without rotating credentials
+## Refresh policies and scheduler settings without rotating credentials
 
 After activating a change to `nomad-acl.nix`, run:
 
 ```sh
-sudo nomad-acl-apply-policies
+sudo nomad-cluster-apply
 ```
 
-This uses the stored management credential to refresh both declared policies.
+This uses the stored management credential to refresh both declared policies
+and to set the scheduler algorithm to `spread`, which places each allocation on
+the least-loaded node.
 It creates no token and leaves existing token files unchanged. It associates
 the Traefik policy with Nomad job `traefik`, group `service`, task `server`:
 the ingress job in `tools/alchemy/platform/ingress`, which reads services with

@@ -105,7 +105,10 @@ let
     echo "Bootstrap token stored in $file"
   '';
 
-  applyPolicies = pkgs.writeShellScriptBin "nomad-acl-apply-policies" ''
+  # Applies the cluster state Nomad keeps in Raft rather than in its config files: the
+  # ACL policies, and the scheduler algorithm (the server config's
+  # default_scheduler_config is read only when a cluster is first created).
+  applyCluster = pkgs.writeShellScriptBin "nomad-cluster-apply" ''
     set -euo pipefail
     bootstrap=${credentialDir}/bootstrap.token
     if [ ! -s "$bootstrap" ]; then
@@ -118,6 +121,9 @@ let
     # The ingress job reads single services, which needs read-job.
     nomad acl policy apply -namespace default -job traefik -group service -task server \
       traefik ${pkgs.writeText "traefik-policy.hcl" traefikPolicy}
+    # spread places each allocation on the least-loaded node. Stateful jobs still land
+    # on cynic, the only node with their host volumes.
+    nomad operator scheduler set-config -scheduler-algorithm=spread
   '';
 
   # Issues a client token from the stored bootstrap token. The policy is
@@ -149,7 +155,7 @@ let
       NOMAD_TOKEN=$(cat "$bootstrap")
       export NOMAD_TOKEN
 
-      ${applyPolicies}/bin/nomad-acl-apply-policies > /dev/null
+      ${applyCluster}/bin/nomad-cluster-apply > /dev/null
       nomad acl token create \
         -name="$name" \
         -type=client \
@@ -217,7 +223,7 @@ in
 
   environment.systemPackages = [
     bootstrapScript
-    applyPolicies
+    applyCluster
     issueController
   ];
 }
