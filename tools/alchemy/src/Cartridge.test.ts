@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as ConfigProvider from "effect/ConfigProvider";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
-import { expand, load, Cartridge } from "./Cartridge.ts";
+import { expand, find, kvKeys, load, Cartridge } from "./Cartridge.ts";
 import * as S from "effect/Schema";
 
 describe("cartridge v2", () => {
@@ -489,4 +489,53 @@ describe("cartridge v2", () => {
       assert.ok(cartridge);
     });
   }
+
+  it("finds a cartridge by its name, not its folder", async () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    const found = await Effect.runPromise(
+      find(root, "platform-data").pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    assert.equal(found.cartridge.name, "platform-data");
+    assert.ok(found.path.endsWith("/platform/data/cartridge.json"));
+  });
+
+  it("groups the KV keys a cartridge reads by path, across service and migration", () => {
+    const kv = (path: string, key: string) => ({ _tag: "KvSecret", path, key, env: "E" });
+    const service = (
+      name: string,
+      secrets: ReadonlyArray<unknown>,
+      migrate: ReadonlyArray<unknown>,
+    ) => ({
+      name,
+      image: "img",
+      hostPort: "dynamic",
+      containerPort: 80,
+      cpu: 100,
+      memoryMB: 128,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+      secrets,
+      migrate: { command: "m", args: [], secrets: migrate },
+    });
+    const cartridge = S.decodeUnknownSync(Cartridge)({
+      apiVersion: "server-ansible/v2",
+      name: "app",
+      services: [
+        service(
+          "web",
+          [kv("secret/data/app", "a"), kv("secret/data/app", "b")],
+          [kv("secret/data/app", "a")],
+        ),
+        service("worker", [kv("secret/data/shared", "c")], []),
+      ],
+    });
+    assert.deepEqual(
+      kvKeys(cartridge),
+      new Map([
+        ["secret/data/app", ["a", "b"]],
+        ["secret/data/shared", ["c"]],
+      ]),
+    );
+  });
 });

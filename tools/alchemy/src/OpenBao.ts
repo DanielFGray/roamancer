@@ -2,8 +2,12 @@ import { Config, Context, Effect, Layer, Option, Redacted, Schema as S } from "e
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 const KvValue = S.Struct({
-  data: S.Struct({ data: S.Record(S.String, S.String) }),
+  data: S.Struct({
+    data: S.Record(S.String, S.String),
+    metadata: S.Struct({ version: S.Number }),
+  }),
 });
+const CreatedToken = S.Struct({ auth: S.Struct({ client_token: S.String }) });
 const DatabaseConfig = S.Struct({
   data: S.Struct({
     connection_details: S.Struct({ connection_url: S.String }),
@@ -101,6 +105,9 @@ type WriteBody =
   | { readonly policy: string }
   | { readonly data: typeof ValkeyCredentials.Type }
   | { readonly data: typeof AdminCredential.Type }
+  // A KV v2 write that fails unless the secret is still at version `cas` (0: not yet written).
+  | { readonly options: { readonly cas: number }; readonly data: Readonly<Record<string, string>> }
+  | { readonly ttl: string }
   | {
       readonly role_type: "jwt";
       readonly bound_audiences: ReadonlyArray<string>;
@@ -148,6 +155,20 @@ export class OpenBao extends Context.Service<
       roles: ReadonlyArray<DatabaseRole>,
     ) => Effect.Effect<void, OpenBaoError>;
     readonly configureWorkloadRole: (role: WorkloadRole) => Effect.Effect<void, OpenBaoError>;
+    /** The key names stored at a KV v2 path; None when nothing is stored there. */
+    readonly readKvKeys: (
+      path: string,
+    ) => Effect.Effect<Option.Option<ReadonlyArray<string>>, OpenBaoError>;
+    /** Sets one key at a KV v2 path and keeps the others. Fails if another write landed in between. */
+    readonly writeKvKey: (
+      path: string,
+      key: string,
+      value: Redacted.Redacted<string>,
+    ) => Effect.Effect<void, OpenBaoError>;
+    /** Succeeds while the configured token is valid. */
+    readonly checkToken: () => Effect.Effect<void, OpenBaoError>;
+    /** A child of the configured token that expires after `ttl` (for example "2h"). */
+    readonly createToken: (ttl: string) => Effect.Effect<Redacted.Redacted<string>, OpenBaoError>;
   }
 >()("alchemy/OpenBao") {
   static readonly layer = Layer.effect(
@@ -408,7 +429,54 @@ export class OpenBao extends Context.Service<
         );
       });
 
+      const readKvEntry = Effect.fn("OpenBao.readKvEntry")(function* (path: string) {
+        const found = yield* getOptional("read secret", path);
+        if (Option.isNone(found)) return Option.none();
+        const value = yield* HttpClientResponse.schemaBodyJson(KvValue)(found.value).pipe(
+          Effect.mapError(() => new OpenBaoError({ operation: "decode secret", target: path })),
+        );
+        return Option.some(value.data);
+      });
+
+      const readKvKeys = Effect.fn("OpenBao.readKvKeys")(function* (path: string) {
+        const entry = yield* readKvEntry(path);
+        return Option.map(entry, (found) => Object.keys(found.data));
+      });
+
+      const writeKvKey = Effect.fn("OpenBao.writeKvKey")(function* (
+        path: string,
+        key: string,
+        value: Redacted.Redacted<string>,
+      ) {
+        const entry = yield* readKvEntry(path);
+        const current = Option.match(entry, {
+          onNone: () => ({ data: {}, version: 0 }),
+          onSome: (found) => ({ data: found.data, version: found.metadata.version }),
+        });
+        yield* request("write secret", path, "POST", path, {
+          options: { cas: current.version },
+          data: { ...current.data, [key]: Redacted.value(value) },
+        });
+      });
+
+      const checkToken = Effect.fn("OpenBao.checkToken")(function* () {
+        yield* request("check token", "auth/token/lookup-self", "GET", "auth/token/lookup-self");
+      });
+
+      const createToken = Effect.fn("OpenBao.createToken")(function* (ttl: string) {
+        const target = "auth/token/create";
+        const response = yield* request("create token", target, "POST", target, { ttl });
+        const created = yield* HttpClientResponse.schemaBodyJson(CreatedToken)(response).pipe(
+          Effect.mapError(() => new OpenBaoError({ operation: "decode token", target })),
+        );
+        return Redacted.make(created.auth.client_token);
+      });
+
       return OpenBao.of({
+        readKvKeys,
+        writeKvKey,
+        checkToken,
+        createToken,
         readKv,
         readValkeyCredentials,
         writeValkeyCredentials,

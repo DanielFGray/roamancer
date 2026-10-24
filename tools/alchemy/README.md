@@ -2,15 +2,20 @@
 
 This package deploys app cartridges and shared platform services through Alchemy and Nomad. NixOS owns hosts, rootless Podman, and host volumes. Recorded proofs cover Noneuclid on a disposable VM and shared PostgreSQL and Valkey on cynic.
 
-## Runner on cynic
+## Operator CLI
 
-The deploy runner lives at `tools/alchemy/scripts/alchemy-on-cynic.sh` in this repo.
-Copy it to cynic (`~/alchemy-on-cynic.sh`) and make it executable:
+`scripts/cynic` runs the operator CLI (`src/cli.ts`) on cynic from your machine. It syncs this folder to `~/alchemy` on cynic first, then runs `scripts/alchemy-on-cynic.sh` there over SSH. Cynic's Alchemy state and `node_modules` are not touched by the sync. Put `scripts` on your `PATH`, or alias it:
 
-    install -m755 tools/alchemy/scripts/alchemy-on-cynic.sh ~/alchemy-on-cynic.sh
+```sh
+cynic login                                  # once every 2 hours: mints an OpenBao token from the root token
+cynic deploy giglist                         # plan with `cynic plan giglist`
+cynic secret list giglist                    # each referenced key: set, MISSING, or unused; never values
+cynic secret set giglist github_client_secret  # prompts for the value
+cynic status giglist                         # each service's newest allocations
+cynic logs giglist --stderr                  # end of the server task's log; --service when there are several
+```
 
-Run it as `alchemy-on-cynic.sh <plan|deploy> <stage> <cartridge path relative to ~/alchemy>`.
-It reads `/var/lib/nomad-acl/controller.env` directly, with no sudo prompt.
+Commands take a cartridge's `name`, not its path; the CLI finds it under `apps/*/` or `platform/*/`. `secret set` accepts only a key that the cartridge references with a `KvSecret`, at that reference's path, so a misspelled key fails before anything is stored. It keeps the other keys at that path. Nomad restarts a running task when a value it reads changes. The runner reads the Nomad token from `/var/lib/nomad-acl/controller.env`, so no command needs sudo.
 
 ## Plan and deploy
 

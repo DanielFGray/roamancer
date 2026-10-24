@@ -84,6 +84,22 @@ const AllocationCheck = S.Struct({
 export const AllocationChecksSchema = S.Record(S.String, AllocationCheck);
 export type AllocationChecks = typeof AllocationChecksSchema.Type;
 
+const TaskState = S.Struct({ State: S.String, Failed: S.Boolean, Restarts: S.Number });
+
+export const AllocationSummarySchema = S.Struct({
+  ID: S.String,
+  TaskGroup: S.String,
+  DesiredStatus: S.String,
+  ClientStatus: S.String,
+  JobVersion: S.Number,
+  // Nanoseconds since the Unix epoch.
+  CreateTime: S.Number,
+  TaskStates: S.NullOr(S.Record(S.String, TaskState)),
+});
+export type AllocationSummary = typeof AllocationSummarySchema.Type;
+
+export type LogStream = "stdout" | "stderr";
+
 type JobRequest = {
   readonly Job: ReturnType<typeof toJobSpec> | ReleaseJobSpec;
   readonly Diff?: boolean;
@@ -120,6 +136,16 @@ export class Nomad extends Context.Service<
       id: string,
     ) => Effect.Effect<Option.Option<AllocationChecks>, NomadError>;
     readonly stop: (name: string) => Effect.Effect<void, NomadError>;
+    readonly allocations: (
+      job: string,
+    ) => Effect.Effect<ReadonlyArray<AllocationSummary>, NomadError>;
+    /** The last `bytes` bytes of one task's log. */
+    readonly logs: (
+      allocation: string,
+      task: string,
+      stream: LogStream,
+      bytes: number,
+    ) => Effect.Effect<string, NomadError>;
   }
 >()("alchemy/Nomad") {}
 
@@ -244,6 +270,30 @@ export const layer = () =>
           requestJson("stop", "DELETE", `/v1/job/${encodeURIComponent(name)}?purge=true`).pipe(
             Effect.asVoid,
           ),
+        allocations: (job) =>
+          requestJson("allocations", "GET", `/v1/job/${encodeURIComponent(job)}/allocations`).pipe(
+            Effect.flatMap((response) =>
+              decode("allocations", response, S.Array(AllocationSummarySchema)),
+            ),
+          ),
+        logs: (allocation, task, stream, bytes) => {
+          const query = new URLSearchParams({
+            task,
+            type: stream,
+            plain: "true",
+            origin: "end",
+            offset: String(bytes),
+          });
+          return requestJson(
+            "logs",
+            "GET",
+            `/v1/client/fs/logs/${encodeURIComponent(allocation)}?${query}`,
+          ).pipe(
+            Effect.flatMap((response) =>
+              response.text.pipe(Effect.mapError((cause) => new NomadError({ op: "logs", cause }))),
+            ),
+          );
+        },
       });
     }).pipe(Effect.orDie),
   );

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs the operator CLI on cynic from this machine: `cynic deploy giglist`,
+# `cynic secret set giglist github_client_secret`, `cynic --help`.
+# It first syncs tools/alchemy to ~/alchemy on cynic, so cynic runs the
+# cartridges and code in this checkout. Cynic's Alchemy state and node_modules stay.
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd)
+rsync -a --exclude node_modules --exclude .alchemy --exclude logs "$here/" cynic.dlab:alchemy/
+quoted=""
+for arg in "$@"; do quoted="$quoted '$(printf %s "$arg" | sed "s/'/'\\\\''/g")'"; done
+# The remote shell starts in the home folder.
+exec ssh -t cynic.dlab "alchemy/scripts/alchemy-on-cynic.sh$quoted"

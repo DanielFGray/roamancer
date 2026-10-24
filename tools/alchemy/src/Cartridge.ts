@@ -254,7 +254,73 @@ export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> =>
 
 /** Read and validate the project-owned workload declaration. */
 export const load = Effect.fn(function* () {
-  const path = yield* Config.String("ALCHEMY_CARTRIDGE");
+  return yield* decodeFile(yield* Config.String("ALCHEMY_CARTRIDGE"));
+});
+
+/** The folders under the Alchemy root that hold one cartridge each. */
+export const cartridgeFolders = ["apps", "platform"] as const;
+
+/**
+ * Finds the cartridge named `name` under `root`, in `apps/<folder>/cartridge.json`
+ * or `platform/<folder>/cartridge.json`. A folder's name need not match its
+ * cartridge's name (platform/data holds platform-data), so every cartridge is read.
+ */
+export const find = Effect.fn("Cartridge.find")(function* (root: string, name: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const paths = yield* Effect.forEach(cartridgeFolders, (folder) =>
+    fs
+      .readDirectory(`${root}/${folder}`)
+      .pipe(
+        Effect.map((entries) =>
+          entries.map((entry) => `${root}/${folder}/${entry}/cartridge.json`),
+        ),
+      ),
+  ).pipe(
+    Effect.map((lists) => lists.flat()),
+    Effect.flatMap(Effect.filter((path) => fs.exists(path))),
+    Effect.mapError(
+      (cause) =>
+        new Config.ConfigError(
+          new ConfigProvider.SourceError({
+            message: `Could not list cartridges in '${root}'`,
+            cause,
+          }),
+        ),
+    ),
+  );
+  const cartridges = yield* Effect.forEach(paths, (path) =>
+    decodeFile(path).pipe(Effect.map((cartridge) => ({ path, cartridge }))),
+  );
+  const found = cartridges.find((entry) => entry.cartridge.name === name);
+  if (found === undefined) {
+    const known = cartridges.map((entry) => entry.cartridge.name).join(", ");
+    return yield* Effect.fail(
+      new Config.ConfigError(
+        new ConfigProvider.SourceError({
+          message: `No cartridge named '${name}'. Known: ${known}`,
+        }),
+      ),
+    );
+  }
+  return found;
+});
+
+/** Each OpenBao KV path the cartridge's services read, with the keys it reads there. */
+export const kvKeys = (cartridge: Cartridge) => {
+  const references = cartridge.services.flatMap((service) =>
+    [...(service.secrets ?? []), ...(service.migrate?.secrets ?? [])].filter(
+      (secret) => secret._tag === "KvSecret",
+    ),
+  );
+  return new Map(
+    [...new Set(references.map((reference) => reference.path))].map((path) => [
+      path,
+      [...new Set(references.filter((r) => r.path === path).map((r) => r.key))],
+    ]),
+  );
+};
+
+const decodeFile = Effect.fn("Cartridge.decodeFile")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem;
   const contents = yield* fs.readFileString(path).pipe(
     Effect.mapError(
