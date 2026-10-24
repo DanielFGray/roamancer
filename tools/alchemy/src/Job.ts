@@ -413,7 +413,7 @@ export const toJobSpec = (job: Job, owner: string) => {
 
 // Nomad's system scheduler runs one allocation on each eligible node; its service scheduler
 // places Count allocations wherever the constraints allow.
-const toScheduling = (placement: Placement | undefined) =>
+export const toScheduling = (placement: Placement | undefined) =>
   placement === undefined
     ? { Type: "service" as const, Constraints: undefined }
     : Match.value(placement).pipe(

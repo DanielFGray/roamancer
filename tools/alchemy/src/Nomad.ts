@@ -19,6 +19,8 @@ const NomadMeta = S.Struct({
 
 const JobSnapshot = S.Struct({
   ID: S.String,
+  // The scheduler: "service" places Count allocations, "system" one on each node.
+  Type: S.String,
   Version: S.Number,
   // Nomad sets this once a deployment of this version succeeds.
   Stable: S.Boolean,

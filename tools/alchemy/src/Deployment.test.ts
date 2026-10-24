@@ -8,6 +8,7 @@ import type { Deployment, JobSnapshot } from "./Nomad.ts";
 const owner = "cartridge/platform-data/postgres";
 const job: JobSnapshot = {
   ID: "postgres",
+  Type: "service",
   Version: 3,
   Stable: false,
   JobModifyIndex: 41,

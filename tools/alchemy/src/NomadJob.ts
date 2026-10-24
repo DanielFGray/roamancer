@@ -10,7 +10,7 @@ import * as Order from "effect/Order";
 import * as Result from "effect/Result";
 import * as S from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { Job, secretPolicyPaths, workloadRole } from "./Job.ts";
+import { Job, secretPolicyPaths, toScheduling, workloadRole } from "./Job.ts";
 import { settle } from "./Deployment.ts";
 import { Nomad } from "./Nomad.ts";
 import type { AllocationSummary, JobSnapshot } from "./Nomad.ts";
@@ -106,9 +106,22 @@ export const NomadJobProvider = () =>
                     "Nomad already has this exact job version, and its deployment never succeeded. Nomad deploys only a changed job, so fix the cause and change the job, or stop it first.",
                 });
               }
+              // Nomad refuses to register a job under another type, such as a service job
+              // that becomes a system job to run on every node. Purge ours first, so the
+              // registration creates the job anew; the job is down until it is placed again.
+              const retyped = Option.filter(
+                live.current,
+                (job) =>
+                  job.Type !== toScheduling(news.placement).Type &&
+                  Option.getOrUndefined(ownerOf(job)) === fqn,
+              );
+              const current = yield* Option.match(retyped, {
+                onNone: () => Effect.succeed(live.current),
+                onSome: (job) => nomad.stop(job.ID).pipe(Effect.as(Option.none<JobSnapshot>())),
+              });
               // A failed apply can leave Alchemy state behind Nomad. Use the live index
               // so a retry can safely finish an update that Nomad already accepted.
-              const expectedModifyIndex = Option.match(live.current, {
+              const expectedModifyIndex = Option.match(current, {
                 onNone: () => 0,
                 onSome: (job) => job.JobModifyIndex,
               });
