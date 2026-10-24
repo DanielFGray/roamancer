@@ -6,7 +6,7 @@ This repository is rebuilding its application deployment platform around three o
 - **Nomad** places and runs application containers.
 - **Alchemy** declares and reconciles application state through Nomad.
 
-OpenBao remains the secret store. Application declarations must contain secret references, not secret values. Existing Ansible hosts remain under `tools/infra` until the production host is rebuilt from backup on fresh NixOS. The NixOS testground is a disposable proof environment.
+OpenBao remains the secret store. Application declarations must contain secret references, not secret values. The current production host, `atheist`, runs Caddy and Docker configured by hand; no code in this repository manages it. It moves to NixOS next. The NixOS testground is a disposable proof environment.
 
 ## Cynic host
 
@@ -38,7 +38,6 @@ inside the builder's Nix store and does not deploy or activate anything.
 
 Traefik is the HTTP entry point on `cynic`, and one Caddy process behind it on loopback serves every static site. Nomad application routes are tags on their Nomad services, which Traefik follows as allocations move. The host firewall allows port 80 only on `ens18`; port 443 is closed. See [Ingress on cynic](nixos/cynic/traefik-operations.md).
 
-Production inventory puts `web01` in the `nixos` group. Every play in `site.yml` excludes that group. Its peer address remains in inventory for the existing `atheist` configuration. The disposable Ansible testground keeps its own inventory and retains its web-node plays.
 
 Nomad control-plane listeners use loopback. Operators must use SSH to run Nomad commands or forward port 4646. Application ports still require a tested private routing and firewall policy. The host-owned Alchemy runner is configured in the root flake but is not activated on this host yet.
 
@@ -94,4 +93,4 @@ The release proof used a disposable single-node NixOS VM, two digest-pinned `who
 - Repair the Nix image build so a fresh disk boots without a manual filesystem repair.
 - Replace testground firewall and VM defaults with production NixOS policy before reuse.
 
-Use [`docs/research`](docs/research) for current PostgreSQL research. [`docs/hardening`](docs/hardening) tracks `tools/infra` control-plane work for the current hosts; it does not define application deployment on NixOS.
+Use [`docs/research`](docs/research) for current PostgreSQL research.
