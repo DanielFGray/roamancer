@@ -83,6 +83,14 @@ journalctl -u traefik -f
 ls -l /var/lib/traefik-routes
 ```
 
+The routes directory is mode 2775 root:alchemy, so members of the `alchemy`
+group write route files without sudo; new files inherit the group. A deploy
+writes the static-site route with:
+
+```sh
+install -m644 ~/alchemy/apps/static-sites/sites.toml /var/lib/traefik-routes/sites.toml
+```
+
 List the Nomad services that carry Traefik tags:
 
 ```sh

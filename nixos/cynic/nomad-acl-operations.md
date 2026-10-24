@@ -112,6 +112,11 @@ The script applies the policy, creates a client token named
 The script prints which of the two it wrote. When the `alchemy` group does not
 exist yet, the environment file stays root-only and the script says so.
 
+After the rebuild that creates the `alchemy` group, run
+`sudo nomad-acl-issue-controller` once more so the credential directory and
+`controller.env` take the group; the runner then reads the env file without
+sudo.
+
 The token has no expiry. It can be revoked at any time with
 `nomad acl token delete <accessor-id>`.
 

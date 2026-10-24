@@ -10,6 +10,7 @@
     ./nomad-acl.nix
     ./openbao.nix
     ./herdr.nix
+    ./backups.nix
   ];
 
   # disko sets the GRUB device from disk-config.nix.
@@ -50,10 +51,12 @@
     htop
   ];
 
+  users.groups.alchemy = { };
+
   users.users.dan = {
     isNormalUser = true;
     shell = pkgs.zsh;
-    extraGroups = [ "wheel" ];
+    extraGroups = [ "wheel" "alchemy" ];
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA4+6wknF8UcGuuWT1U4c0X29YDyRuWuB1b014Hyo57F danielfgray@gmail.com"
     ];

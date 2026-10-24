@@ -83,7 +83,10 @@ in
   };
 
   systemd.tmpfiles.rules = [
-    "d ${routesDir} 0755 root root -"
+    # Setgid, root:alchemy: members of the alchemy group may write route files
+    # here without sudo; new files take the alchemy group so later deploys can
+    # replace them. host.toml stays a NixOS-owned symlink (root:root).
+    "d ${routesDir} 2775 root alchemy -"
     "L+ ${routesDir}/host.toml - - - - ${hostRoutes}"
   ];
 

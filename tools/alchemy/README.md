@@ -2,6 +2,16 @@
 
 This package deploys app cartridges and shared platform services through Alchemy and Nomad. NixOS owns hosts, rootless Podman, and host volumes. Recorded proofs cover Noneuclid on a disposable VM and shared PostgreSQL and Valkey on cynic.
 
+## Runner on cynic
+
+The deploy runner lives at `tools/alchemy/scripts/alchemy-on-cynic.sh` in this repo.
+Copy it to cynic (`~/alchemy-on-cynic.sh`) and make it executable:
+
+    install -m755 tools/alchemy/scripts/alchemy-on-cynic.sh ~/alchemy-on-cynic.sh
+
+Run it as `alchemy-on-cynic.sh <plan|deploy> <stage> <cartridge path relative to ~/alchemy>`.
+It reads `/var/lib/nomad-acl/controller.env` directly, with no sudo prompt.
+
 ## Plan and deploy
 
 A cartridge is a versioned JSON file that describes services and their data needs. The platform orders jobs by their dependencies. The app repository owns `deploy/cartridge.json`. Set its path and connect to the target Nomad API before planning or deploying. This example assumes a local API or an SSH forward on port `4646`:
@@ -230,7 +240,9 @@ Nomad's node and allocation metrics are available for a scraper. The endpoint do
 `platform/observability/cartridge.json` declares two Nomad jobs that the platform runs for every app:
 
 - `openobserve` stores traces, logs and metrics. It uses the `openobserve-data` host volume and the `alchemy-openobserve` OpenBao role. Its root password comes from `secret/data/platform/openobserve`, key `root_password`.
-- `otel-collector` receives OTLP over HTTP on the job's dynamic port. It also scrapes Nomad's `/v1/metrics` endpoint and forwards everything to `openobserve`. It uses the `alchemy-otel-collector` role and the same password. Its config is the `OTEL_CONFIG` environment value, read with `--config=env:OTEL_CONFIG`.
+- `otel-collector` runs on the host network and receives OTLP over HTTP on the node's LAN address, port 4318, OTLP/HTTP's standard port. It also scrapes Nomad's `/v1/metrics` endpoint and forwards everything to `openobserve`. It uses the `alchemy-otel-collector` role and the same password. Its config is the `OTEL_CONFIG` environment value, read with `--config=env:OTEL_CONFIG`.
+
+Every Nomad task that Alchemy renders gets `OTEL_EXPORTER_OTLP_ENDPOINT=http://host.containers.internal:4318`. Inside a rootless Podman container the node's LAN address is the container's own address, so only `host.containers.internal` reaches the collector on the host. The value stays the same when the collector restarts, and no task restarts with it. A task's own `environment` entry of the same name replaces it. An app exports a signal only when its cartridge also sets that signal's exporter, for example `OTEL_TRACES_EXPORTER=otlp` and `OTEL_LOGS_EXPORTER=otlp`.
 
 Plan it in its own stage, named after the cartridge. The stage separates its resources from the platform-data and app resources in local state:
 
@@ -242,7 +254,7 @@ Before the first deploy, write the root password to OpenBao and configure the pl
 
 Checked on the workstation with OpenObserve v1.1.2 and the collector v0.131.0 image. OpenObserve accepted OTLP traces, logs and metrics. The collector scraped a stand-in Nomad endpoint and sent an app-style trace through its OTLP receiver. Both reached OpenObserve and were queryable. The collector config validates. The loader now accepts either declaration order and places OpenObserve before its collector consumer.
 
-Not checked: that Nomad's `/v1/metrics` returns data to the collector on the testground VM, that `host.containers.internal` reaches Nomad from a bridge network, that Nomad leaves the `${env:...}` references in `OTEL_CONFIG` unchanged, and the memory use of OpenObserve under real load. That workstation proof did not deploy observability on cynic. Cynic's Nix configuration now declares the `openobserve-data` volume; deployment still needs a Nomad ACL token for the scrape and approval.
+Checked on cynic on 2026-10-23: giglist and noneuclid traces and logs reach OpenObserve through the collector. The Nomad scrape failed there for two reasons: Nomad served no Prometheus format until its `telemetry` block turned it on, and a bridge-network container cannot reach Nomad, which listens only on the host's loopback address (`host.containers.internal` reaches the host's other addresses only). The collector therefore runs on the host network, scrapes `127.0.0.1:4646`, and binds its OTLP receiver to `NOMAD_ADDR_service`, the node's LAN address and port 4318. Tasks reach that receiver through `host.containers.internal`; checked from a bridge container on 2026-10-23, where `10.13.37.196:4318` timed out. Not checked: the memory use of OpenObserve under real load.
 
 ## Current limits
 
