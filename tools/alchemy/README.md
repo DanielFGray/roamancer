@@ -2,34 +2,35 @@
 
 This package deploys app cartridges and shared platform services through Alchemy and Nomad. NixOS owns hosts, rootless Podman, and host volumes. Recorded proofs cover Noneuclid on a disposable VM and shared PostgreSQL and Valkey on cynic.
 
-## Operator CLI
+## Operator commands
 
-`scripts/cynic` runs the operator CLI (`src/cli.ts`) on cynic from your machine. It syncs this folder to `~/alchemy` on cynic first, then runs `scripts/alchemy-on-cynic.sh` there over SSH. Cynic's Alchemy state and `node_modules` are not touched by the sync. Put `scripts` on your `PATH`, or alias it:
+`scripts/ops` runs every operator command on the control host from your machine. The control host runs the Nomad server, OpenBao and the Alchemy state; it is `cynic.dlab` unless `OPS_HOST` names another. `ops` syncs this folder to `~/alchemy` there, then runs `scripts/ops-on-host.sh` over SSH. The sync leaves the host's Alchemy state and `node_modules` alone. Put `scripts` on your `PATH`, or alias it:
 
 ```sh
-cynic login                                  # once every 2 hours: mints an OpenBao token from the root token
-cynic deploy giglist                         # plan with `cynic plan giglist`
-cynic secret list giglist                    # each referenced key: set, MISSING, or unused; never values
-cynic secret set giglist github_client_secret  # prompts for the value
-cynic status giglist                         # each service's newest allocations
-cynic logs giglist --stderr                  # end of the server task's log; --service when there are several
+ops login                                  # once every 2 hours: mints an OpenBao token from the root token
+ops plan --stage giglist                   # Alchemy plan; `ops deploy --stage giglist` applies it
+ops logs --stage giglist                   # Alchemy: recent log lines of every running task; --tail follows them
+ops secret list giglist                    # each referenced key: set, MISSING, or unused; never values
+ops secret set giglist github_client_secret  # prompts for the value
+ops status giglist                         # each service's newest allocations
 ```
 
-Commands take a cartridge's `name`, not its path; the CLI finds it under `apps/*/` or `platform/*/`. `secret set` accepts only a key that the cartridge references with a `KvSecret`, at that reference's path, so a misspelled key fails before anything is stored. It keeps the other keys at that path. Nomad restarts a running task when a value it reads changes. The runner reads the Nomad token from `/var/lib/nomad-acl/controller.env`, so no command needs sudo.
+`plan`, `deploy`, `destroy`, `logs --stage`, `state` and `drift` are Alchemy's own commands. The runner checks the OpenBao token before `plan`, `deploy`, `destroy` and `drift`, which read OpenBao. The stage is a cartridge's `name`: the stack finds that cartridge under `apps/*/` or `platform/*/`. The other commands are `src/cli.ts`, for what Alchemy has no place for. The NomadJob provider serves `alchemy logs`: it reads stdout and stderr of each running task in the newest running allocation, with the time podman recorded for each line.
+
+`secret set` accepts only a key that the cartridge references with a `KvSecret`, at that reference's path, so a misspelled key fails before anything is stored. It keeps the other keys at that path. Nomad restarts a running task when a value it reads changes. The runner reads the Nomad token from `/var/lib/nomad-acl/controller.env`, so no command needs sudo.
 
 ## Plan and deploy
 
-A cartridge is a versioned JSON file that describes services and their data needs. The platform orders jobs by their dependencies. The app repository owns `deploy/cartridge.json`. Set its path and connect to the target Nomad API before planning or deploying. This example assumes a local API or an SSH forward on port `4646`:
+A cartridge is a versioned JSON file that describes services and their data needs. The platform orders jobs by their dependencies. Each cartridge lives in this package at `apps/<name>/cartridge.json` or `platform/<name>/cartridge.json`, and the stage selects it by its `name`. Connect to the target Nomad API before planning or deploying. This example assumes a local API or an SSH forward on port `4646`:
 
 ```sh
 export NOMAD_ADDR=http://127.0.0.1:4646
-export ALCHEMY_CARTRIDGE=/path/to/noneuclid/deploy/cartridge.json
 cd tools/alchemy
 bun run plan --stage noneuclid
 bun run deploy --stage noneuclid
 ```
 
-`NOMAD_TOKEN` is optional only on an ACL-free testground. The stage must equal the cartridge's `name`; the runner rejects a mismatch. State is local and separated by stage. Use the same control machine and state directory for later plans. `bun run destroy --stage noneuclid` removes that cartridge's managed resources, not the Nix host volume. Use `--stage platform-data` for the shared server cartridge.
+`NOMAD_TOKEN` is optional only on an ACL-free testground. State is local and separated by stage. Use the same control machine and state directory for later plans. `bun run destroy --stage noneuclid` removes that cartridge's managed resources, not the Nix host volume. Use `--stage platform-data` for the shared server cartridge.
 
 The Nomad provider records reconcile and delete operations in `.alchemy/operations.sqlite`. If a process stops after an operation starts but before it records the result, the next plan detects that pending operation and reconciles the resource against live Nomad state. Inspect the history with `bun run history`. Keep the journal and Alchemy state under `.alchemy` together. This is local operation history, not shared state or a backup. The staged plan, deploy, and destroy commands use `staged-host-runner.sh`, which snapshots input and serializes applies through one lock. The NixOS module gives the operator command the `/var/lib/alchemy` state directory.
 
@@ -252,7 +253,7 @@ Every Nomad task that Alchemy renders gets `OTEL_EXPORTER_OTLP_ENDPOINT=http://h
 Plan it in its own stage, named after the cartridge. The stage separates its resources from the platform-data and app resources in local state:
 
 ```sh
-ALCHEMY_CARTRIDGE=$PWD/platform/observability/cartridge.json bun run plan --stage platform-observability
+bun run plan --stage platform-observability
 ```
 
 Before the first deploy, write the root password to OpenBao and configure the platform mounts and Nomad JWT authentication. `NomadJob` creates the job-bound roles and policies during reconciliation, so the Alchemy process needs permission to write them. Narrowing that permission remains security work.

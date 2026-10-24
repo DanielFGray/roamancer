@@ -9,7 +9,6 @@ Host networking lets Traefik reach Nomad and Caddy on loopback. The read-only `t
 From `tools/alchemy`, with the Nomad API reachable and `NOMAD_TOKEN` set for deployment:
 
 ```sh
-export ALCHEMY_CARTRIDGE=$PWD/platform/ingress/cartridge.json
 bun run plan --stage platform-ingress
 bun run deploy --stage platform-ingress
 ```

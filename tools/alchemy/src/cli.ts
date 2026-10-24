@@ -1,7 +1,8 @@
 /**
- * The operator CLI on cynic: deploy a cartridge by name, set and list its
- * OpenBao secrets, and read its Nomad status and logs. `scripts/cynic` runs it
- * from the laptop over SSH, through `scripts/alchemy-on-cynic.sh`.
+ * The commands Alchemy has no place for: OpenBao login, a cartridge's secrets,
+ * and its Nomad allocation status. Deploys, plans and logs are Alchemy's own
+ * commands. `scripts/ops` runs both kinds from the laptop over SSH, through
+ * `scripts/ops-on-host.sh`.
  */
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
@@ -14,17 +15,20 @@ import {
   Layer,
   Option,
   Redacted,
+  Runtime,
 } from "effect";
 import { Schema as S } from "effect";
-import { Argument, Command, Flag, Prompt } from "effect/cli";
+import { Argument, Command, Prompt } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Cartridge from "./Cartridge.ts";
 import * as NomadLive from "./Nomad.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
 
-export class CliError extends S.TaggedError<CliError>()("CliError", { message: S.String }) {}
+/** A failure the operator can act on: printed as its message alone, without a stack trace. */
+export class CliError extends S.TaggedError<CliError>()("CliError", { message: S.String }) {
+  readonly [Runtime.errorReported] = false;
+}
 
 const root = ".";
 const name = Argument.String("name").pipe(Argument.withDescription("The cartridge's name"));
@@ -55,6 +59,10 @@ const login = Command.make(
     yield* Console.log(`OpenBao token for 2 hours written to ${tokenFile}.`);
   }),
 ).pipe(Command.withDescription("Mint a 2-hour OpenBao token from the root token"));
+
+const checkLogin = Command.make("check-login", {}, () => requireLogin).pipe(
+  Command.withDescription("Fail unless the OpenBao token from `login` is still valid"),
+);
 
 const secretSet = Command.make(
   "set",
@@ -135,84 +143,6 @@ const status = Command.make(
   }),
 ).pipe(Command.withDescription("Show each service's newest allocations"));
 
-const logs = Command.make(
-  "logs",
-  {
-    name,
-    service: Flag.String("service").pipe(
-      Flag.withDescription("The service, when the cartridge has more than one"),
-      Flag.optional,
-    ),
-    task: Flag.String("task").pipe(
-      Flag.withDescription("The task: server, or migrate for the migration"),
-      Flag.withDefault("server"),
-    ),
-    stderr: Flag.Boolean("stderr").pipe(
-      Flag.withDescription("Read standard error, not standard output"),
-      Flag.withDefault(false),
-    ),
-    bytes: Flag.Int("bytes").pipe(
-      Flag.withDescription("How much of the end of the log to show"),
-      Flag.withDefault(20_000),
-    ),
-  },
-  Effect.fn(function* ({ name, service, task, stderr, bytes }) {
-    const { cartridge } = yield* Cartridge.find(root, name);
-    const services = cartridge.services.map((entry) => entry.name);
-    const job = yield* Option.match(service, {
-      onSome: (chosen) =>
-        services.includes(chosen)
-          ? Effect.succeed(chosen)
-          : Effect.fail(
-              new CliError({
-                message: `${name} has no service '${chosen}'. Services: ${services.join(", ")}`,
-              }),
-            ),
-      onNone: () => {
-        const [only, ...others] = services;
-        return only !== undefined && others.length === 0
-          ? Effect.succeed(only)
-          : Effect.fail(
-              new CliError({
-                message: `${name} has several services; pass --service with one of: ${services.join(", ")}`,
-              }),
-            );
-      },
-    });
-    const nomad = yield* Nomad;
-    const allocations = newestFirst(yield* nomad.allocations(job));
-    const allocation =
-      allocations.find((entry) => entry.ClientStatus === "running") ?? allocations[0];
-    if (allocation === undefined)
-      return yield* new CliError({ message: `${job} has no allocations` });
-    const text = yield* nomad.logs(allocation.ID, task, stderr ? "stderr" : "stdout", bytes);
-    yield* Console.log(`# ${job} ${allocation.ID.slice(0, 8)} ${allocation.ClientStatus} ${task}`);
-    yield* Console.log(text);
-  }),
-).pipe(Command.withDescription("Print the end of a service's log from its newest allocation"));
-
-const alchemyCommand = (action: "plan" | "deploy") =>
-  Command.make(
-    action,
-    { name },
-    Effect.fn(function* ({ name }) {
-      const { path } = yield* Cartridge.find(root, name);
-      yield* requireLogin;
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const code = yield* spawner.exitCode(
-        ChildProcess.make("bun", ["run", action, "--stage", name, "--yes"], {
-          env: { ALCHEMY_CARTRIDGE: path },
-          extendEnv: true,
-          stdin: "inherit",
-          stdout: "inherit",
-          stderr: "inherit",
-        }),
-      );
-      if (code !== 0)
-        return yield* new CliError({ message: `alchemy ${action} ${name} exited with ${code}` });
-    }),
-  ).pipe(Command.withDescription(`Alchemy ${action} for the cartridge with this name`));
-
 /** OpenBao commands need the 2-hour token that `login` writes. */
 const requireLogin = Effect.gen(function* () {
   const bao = yield* OpenBao;
@@ -220,7 +150,7 @@ const requireLogin = Effect.gen(function* () {
     Effect.mapError(
       () =>
         new CliError({
-          message: "The OpenBao token is missing or expired. Run `cynic login` first.",
+          message: "The OpenBao token is missing or expired. Run `ops login` first.",
         }),
     ),
   );
@@ -252,20 +182,14 @@ const referencedPath = (
 const newestFirst = (allocations: ReadonlyArray<NomadLive.AllocationSummary>) =>
   [...allocations].sort((a, b) => b.CreateTime - a.CreateTime);
 
-const cli = Command.make("cynic").pipe(
-  Command.withDescription("Operate Alchemy cartridges on cynic"),
-  Command.withSubcommands([
-    login,
-    secret,
-    status,
-    logs,
-    alchemyCommand("plan"),
-    alchemyCommand("deploy"),
-  ]),
+const cli = Command.make("ops").pipe(
+  Command.withDescription("OpenBao login, secrets and Nomad status for Alchemy cartridges"),
+  Command.withSubcommands([login, checkLogin, secret, status]),
 );
 
 cli.pipe(
   Command.run({ version: "1" }),
+  Effect.tapErrorTag("CliError", (error) => Console.error(error.message)),
   Effect.provide(
     Layer.mergeAll(OpenBao.layer, NomadLive.layer()).pipe(
       Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, BunServices.layer)),

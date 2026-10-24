@@ -1,18 +1,22 @@
 import * as Alchemy from "alchemy";
 import * as Provider from "alchemy/Provider";
+import type { LogLine } from "alchemy/Provider";
 import { Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Result from "effect/Result";
 import * as S from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { Job, secretPolicyPaths, workloadRole } from "./Job.ts";
 import { settle } from "./Deployment.ts";
 import { Nomad } from "./Nomad.ts";
-import type { JobSnapshot } from "./Nomad.ts";
+import type { AllocationSummary, JobSnapshot } from "./Nomad.ts";
 import { OperationJournal } from "./OperationJournal.ts";
 import { OpenBao } from "./OpenBao.ts";
+import { parse } from "./TaskLog.ts";
 
 export interface NomadJob extends Alchemy.Resource<
   "Nomad.Job",
@@ -159,6 +163,37 @@ export const NomadJobProvider = () =>
             }),
           );
         }),
+        logs: Effect.fn(function* ({ output, options }) {
+          const limit = options.limit ?? 100;
+          const since = options.since?.getTime() ?? 0;
+          const lines = yield* Effect.forEach(yield* logSources(nomad, output.id), (source) =>
+            nomad
+              .logs(source.allocation, source.task, source.stream, limit * bytesPerLine)
+              .pipe(Effect.map((text) => Arr.filterMap(text.split("\n"), parse(source.task)))),
+          );
+          return Arr.takeRight(
+            Arr.sort(
+              lines.flat().filter((line) => line.timestamp.getTime() >= since),
+              byTimestamp,
+            ),
+            limit,
+          );
+        }),
+        tail: ({ output }) =>
+          Stream.unwrap(
+            logSources(nomad, output.id).pipe(
+              Effect.map((sources) =>
+                Stream.mergeAll(
+                  sources.map((source) =>
+                    nomad
+                      .followLogs(source.allocation, source.task, source.stream)
+                      .pipe(Stream.filterMap(parse(source.task))),
+                  ),
+                  { concurrency: "unbounded" },
+                ),
+              ),
+            ),
+          ),
         read: Effect.fn(function* ({ id, fqn }) {
           const current = yield* nomad.job(id);
           return Option.getOrUndefined(
@@ -202,3 +237,42 @@ const liveState = Effect.fn("NomadJob.liveState")(function* (
     : { _tag: "Unstable", job: owned.value };
   return unchanged;
 });
+
+/** A past-log read takes this many bytes from the end of each log per requested line. */
+const bytesPerLine = 512;
+
+/**
+ * Both output streams of every running task in the job's newest running allocation.
+ * Older allocations are replaced deployments, so their logs are not the job's current output.
+ */
+const logSources = Effect.fn("NomadJob.logSources")(function* (
+  nomad: typeof Nomad.Service,
+  job: string,
+) {
+  const allocations = yield* nomad.allocations(job);
+  return Option.match(
+    Arr.findFirst(
+      Arr.sort(allocations, newestFirst),
+      (allocation) => allocation.ClientStatus === "running",
+    ),
+    {
+      onNone: () => [],
+      onSome: (allocation) =>
+        Object.entries(allocation.TaskStates ?? {})
+          .filter(([, state]) => state.State === "running")
+          .flatMap(([task]) =>
+            (["stdout", "stderr"] as const).map((stream) => ({
+              allocation: allocation.ID,
+              task,
+              stream,
+            })),
+          ),
+    },
+  );
+});
+
+const newestFirst = Order.flip(
+  Order.mapInput(Order.Number, (allocation: AllocationSummary) => allocation.CreateTime),
+);
+
+const byTimestamp = Order.mapInput(Order.Number, (line: LogLine) => line.timestamp.getTime());

@@ -252,11 +252,6 @@ export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> =>
   return [...databaseResources, ...valkeyResource, ...orderedJobResources(cartridge)];
 };
 
-/** Read and validate the project-owned workload declaration. */
-export const load = Effect.fn(function* () {
-  return yield* decodeFile(yield* Config.String("ALCHEMY_CARTRIDGE"));
-});
-
 /** The folders under the Alchemy root that hold one cartridge each. */
 export const cartridgeFolders = ["apps", "platform"] as const;
 
@@ -320,7 +315,8 @@ export const kvKeys = (cartridge: Cartridge) => {
   );
 };
 
-const decodeFile = Effect.fn("Cartridge.decodeFile")(function* (path: string) {
+/** Read and validate one cartridge file. */
+export const decodeFile = Effect.fn("Cartridge.decodeFile")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem;
   const contents = yield* fs.readFileString(path).pipe(
     Effect.mapError(

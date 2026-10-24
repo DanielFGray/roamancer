@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Redacted, Schema as S } from "effect";
+import { Context, Effect, Layer, Option, Redacted, Schema as S, Stream } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Job, toJobSpec } from "./Job.ts";
 import type { ReleaseJobSpec } from "./ReleaseJob.ts";
@@ -146,6 +146,12 @@ export class Nomad extends Context.Service<
       stream: LogStream,
       bytes: number,
     ) => Effect.Effect<string, NomadError>;
+    /** One task's log lines from now on, as Nomad writes them. Ends when the task stops. */
+    readonly followLogs: (
+      allocation: string,
+      task: string,
+      stream: LogStream,
+    ) => Stream.Stream<string, NomadError>;
   }
 >()("alchemy/Nomad") {}
 
@@ -292,6 +298,27 @@ export const layer = () =>
             Effect.flatMap((response) =>
               response.text.pipe(Effect.mapError((cause) => new NomadError({ op: "logs", cause }))),
             ),
+          );
+        },
+        followLogs: (allocation, task, stream) => {
+          const query = new URLSearchParams({
+            task,
+            type: stream,
+            plain: "true",
+            follow: "true",
+            origin: "end",
+            offset: "0",
+          });
+          return HttpClientResponse.stream(
+            requestJson(
+              "follow logs",
+              "GET",
+              `/v1/client/fs/logs/${encodeURIComponent(allocation)}?${query}`,
+            ),
+          ).pipe(
+            Stream.decodeText(),
+            Stream.splitLines,
+            Stream.mapError((cause) => new NomadError({ op: "follow logs", cause })),
           );
         },
       });

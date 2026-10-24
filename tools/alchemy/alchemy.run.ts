@@ -1,6 +1,4 @@
 import * as Alchemy from "alchemy";
-import * as Config from "effect/Config";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { FetchHttpClient } from "effect/http";
@@ -37,17 +35,9 @@ const stack = Alchemy.Stack(
   "cartridge",
   { providers, state: Alchemy.localState() },
   Effect.gen(function* () {
-    const cartridge = yield* Cartridge.load();
-    const stage = yield* Alchemy.Stage;
-    if (stage !== cartridge.name) {
-      return yield* Effect.fail(
-        new Config.ConfigError(
-          new ConfigProvider.SourceError({
-            message: `stage mismatch: expected --stage ${cartridge.name}, got ${stage}`,
-          }),
-        ),
-      );
-    }
+    // The stage names the cartridge: `alchemy deploy --stage giglist` deploys the
+    // cartridge whose name is giglist, under apps/ or platform/.
+    const { cartridge } = yield* Cartridge.find(".", yield* Alchemy.Stage);
     const resources = Cartridge.expand(cartridge);
     const deployed = yield* compose(resources, {
       NomadJob,

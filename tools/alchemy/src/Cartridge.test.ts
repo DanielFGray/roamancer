@@ -1,10 +1,9 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
-import * as ConfigProvider from "effect/ConfigProvider";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
-import { expand, find, kvKeys, load, Cartridge } from "./Cartridge.ts";
+import { expand, find, kvKeys, decodeFile, Cartridge } from "./Cartridge.ts";
 import * as S from "effect/Schema";
 
 describe("cartridge v2", () => {
@@ -445,17 +444,9 @@ describe("cartridge v2", () => {
 
   it("preserves ingress network, identity and mount declarations during expansion", async () => {
     const cartridge = await Effect.runPromise(
-      load().pipe(
-        Effect.provide(NodeFileSystem.layer),
-        Effect.provideService(
-          ConfigProvider.ConfigProvider,
-          ConfigProvider.fromUnknown({
-            ALCHEMY_CARTRIDGE: fileURLToPath(
-              new URL("../platform/ingress/cartridge.json", import.meta.url),
-            ),
-          }),
-        ),
-      ),
+      decodeFile(
+        fileURLToPath(new URL("../platform/ingress/cartridge.json", import.meta.url)),
+      ).pipe(Effect.provide(NodeFileSystem.layer)),
     );
     const resource = expand(cartridge).find((entry) => entry._tag === "NomadService");
     assert.ok(resource);
@@ -476,14 +467,8 @@ describe("cartridge v2", () => {
   for (const rel of committed) {
     it(`loads ${rel}`, async () => {
       const cartridge = await Effect.runPromise(
-        load().pipe(
+        decodeFile(fileURLToPath(new URL(rel, import.meta.url))).pipe(
           Effect.provide(NodeFileSystem.layer),
-          Effect.provideService(
-            ConfigProvider.ConfigProvider,
-            ConfigProvider.fromUnknown({
-              ALCHEMY_CARTRIDGE: fileURLToPath(new URL(rel, import.meta.url)),
-            }),
-          ),
         ),
       );
       assert.ok(cartridge);

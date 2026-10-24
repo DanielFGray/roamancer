@@ -1,12 +1,19 @@
 #!/bin/sh
-# Runs the operator CLI on cynic from this machine: `cynic deploy giglist`,
-# `cynic secret set giglist github_client_secret`, `cynic --help`.
-# It first syncs tools/alchemy to ~/alchemy on cynic, so cynic runs the
-# cartridges and code in this checkout. Cynic's Alchemy state and node_modules stay.
+# Operates the platform from this machine, on the control host:
+#   ops deploy --stage giglist         Alchemy deploy of the cartridge named giglist
+#   ops logs --stage giglist --tail    live logs
+#   ops secret set giglist github_client_secret
+#   ops status giglist
+#   ops --help
+# The control host runs the Nomad server, OpenBao and the Alchemy state; set
+# OPS_HOST to reach a different one. Each run first syncs tools/alchemy to
+# ~/alchemy there, so it runs the cartridges and code in this checkout.
+# The host's Alchemy state and node_modules stay.
 set -eu
+host=${OPS_HOST:-cynic.dlab}
 here=$(cd "$(dirname "$0")/.." && pwd)
-rsync -a --exclude node_modules --exclude .alchemy --exclude logs "$here/" cynic.dlab:alchemy/
+rsync -a --exclude node_modules --exclude .alchemy --exclude logs "$here/" "$host:alchemy/"
 quoted=""
 for arg in "$@"; do quoted="$quoted '$(printf %s "$arg" | sed "s/'/'\\\\''/g")'"; done
 # The remote shell starts in the home folder.
-exec ssh -t cynic.dlab "alchemy/scripts/alchemy-on-cynic.sh$quoted"
+exec ssh -t "$host" "alchemy/scripts/ops-on-host.sh$quoted"

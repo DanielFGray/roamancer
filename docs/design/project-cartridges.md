@@ -6,7 +6,7 @@ The Alchemy stack accepts an app-owned declaration while it keeps ownership of N
 
 ## Usage
 
-An app owns `deploy/cartridge.json`. A cartridge is a versioned JSON file that describes services and their data needs. This example declares one service:
+A cartridge is a versioned JSON file that describes services and their data needs. This example declares one service:
 
 ```json
 {
@@ -31,7 +31,7 @@ An app owns `deploy/cartridge.json`. A cartridge is a versioned JSON file that d
 }
 ```
 
-The operator points the Alchemy runner at this file with `ALCHEMY_CARTRIDGE` and passes `--stage noneuclid`. The stage must match the cartridge's `name`. The runner validates its version and fields, then plans the job through the `NomadJob` resource.
+The file lives at `tools/alchemy/apps/noneuclid/cartridge.json`. The operator passes `--stage noneuclid`, and the stack loads the cartridge with that `name`. The runner validates its version and fields, then plans the job through the `NomadJob` resource.
 
 ## Shape
 

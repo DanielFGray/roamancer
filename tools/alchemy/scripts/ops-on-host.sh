@@ -1,6 +1,9 @@
 #!/bin/sh
-# Runs the operator CLI (src/cli.ts) on cynic. Usage: alchemy-on-cynic.sh <command> [args...]
-# `alchemy-on-cynic.sh --help` lists the commands.
+# Runs on the control host, the machine with the Nomad server, OpenBao and the
+# Alchemy state. Usage: ops-on-host.sh <command> [args...]
+#   plan, deploy, destroy, drift, logs, state: Alchemy's own commands, for example
+#     `deploy --stage giglist`. All but logs and state need an OpenBao token from `login`.
+#   anything else: src/cli.ts (login, check-login, secret, status). `--help` lists them.
 set -eu
 cd ~/alchemy
 # The controller env file is readable by the alchemy group after
@@ -14,9 +17,22 @@ fi
 eval "$(sed "s/^/export /" /var/lib/nomad-acl/controller.env)"
 export NOMAD_ADDR=http://127.0.0.1:4646 OPENBAO_ADDR=http://127.0.0.1:8200
 # `login` writes this file; the other commands read the token from it.
-export OPENBAO_TOKEN_FILE="$XDG_RUNTIME_DIR/cynic-bao.token"
+export OPENBAO_TOKEN_FILE="$XDG_RUNTIME_DIR/openbao.token"
 if [ -r "$OPENBAO_TOKEN_FILE" ]; then
   OPENBAO_TOKEN="$(cat "$OPENBAO_TOKEN_FILE")"
   export OPENBAO_TOKEN
 fi
-exec nix --extra-experimental-features "nix-command flakes" shell nixpkgs/cd4ea8d57de16f4810bc5f14207bac45fbf19f67#bun -c bun src/cli.ts "$@"
+case "${1:-}" in
+  plan | deploy | destroy | drift)
+    # These read OpenBao, and Alchemy reports an expired token deep inside a provider
+    # call, so check it first.
+    bun src/cli.ts check-login
+    exec bunx alchemy "$@"
+    ;;
+  logs | state)
+    exec bunx alchemy "$@"
+    ;;
+  *)
+    exec bun src/cli.ts "$@"
+    ;;
+esac
