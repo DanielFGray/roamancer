@@ -38,7 +38,7 @@ describe("Nomad workload rendering", () => {
   it("routes a host and its API paths through Traefik tags, checked on the service's health path", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "giglist-api",
-      image: "127.0.0.1:5000/giglist@sha256:0",
+      image: "registry.cluster:5000/giglist@sha256:0",
       hostPort: "dynamic",
       containerPort: 3000,
       healthCheck: { type: "http", path: "/api/health" },
@@ -77,7 +77,7 @@ describe("Nomad workload rendering", () => {
   it("gives every task the node's OTLP collector address, which the job's own environment overrides", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "app",
-      image: "127.0.0.1:5000/app@sha256:0",
+      image: "registry.cluster:5000/app@sha256:0",
       hostPort: "dynamic",
       containerPort: 3000,
       cpu: 100,

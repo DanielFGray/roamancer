@@ -4,7 +4,7 @@
   "services": [
     {
       "name": "noneuclid",
-      "image": "127.0.0.1:5000/noneuclid-noneuclid@sha256:e7cba4b6214b1df5676f6eb660355d3a255fdef4675e943e28e8cfb5be14b058",
+      "image": "registry.cluster:5000/noneuclid-noneuclid@sha256:e7cba4b6214b1df5676f6eb660355d3a255fdef4675e943e28e8cfb5be14b058",
       "hostPort": "dynamic",
       "containerPort": 5181,
       "healthCheck": { "type": "tcp" },

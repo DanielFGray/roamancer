@@ -6,10 +6,21 @@
   # From fw's DHCP, which has kept it stable. If the lease ever changes, the server
   # certificate, Raft's peer address and every client's `servers` entry break together.
   lanAddress = "10.13.37.196";
-  # Sources that may open Nomad RPC (4647) and OpenBao (8200): atheist, and the
-  # laptop's WireGuard address, which test VMs on the laptop arrive from. mTLS is the
-  # control; this list narrows who can try, on a bridge where addresses can be forged.
-  clientSources = [ "10.13.37.83" "10.10.10.3" ];
+  # Machines that run Nomad clients: atheist. The firewall lets them reach every TCP port
+  # here, so their jobs reach services such as Postgres's fixed 5432 and Nomad's dynamic
+  # ports. Every listener on the LAN has its own authentication; the address list only
+  # narrows who can try, on a bridge where addresses can be forged.
+  nodes = [ "10.13.37.83" ];
+  # The laptop's WireGuard address. It may reach only the listeners behind the cluster CA
+  # (cluster-tls.nix): images are pushed from it, and test VMs on the laptop join from it.
+  workstation = "10.10.10.3";
+  # Every machine reaches the image registry on cynic by this name, which each one maps
+  # to lanAddress in /etc/hosts, so a new lease changes no image reference.
+  registryName = "registry.cluster";
+  registryPort = 5000;
   # The cluster CA and leaf certificates. Root-only; never in the Nix store.
   tlsDir = "/var/lib/cluster-tls";
+  # cynic's own client certificate for pulling from the registry, readable by the nomad
+  # user, whose rootless Podman pulls every job's image.
+  registryClientDir = "/var/lib/registry-client";
 }

@@ -51,13 +51,13 @@ The TypeScript candidate offers editor types, but loading a TypeScript module ex
 - The image must be built and made available before deployment; image building is a separate lifecycle.
 - Noneuclid's existing Compose push flow remains separate from this testground path. Its deployment settings can drift from the cartridge until that flow is migrated or retired.
 - The first cartridge can name a host volume but cannot create that host resource. Nix remains its owner.
-- Image building and registry selection remain separate lifecycle work.
+- Image building remains separate lifecycle work. Images live in cynic's registry, `registry.cluster:5000`, which every node and the workstation reach over the LAN with a client certificate from the cluster CA (`nixos/cynic/cluster-tls-operations.md`).
 - The runner uses the `cartridge` stack and a stage named after each cartridge. Platform and app cartridges therefore have separate local resource state.
 
 ## Open questions and risks
 
 - Project cartridges request platform capabilities by logical name: an app declares `postgres` database names and `valkey` access, and the platform derives every role name, login, key prefix, secret path and OpenBao role from the app name. (Answered by cartridge v2.)
-- Which image registry and immutable image identifier should the build path produce?
+- Which image registry and immutable image identifier should the build path produce? (Answered: `registry.cluster:5000/<name>@sha256:<digest>`.)
 - Where should durable Alchemy state live when more than one operator or machine deploys?
 
 ## First implementation result
