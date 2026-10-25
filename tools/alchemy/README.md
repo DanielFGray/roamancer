@@ -14,9 +14,12 @@ ops secret list giglist                    # each referenced key: set, MISSING, 
 ops secret check giglist                   # fails when a referenced key is unset; plan and deploy run it first
 ops secret set giglist github_client_secret  # prompts for the value
 ops status giglist                         # each service's newest allocations
+ops release giglist ~/build/setlist         # build, push, pin and deploy the app's current commit
 ```
 
 `plan`, `deploy`, `destroy`, `state` and `drift` are Alchemy's own commands. Before `plan` and `deploy` the runner runs `ops secret check <stage>`, which fails when a secret the cartridge references is unset (a task would otherwise wait on its template until the deploy times out) or the OpenBao token has expired. Before `destroy` and `drift` it checks the token only. The stage is a cartridge's `name`: the stack finds that cartridge under `apps/*/` or `platform/*/`. The other commands are `src/cli.ts`, for what Alchemy has no place for. `ops logs` reads Nomad by job name, which is the resource's name, so it needs no stage and works for a job whose first deploy failed and left no Alchemy state. It prints stdout and stderr of each running task in the newest running allocation, with the time podman recorded for each line (`src/TaskLog.ts`, which also serves `alchemy logs`).
+
+`release` runs on your machine, not the control host, because your Docker holds the registry's client certificate (`nixos/cynic/cluster-tls-operations.md`). It refuses a build folder with uncommitted changes, since the image is tagged with the commit. It builds and pushes the image, writes the pushed digest into every service of the cartridge that uses that image, runs `ops deploy`, and commits the cartridge. A cartridge that names more than one image, such as `platform-data`, is refused. To roll back, put the old digest back in the cartridge and run `ops deploy`; migrations stay applied (see `nixos/backup-operations.md` for restoring data).
 
 `secret set` accepts only a key that the cartridge references with a `KvSecret`, at that reference's path, so a misspelled key fails before anything is stored. It keeps the other keys at that path. Nomad restarts a running task when a value it reads changes. The runner reads the Nomad token from `/var/lib/nomad-acl/controller.env`, so no command needs sudo.
 

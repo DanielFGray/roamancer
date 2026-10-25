@@ -4,12 +4,15 @@
 #   ops logs giglist-worker --tail     a job's logs, or why it is not running
 #   ops secret set giglist github_client_secret
 #   ops status giglist
+#   ops release giglist [folder]  build, push, pin and deploy the app's current commit
 #   ops --help
 # The control host runs the Nomad server, OpenBao and the Alchemy state; set
 # OPS_HOST to reach a different one. Each run first syncs tools/alchemy to
 # ~/alchemy there, so it runs the cartridges and code in this checkout.
 # The host's Alchemy state and node_modules stay.
 set -eu
+# Building and pushing need the workstation's Docker and registry certificate.
+[ "${1:-}" = release ] && { shift; exec bun "$(dirname "$0")/../src/release.ts" "$@"; }
 host=${OPS_HOST:-cynic.dlab}
 here=$(cd "$(dirname "$0")/.." && pwd)
 rsync -a --exclude node_modules --exclude .alchemy --exclude logs "$here/" "$host:alchemy/"
