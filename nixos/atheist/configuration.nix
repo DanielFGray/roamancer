@@ -16,6 +16,7 @@ in
     ../modules/static-sites.nix
     ./network.nix
     ./nomad.nix
+    ./backups.nix
   ];
 
   networking.hostName = "atheist";
