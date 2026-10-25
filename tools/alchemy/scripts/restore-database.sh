@@ -2,8 +2,10 @@
 set -euo pipefail
 
 # Restores a pg_dump custom-format file into an app database that Alchemy created.
-# Run it after the app's cartridge deploys its PostgresDatabase and before its jobs serve
-# traffic. It connects as the server's superuser inside the Postgres allocation and runs
+# Run it after the app's cartridge deploys its PostgresDatabase and before its jobs first
+# start: it refuses a database that already has tables in the dump's schemas, and fails
+# on any pg_restore error other than the expected ones below. It connects as the
+# server's superuser inside the Postgres allocation and runs
 # every statement as the database's owner role, so restored objects belong to that role,
 # as migrations would create them. Grants in the dump must name roles the platform made.
 #
@@ -34,7 +36,32 @@ export NOMAD_TOKEN=$(cat /var/lib/nomad-acl/bootstrap.token)
 alloc=$(nomad job allocs -t '{{range .}}{{if eq .ClientStatus "running"}}{{.ID}}{{end}}{{end}}' postgres)
 in_postgres() { nomad alloc exec -i -task server "$alloc" "$@"; }
 
-in_postgres pg_restore -U postgres --no-owner --role="$owner" -d "$database" < "$dump" || true
+# A restore over existing tables fails row by row on duplicate keys and changes nothing,
+# so it must start from an empty database: before the app's first migration, or after
+# the database is dropped and created again.
+schemas=$(in_postgres pg_restore -l < "$dump" | awk -v q="'" '$4 == "SCHEMA" {printf "%s%s%s%s", sep, q, $6, q; sep=","}')
+existing=$(printf "SELECT string_agg(schemaname || '.' || tablename, ' ') FROM pg_tables WHERE schemaname IN ('public'%s);\n\\\\q\n" "${schemas:+,$schemas}" |
+  in_postgres psql -U postgres -At -d "$database")
+if [[ -n "$existing" ]]; then
+  echo "$database already has tables in the dump's schemas: $existing" >&2
+  echo "Restore into an empty database." >&2
+  exit 1
+fi
+
+# pg_restore carries on past a failed statement and exits 1 at the end. Two failures are
+# expected: COMMENT ON EXTENSION needs the extension's owner, and the old owner's default
+# privileges name a role that does not exist here (they are replayed below). Any other
+# failure is reported.
+log=$(mktemp)
+in_postgres pg_restore -U postgres --no-owner --role="$owner" -d "$database" < "$dump" 2> "$log" || true
+unexpected=$(grep '^Command was: ' "$log" |
+  grep -v -E "^Command was: (COMMENT ON EXTENSION |ALTER DEFAULT PRIVILEGES FOR ROLE ${old_owner:-\$^} )" || true)
+if [[ -n "$unexpected" ]]; then
+  cat "$log" >&2
+  echo "pg_restore failed on statements other than the expected ones:" >&2
+  echo "$unexpected" >&2
+  exit 1
+fi
 
 if [[ -n "$old_owner" ]]; then
   # nomad alloc exec does not pass the end of input on to psql, so the script ends with \q.
