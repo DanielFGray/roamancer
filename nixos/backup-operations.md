@@ -81,7 +81,16 @@ grep ERROR "$work/errors" | grep -v 'role "postgres" already exists' || echo "no
 
 Then check the data: `podman exec pg-restore psql -U postgres -d giglist -c 'select count(*) from app_public.users'`, and the same for other tables whose counts you know. Remove the container afterwards with `podman rm -f pg-restore`.
 
-To put one app's database back into the live cluster, use `tools/alchemy/scripts/restore-database.sh` with a `pg_dump -Fc` of it.
+## Restore one app's database into the live cluster
+
+`tools/alchemy/scripts/restore-database.sh` takes a custom-format dump of one database. To get one from a backup, restore the cluster into a container as above and dump the app's database from it:
+
+```sh
+podman exec pg-restore pg_dump -U postgres -Fc giglist > giglist.dump
+tools/alchemy/scripts/restore-database.sh cynic.dlab giglist giglist.dump
+```
+
+The script restores into `giglist_restore` in one transaction, then swaps it in for `giglist`. Apps lose their connections for a moment. The replaced database stays as `giglist_before_restore_<UTC time>` until you drop it.
 
 ## Not backed up yet
 

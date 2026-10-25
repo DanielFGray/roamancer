@@ -1,75 +1,93 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Restores a pg_dump custom-format file into an app database that Alchemy created.
-# Run it after the app's cartridge deploys its PostgresDatabase and before its jobs first
-# start: it refuses a database that already has tables in the dump's schemas, and fails
-# on any pg_restore error other than the expected ones below. It connects as the
-# server's superuser inside the Postgres allocation and runs
-# every statement as the database's owner role, so restored objects belong to that role,
-# as migrations would create them. Grants in the dump must name roles the platform made.
+# Replaces an app database that Alchemy created with the contents of a pg_dump
+# custom-format file, all or nothing, and keeps the database it replaced.
 #
-# Default privileges belong to a role, and pg_restore cannot rename one. When the dump's
-# owner had another name, pass it: its ALTER DEFAULT PRIVILEGES statements are replayed
-# for <database>_owner, so objects that later migrations create get the same grants.
-# pg_restore reports, and skips, the originals and COMMENT ON EXTENSION.
+# It restores into a new database, <database>_restore, made the way Alchemy makes one:
+# owned by <database>_owner, with the live database's extensions. It connects as the
+# server's superuser inside the Postgres allocation and runs every statement as the owner
+# role, so restored objects belong to that role, as migrations would create them. Grants
+# in the dump must name roles the platform made. The restore is one transaction that
+# stops at the first error, so a failure leaves nothing behind and the live database is
+# never touched.
+#
+# Two kinds of dump entry are left out. COMMENT ON EXTENSION needs the extension's owner.
+# Default privileges belong to a role and pg_restore cannot rename one, so when the dump's
+# owner had another name, its default privileges are replayed for <database>_owner, and
+# objects that later migrations create get the same grants.
+#
+# Then it swaps the names: the live database stops taking connections, its sessions end,
+# it becomes <database>_before_restore_<UTC time>, and the restored database takes its
+# name. Apps lose their connections for a moment and reconnect to the restored data. The
+# replaced database stays until you drop it.
 #
 # sudo on the host needs a terminal for its password, and a terminal cannot also carry the
 # dump. So the dump and the steps go to the host's tmpfs first, and one terminal session
 # runs them as root.
 #
-# Usage: restore-database.sh <ssh host> <database> <dump file> [dump's owner role]
+# Usage: restore-database.sh <ssh host> <database> <dump file>
 
 host="${1:?ssh host, such as cynic.dlab}"
 database="${2:?database name}"
 dump="${3:?pg_dump -Fc file}"
-old_owner="${4:-}"
 
 dir=$(ssh "$host" 'mktemp -d "/run/user/$(id -u)/restore.XXXXXX"')
 trap 'ssh "$host" rm -rf "$dir"' EXIT
 ssh "$host" "cat > '$dir/dump'" < "$dump"
 ssh "$host" "cat > '$dir/restore'" <<'EOF'
 set -euo pipefail
-dump=$1 database=$2 old_owner=$3
+dump=$1 database=$2 dir=$(dirname "$1")
 owner="${database}_owner"
+fresh="${database}_restore"
+before="${database}_before_restore_$(date -u +%Y%m%d%H%M%S)"
 export NOMAD_TOKEN=$(cat /var/lib/nomad-acl/bootstrap.token)
 alloc=$(nomad job allocs -t '{{range .}}{{if eq .ClientStatus "running"}}{{.ID}}{{end}}{{end}}' postgres)
 in_postgres() { nomad alloc exec -i -task server "$alloc" "$@"; }
+# Runs SQL from stdin as the superuser in database $1. nomad alloc exec does not pass the
+# end of input on to psql, so the script ends with \q.
+sql() { { cat; printf '\\q\n'; } | in_postgres psql -U postgres -v ON_ERROR_STOP=1 -qAt -d "$1"; }
 
-# A restore over existing tables fails row by row on duplicate keys and changes nothing,
-# so it must start from an empty database: before the app's first migration, or after
-# the database is dropped and created again.
-schemas=$(in_postgres pg_restore -l < "$dump" | awk -v q="'" '$4 == "SCHEMA" {printf "%s%s%s%s", sep, q, $6, q; sep=","}')
-existing=$(printf "SELECT string_agg(schemaname || '.' || tablename, ' ') FROM pg_tables WHERE schemaname IN ('public'%s);\n\\\\q\n" "${schemas:+,$schemas}" |
-  in_postgres psql -U postgres -At -d "$database")
-if [[ -n "$existing" ]]; then
-  echo "$database already has tables in the dump's schemas: $existing" >&2
-  echo "Restore into an empty database." >&2
+live_owner=$(sql postgres <<< "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$database';")
+if [[ "$live_owner" != "$owner" ]]; then
+  echo "$database must exist and belong to $owner; its owner is '$live_owner'." >&2
   exit 1
 fi
 
-# pg_restore carries on past a failed statement and exits 1 at the end. Two failures are
-# expected: COMMENT ON EXTENSION needs the extension's owner, and the old owner's default
-# privileges name a role that does not exist here (they are replayed below). Any other
-# failure is reported.
-log=$(mktemp)
-in_postgres pg_restore -U postgres --no-owner --role="$owner" -d "$database" < "$dump" 2> "$log" || true
-unexpected=$(grep '^Command was: ' "$log" |
-  grep -v -E "^Command was: (COMMENT ON EXTENSION |ALTER DEFAULT PRIVILEGES FOR ROLE ${old_owner:-\$^} )" || true)
-if [[ -n "$unexpected" ]]; then
-  cat "$log" >&2
-  echo "pg_restore failed on statements other than the expected ones:" >&2
-  echo "$unexpected" >&2
-  exit 1
-fi
+# Untrusted extensions need a superuser, and the restore runs as the owner, so they are
+# made first. The dump's own CREATE EXTENSION IF NOT EXISTS then does nothing.
+extensions=$(sql "$database" <<< "SELECT string_agg(format('CREATE EXTENSION %I WITH SCHEMA %I;', extname, extnamespace::regnamespace), ' ') FROM pg_extension WHERE extname <> 'plpgsql';")
+sql postgres <<< "SET client_min_messages = warning; DROP DATABASE IF EXISTS \"$fresh\"; CREATE DATABASE \"$fresh\" OWNER \"$owner\";"
+[[ -z "$extensions" ]] || sql "$fresh" <<< "$extensions"
 
-if [[ -n "$old_owner" ]]; then
-  # nomad alloc exec does not pass the end of input on to psql, so the script ends with \q.
+# The table of contents names each entry's owner last.
+in_postgres pg_restore -l < "$dump" > "$dir/list"
+old_owners=$(awk -v owner="$owner" '$4 == "DEFAULT" && $5 == "ACL" && $NF != owner {print $NF}' "$dir/list" | sort -u)
+awk -v owner="$owner" '!($4 == "COMMENT" && $6 == "EXTENSION") && !($4 == "DEFAULT" && $5 == "ACL" && $NF != owner)' \
+  "$dir/list" | in_postgres sh -c 'cat > /tmp/restore.list'
+in_postgres pg_restore -U postgres --no-owner --role="$owner" --single-transaction --exit-on-error \
+  -L /tmp/restore.list -d "$fresh" < "$dump"
+in_postgres rm -f /tmp/restore.list
+
+for old in $old_owners; do
   in_postgres pg_restore -f - < "$dump" |
-    grep -E "^ALTER DEFAULT PRIVILEGES FOR ROLE $old_owner " |
-    sed -E "s/^ALTER DEFAULT PRIVILEGES FOR ROLE $old_owner /ALTER DEFAULT PRIVILEGES FOR ROLE $owner /" |
-    { cat; printf '\\q\n'; } |
-    in_postgres psql -U postgres -v ON_ERROR_STOP=1 -q -d "$database"
-fi
+    grep -E "^ALTER DEFAULT PRIVILEGES FOR ROLE $old " |
+    sed -E "s/^ALTER DEFAULT PRIVILEGES FOR ROLE $old /ALTER DEFAULT PRIVILEGES FOR ROLE \"$owner\" /" |
+    sql "$fresh"
+done
+
+tables=$(sql "$fresh" <<< "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema');")
+echo "Restored $tables tables into $fresh."
+
+# Without ALLOW_CONNECTIONS false, an app could reconnect between the terminate and the
+# rename, and the rename would fail on its session.
+sql postgres <<SQL
+ALTER DATABASE "$database" WITH ALLOW_CONNECTIONS false;
+SELECT format('Ended %s sessions on %s.', count(pg_terminate_backend(pid)), '$database') FROM pg_stat_activity WHERE datname = '$database';
+ALTER DATABASE "$database" RENAME TO "$before";
+ALTER DATABASE "$fresh" RENAME TO "$database";
+SQL
+echo "$database now holds the restored data. The database it replaced is $before,"
+echo "closed to connections. Drop it once the app checks out: DROP DATABASE \"$before\";"
 EOF
-ssh -t "$host" sudo bash "$dir/restore" "$dir/dump" "$database" "$old_owner"
+ssh -t "$host" sudo bash "$dir/restore" "$dir/dump" "$database"
