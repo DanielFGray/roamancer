@@ -33,6 +33,8 @@ The Postgres dump runs as `nomad`, the only user that can reach Postgres's rootl
    AWS_SECRET_ACCESS_KEY=<R2 secret access key>
    ```
 
+   The two `AWS_` variables hold the R2 API token's keys. No AWS account is involved: R2 speaks the S3 protocol, and restic's S3 backend reads its keys from these names for every provider.
+
    Keep `RESTIC_PASSWORD` in the password store as well. Losing it makes every backup unrecoverable.
 
 2. Rebuild the host (`nixos/rebuild-host.sh <host>`), then run a backup now and read its result:
