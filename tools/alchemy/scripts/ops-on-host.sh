@@ -22,8 +22,26 @@ if [ -r "$OPENBAO_TOKEN_FILE" ]; then
   OPENBAO_TOKEN="$(cat "$OPENBAO_TOKEN_FILE")"
   export OPENBAO_TOKEN
 fi
+# The value of --stage (or --stage=<value>) among the arguments; empty without one.
+stage() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stage) printf %s "${2:-}"; return ;;
+      --stage=*) printf %s "${1#--stage=}"; return ;;
+    esac
+    shift
+  done
+}
+
 case "${1:-}" in
-  plan | deploy | destroy | drift)
+  plan | deploy)
+    # A task whose secret is unset waits on its template forever, so the deploy fails
+    # only at its timeout and leaves a failed version behind. Refuse first. The check
+    # also fails on an expired OpenBao token.
+    bun src/cli.ts secret check "$(stage "$@")"
+    exec bunx alchemy "$@"
+    ;;
+  destroy | drift)
     # These read OpenBao, and Alchemy reports an expired token deep inside a provider
     # call, so check it first.
     bun src/cli.ts check-login

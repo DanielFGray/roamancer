@@ -91,30 +91,57 @@ const secretList = Command.make(
   "list",
   { name },
   Effect.fn(function* ({ name }) {
-    const { cartridge } = yield* Cartridge.find(root, name);
-    yield* requireLogin;
-    const bao = yield* OpenBao;
-    yield* Effect.forEach(Cartridge.kvKeys(cartridge), ([path, keys]) =>
-      bao.readKvKeys(path).pipe(
-        Effect.map(Option.getOrElse((): ReadonlyArray<string> => [])),
-        Effect.flatMap((stored) =>
-          Console.log(
-            [
-              path,
-              ...keys.map((key) => `  ${stored.includes(key) ? "set    " : "MISSING"} ${key}`),
-              ...stored.filter((key) => !keys.includes(key)).map((key) => `  unused  ${key}`),
-            ].join("\n"),
-          ),
-        ),
+    yield* Effect.forEach(yield* storedSecrets(name), ({ path, keys, stored }) =>
+      Console.log(
+        [
+          path,
+          ...keys.map((key) => `  ${stored.includes(key) ? "set    " : "MISSING"} ${key}`),
+          ...stored.filter((key) => !keys.includes(key)).map((key) => `  unused  ${key}`),
+        ].join("\n"),
       ),
     );
   }),
 ).pipe(Command.withDescription("Show which referenced secrets are set; never prints values"));
 
+const secretCheck = Command.make(
+  "check",
+  { name },
+  Effect.fn(function* ({ name }) {
+    const missing = (yield* storedSecrets(name)).flatMap(({ path, keys, stored }) =>
+      keys.filter((key) => !stored.includes(key)).map((key) => `  ${path} ${key}`),
+    );
+    if (missing.length > 0) {
+      return yield* new CliError({
+        message: [
+          `${name} reads secrets that are not set, so its tasks would wait forever:`,
+          ...missing,
+          `Set each with \`ops secret set ${name} <key>\`.`,
+        ].join("\n"),
+      });
+    }
+  }),
+).pipe(Command.withDescription("Fail when a secret the cartridge references is not set"));
+
 const secret = Command.make("secret").pipe(
   Command.withDescription("Manage a cartridge's OpenBao secrets"),
-  Command.withSubcommands([secretSet, secretList]),
+  Command.withSubcommands([secretSet, secretList, secretCheck]),
 );
+
+/** Each KV path the cartridge reads, the keys it reads there, and the keys stored there. */
+const storedSecrets = Effect.fn("storedSecrets")(function* (name: string) {
+  const { cartridge } = yield* Cartridge.find(root, name);
+  yield* requireLogin;
+  const bao = yield* OpenBao;
+  return yield* Effect.forEach(Cartridge.kvKeys(cartridge), ([path, keys]) =>
+    bao.readKvKeys(path).pipe(
+      Effect.map((stored) => ({
+        path,
+        keys,
+        stored: Option.getOrElse(stored, (): ReadonlyArray<string> => []),
+      })),
+    ),
+  );
+});
 
 const status = Command.make(
   "status",
