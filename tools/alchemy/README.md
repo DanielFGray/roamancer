@@ -9,13 +9,13 @@ This package deploys app cartridges and shared platform services through Alchemy
 ```sh
 ops login                                  # once every 2 hours: mints an OpenBao token from the root token
 ops plan --stage giglist                   # Alchemy plan; `ops deploy --stage giglist` applies it
-ops logs --stage giglist                   # Alchemy: recent log lines of every running task; --tail follows them
+ops logs giglist-worker                    # a Nomad job's recent output, or its task events when it is not running; --tail follows
 ops secret list giglist                    # each referenced key: set, MISSING, or unused; never values
 ops secret set giglist github_client_secret  # prompts for the value
 ops status giglist                         # each service's newest allocations
 ```
 
-`plan`, `deploy`, `destroy`, `logs --stage`, `state` and `drift` are Alchemy's own commands. The runner checks the OpenBao token before `plan`, `deploy`, `destroy` and `drift`, which read OpenBao. The stage is a cartridge's `name`: the stack finds that cartridge under `apps/*/` or `platform/*/`. The other commands are `src/cli.ts`, for what Alchemy has no place for. The NomadJob provider serves `alchemy logs`: it reads stdout and stderr of each running task in the newest running allocation, with the time podman recorded for each line.
+`plan`, `deploy`, `destroy`, `state` and `drift` are Alchemy's own commands. The runner checks the OpenBao token before `plan`, `deploy`, `destroy` and `drift`, which read OpenBao. The stage is a cartridge's `name`: the stack finds that cartridge under `apps/*/` or `platform/*/`. The other commands are `src/cli.ts`, for what Alchemy has no place for. `ops logs` reads Nomad by job name, which is the resource's name, so it needs no stage and works for a job whose first deploy failed and left no Alchemy state. It prints stdout and stderr of each running task in the newest running allocation, with the time podman recorded for each line (`src/TaskLog.ts`, which also serves `alchemy logs`).
 
 `secret set` accepts only a key that the cartridge references with a `KvSecret`, at that reference's path, so a misspelled key fails before anything is stored. It keeps the other keys at that path. Nomad restarts a running task when a value it reads changes. The runner reads the Nomad token from `/var/lib/nomad-acl/controller.env`, so no command needs sudo.
 

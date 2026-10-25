@@ -1,9 +1,9 @@
 #!/bin/sh
 # Runs on the control host, the machine with the Nomad server, OpenBao and the
 # Alchemy state. Usage: ops-on-host.sh <command> [args...]
-#   plan, deploy, destroy, drift, logs, state: Alchemy's own commands, for example
-#     `deploy --stage giglist`. All but logs and state need an OpenBao token from `login`.
-#   anything else: src/cli.ts (login, check-login, secret, status). `--help` lists them.
+#   plan, deploy, destroy, drift, state: Alchemy's own commands, for example
+#     `deploy --stage giglist`. All but state need an OpenBao token from `login`.
+#   anything else: src/cli.ts (login, check-login, secret, status, logs). `--help` lists them.
 set -eu
 cd ~/alchemy
 # The controller env file is readable by the alchemy group after
@@ -29,7 +29,7 @@ case "${1:-}" in
     bun src/cli.ts check-login
     exec bunx alchemy "$@"
     ;;
-  logs | state)
+  state)
     exec bunx alchemy "$@"
     ;;
   *)

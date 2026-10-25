@@ -1,12 +1,14 @@
 /**
  * The commands Alchemy has no place for: OpenBao login, a cartridge's secrets,
- * and its Nomad allocation status. Deploys, plans and logs are Alchemy's own
- * commands. `scripts/ops` runs both kinds from the laptop over SSH, through
+ * its Nomad allocation status, and a job's logs read from Nomad by job name, which
+ * also work for a job whose first deploy failed. Deploys and plans are Alchemy's
+ * own commands. `scripts/ops` runs both kinds from the laptop over SSH, through
  * `scripts/ops-on-host.sh`.
  */
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import {
+  Array as Arr,
   Config,
   ConfigProvider,
   Console,
@@ -16,14 +18,16 @@ import {
   Option,
   Redacted,
   Runtime,
+  Stream,
 } from "effect";
 import { Schema as S } from "effect";
-import { Argument, Command, Prompt } from "effect/cli";
+import { Argument, Command, Flag, Prompt } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
 import * as Cartridge from "./Cartridge.ts";
 import * as NomadLive from "./Nomad.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
+import * as TaskLog from "./TaskLog.ts";
 
 /** A failure the operator can act on: printed as its message alone, without a stack trace. */
 export class CliError extends S.TaggedError<CliError>()("CliError", { message: S.String }) {
@@ -125,7 +129,7 @@ const status = Command.make(
             [
               service.name,
               ...(allocations.length === 0 ? ["  no allocations"] : []),
-              ...newestFirst(allocations)
+              ...Arr.sort(allocations, TaskLog.newestFirst)
                 .slice(0, 3)
                 .map((allocation) => {
                   const tasks = Object.entries(allocation.TaskStates ?? {})
@@ -144,6 +148,53 @@ const status = Command.make(
     );
   }),
 ).pipe(Command.withDescription("Show each service's newest allocations"));
+
+const logs = Command.make(
+  "logs",
+  {
+    job: Argument.String("job").pipe(
+      Argument.withDescription(
+        "The Nomad job, which is the resource's name, such as giglist-worker",
+      ),
+    ),
+    tail: Flag.Boolean("tail").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription("Keep printing new lines"),
+    ),
+    lines: Flag.Int("lines").pipe(
+      Flag.withAlias("n"),
+      Flag.withDefault(100),
+      Flag.withDescription("How many past lines to print"),
+    ),
+  },
+  Effect.fn(function* ({ job, tail, lines }) {
+    const nomad = yield* Nomad;
+    const newest = Arr.head(Arr.sort(yield* nomad.allocations(job), TaskLog.newestFirst));
+    if (Option.isNone(newest)) {
+      return yield* new CliError({ message: `Nomad has no allocations for job '${job}'.` });
+    }
+    const allocation = newest.value;
+    // A job that never started has no output; its task events say why, such as a
+    // template blocked on a missing secret or a failed image pull.
+    if (allocation.ClientStatus !== "running") {
+      return yield* Console.log(
+        [
+          `${job}: newest allocation ${allocation.ID.slice(0, 8)} is ${allocation.ClientStatus}`,
+          ...Object.entries(allocation.TaskStates ?? {}).flatMap(([task, state]) =>
+            (state.Events ?? []).map(
+              (event) =>
+                `${new Date(event.Time / 1e6).toISOString()} ${task} ${event.Type}: ${event.DisplayMessage}`,
+            ),
+          ),
+        ].join("\n"),
+      );
+    }
+    const show = (line: { readonly timestamp: Date; readonly message: string }) =>
+      Console.log(`${line.timestamp.toISOString()} ${line.message}`);
+    yield* Effect.forEach(yield* TaskLog.recent(nomad, job, { limit: lines }), show);
+    if (tail) yield* Stream.runForEach(TaskLog.follow(nomad, job), show);
+  }),
+).pipe(Command.withDescription("Print a Nomad job's recent output, or why it is not running"));
 
 /** OpenBao commands need the 2-hour token that `login` writes. */
 const requireLogin = Effect.gen(function* () {
@@ -181,12 +232,9 @@ const referencedPath = (
   return Effect.succeed(path);
 };
 
-const newestFirst = (allocations: ReadonlyArray<NomadLive.AllocationSummary>) =>
-  [...allocations].sort((a, b) => b.CreateTime - a.CreateTime);
-
 const cli = Command.make("ops").pipe(
-  Command.withDescription("OpenBao login, secrets and Nomad status for Alchemy cartridges"),
-  Command.withSubcommands([login, checkLogin, secret, status]),
+  Command.withDescription("OpenBao login, secrets, and Nomad status and logs"),
+  Command.withSubcommands([login, checkLogin, secret, status, logs]),
 );
 
 cli.pipe(

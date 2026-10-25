@@ -86,7 +86,16 @@ const AllocationCheck = S.Struct({
 export const AllocationChecksSchema = S.Record(S.String, AllocationCheck);
 export type AllocationChecks = typeof AllocationChecksSchema.Type;
 
-const TaskState = S.Struct({ State: S.String, Failed: S.Boolean, Restarts: S.Number });
+// Time is nanoseconds since the Unix epoch.
+const TaskEvent = S.Struct({ Type: S.String, DisplayMessage: S.String, Time: S.Number });
+
+const TaskState = S.Struct({
+  State: S.String,
+  Failed: S.Boolean,
+  Restarts: S.Number,
+  // Why a task is not running: a blocked template, a failed pull, a restart.
+  Events: S.NullOr(S.Array(TaskEvent)),
+});
 
 export const AllocationSummarySchema = S.Struct({
   ID: S.String,
@@ -309,7 +318,9 @@ export const layer = () =>
             plain: "true",
             follow: "true",
             origin: "end",
-            offset: "0",
+            // Nomad replays the whole log for origin=end with offset 0 (seen on 2.0.7). One
+            // byte back starts inside the last line, which TaskLog.parse drops as partial.
+            offset: "1",
           });
           return HttpClientResponse.stream(
             requestJson(

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Operates the platform from this machine, on the control host:
 #   ops deploy --stage giglist         Alchemy deploy of the cartridge named giglist
-#   ops logs --stage giglist --tail    live logs
+#   ops logs giglist-worker --tail     a job's logs, or why it is not running
 #   ops secret set giglist github_client_secret
 #   ops status giglist
 #   ops --help
