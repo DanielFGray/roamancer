@@ -75,7 +75,9 @@ sudo sh -c 'export NOMAD_TOKEN="$(cat /var/lib/nomad-acl/bootstrap.token)"; exec
 
 ## Refresh policies and scheduler settings without rotating credentials
 
-After activating a change to `nomad-acl.nix`, run:
+Every switch that changes them runs the `nomad-cluster-apply` unit, which applies
+them with the stored management credential; check it with
+`systemctl status nomad-cluster-apply`. To apply them by hand, run:
 
 ```sh
 sudo nomad-cluster-apply

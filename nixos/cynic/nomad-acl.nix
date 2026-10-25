@@ -219,6 +219,28 @@ in
   # there is no Nomad service to restart.
   systemd.services = lib.mkIf (config.environment.etc ? "nomad.d/nomad.hcl") {
     nomad.restartTriggers = [ config.environment.etc."nomad.d/acl.hcl".source ];
+
+    # Policies and the scheduler setting live in Nomad's Raft state, not its config
+    # files, so a rebuild would otherwise leave Nomad on the old ones. A new script
+    # (any change to a policy changes its store path) restarts this unit on switch.
+    # It is skipped until the operator bootstraps ACLs, and retries while a fresh Nomad
+    # starts.
+    nomad-cluster-apply = {
+      description = "Apply Nomad ACL policies and scheduler settings";
+      after = [ "nomad.service" ];
+      requires = [ "nomad.service" ];
+      wantedBy = [ "multi-user.target" ];
+      path = [ (pkgs.callPackage ../modules/nomad-package.nix { }) ];
+      restartTriggers = [ applyCluster ];
+      unitConfig.ConditionPathExists = "${credentialDir}/bootstrap.token";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${applyCluster}/bin/nomad-cluster-apply";
+        Restart = "on-failure";
+        RestartSec = 5;
+      };
+    };
   };
 
   environment.systemPackages = [
