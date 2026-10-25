@@ -32,7 +32,7 @@ Caddy also sends `Cache-Control: no-cache` with every HTML response, including `
 
 1. Copy the new release folder to `/srv/www/<site>/<release>/` on atheist.
 2. Change `X-Site-Release` in the site's route in `nixos/atheist/traefik-routes/sites.toml`.
-3. Rebuild atheist. The route file is a link into the Nix store, so the rebuild replaces it in one step and Traefik never reads a half-written file.
+3. Rebuild atheist with `nixos/rebuild-host.sh atheist`. The route file is a link into the Nix store, so the rebuild replaces it in one step and Traefik never reads a half-written file.
 
 To roll back, set the previous release in the route and rebuild again. Keep old release folders until no route names them.
 

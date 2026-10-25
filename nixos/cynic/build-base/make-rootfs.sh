@@ -41,7 +41,7 @@ cp -L "$gccLib/lib/libgcc_s.so.1" "$gccLib/lib/libstdc++.so.6" "$root/lib/"
 
 # The baseline bun needs only glibc. Point its loader at the path inside this image.
 cp "$bun" "$root/usr/local/bin/bun"
-nix shell --inputs-from /etc/nixos/cynic nixpkgs#patchelf -c \
+nix shell --inputs-from /etc/nixos nixpkgs#patchelf -c \
   patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 --set-rpath /lib "$root/usr/local/bin/bun"
 
 echo "rootfs assembled at $root"
