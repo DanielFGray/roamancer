@@ -55,6 +55,10 @@ describe("Tailscale JSON schemas", () => {
       },
     );
   });
+
+  it("decodes an empty Serve config, which Tailscale prints as {}", () => {
+    assert.deepEqual(S.decodeUnknownSync(ServeStatus)({}), { TCP: {}, Web: {} });
+  });
 });
 
 describe("Tailscale Serve ownership", () => {
