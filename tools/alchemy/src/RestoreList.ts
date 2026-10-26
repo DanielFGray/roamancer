@@ -4,7 +4,7 @@ const entries = (
   list: string,
 ): ReadonlyArray<{
   readonly line: string;
-  readonly acl: boolean;
+  readonly roleBearing: boolean;
   readonly extensionComment: boolean;
 }> =>
   list.split("\n").map((line) => {
@@ -12,27 +12,33 @@ const entries = (
     const fields = trimmed.split(/\s+/);
     return {
       line,
-      // pg_restore -l writes the type of a default-privileges entry as two words, "DEFAULT ACL".
-      acl: fields[3] === "ACL" || (fields[3] === "DEFAULT" && fields[4] === "ACL"),
+      // pg_restore -l writes the type of a default-privileges entry as two words, "DEFAULT ACL",
+      // and a row-level security policy as "POLICY". These entries name roles.
+      roleBearing:
+        fields[3] === "ACL" ||
+        (fields[3] === "DEFAULT" && fields[4] === "ACL") ||
+        fields[3] === "POLICY",
       // These entries need the extension's owner.
       extensionComment: fields[3] === "COMMENT" && fields[5] === "EXTENSION",
     };
   });
 
-const selectEntries = (list: string, acls: boolean): string =>
+const selectEntries = (list: string, roleBearing: boolean): string =>
   entries(list)
     .filter(
-      ({ line, acl, extensionComment }) =>
-        line.trim() === "" || line.trim().startsWith(";") || (!extensionComment && acl === acls),
+      ({ line, roleBearing: entryRoleBearing, extensionComment }) =>
+        line.trim() === "" ||
+        line.trim().startsWith(";") ||
+        (!extensionComment && entryRoleBearing === roleBearing),
     )
     .map(({ line }) => line)
     .join("\n");
 
-export const filterRestoreList = (list: string): string => selectEntries(list, false);
+export const objectRestoreList = (list: string): string => selectEntries(list, false);
 
-export const filterAclRestoreList = (list: string): string => selectEntries(list, true);
+export const roleRestoreList = (list: string): string => selectEntries(list, true);
 
-export const remapAclRoles = (sql: string, source: string, target: string): string => {
+export const remapRoles = (sql: string, source: string, target: string): string => {
   return sql.replace(
     new RegExp(`(?<![A-Za-z0-9_$])(?:"${source}"|${source})(?![A-Za-z0-9_$])`, "g"),
     `"${target}"`,
