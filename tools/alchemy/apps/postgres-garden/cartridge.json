@@ -35,8 +35,8 @@
         { "name": "PORT", "value": "3000" },
         { "name": "VITE_ROOT_URL", "value": "https://postgres.garden" },
         { "name": "DATABASE_NAME", "value": "postgres_garden" },
-        { "name": "DATABASE_OWNER", "value": "postgres_garden_owner" },
-        { "name": "DATABASE_VISITOR", "value": "postgres_garden_visitor" }
+        { "name": "DATABASE_OWNER", "database": "postgres_garden", "role": "owner" },
+        { "name": "DATABASE_VISITOR", "database": "postgres_garden", "role": "visitor" }
       ],
       "connections": [],
       "secrets": [

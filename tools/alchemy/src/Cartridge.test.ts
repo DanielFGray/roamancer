@@ -33,6 +33,24 @@ describe("cartridge v2", () => {
     assert.equal(va.access.keyPrefix, "app-needs");
   });
 
+  it("resolves a database role entry to that database's role name", async () => {
+    const cartridge = await Effect.runPromise(
+      decodeFile(fileURLToPath(new URL("../apps/giglist/cartridge.json", import.meta.url))).pipe(
+        Effect.provide(NodeFileSystem.layer),
+      ),
+    );
+    const service = expand(cartridge).find((resource) => resource._tag === "NomadService");
+    assert.ok(service);
+    assert.deepEqual(
+      service.service.environment.filter((entry) => entry.name.startsWith("DATABASE_")),
+      [
+        { name: "DATABASE_NAME", value: "giglist" },
+        { name: "DATABASE_OWNER", value: "giglist_owner" },
+        { name: "DATABASE_VISITOR", value: "giglist_visitor" },
+      ],
+    );
+  });
+
   it("rejects a database name that does not start with the app name", () => {
     assert.throws(() =>
       S.decodeUnknownSync(Cartridge)({

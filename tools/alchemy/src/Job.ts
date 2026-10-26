@@ -1,4 +1,4 @@
-import { Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import * as Match from "effect/Match";
 
 export const ResourceName = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
@@ -128,6 +128,32 @@ export const Placement = S.Union([
 ]);
 export type Placement = typeof Placement.Type;
 
+/**
+ * An array a cartridge file may leave out: an absent list decodes as empty, so the code that
+ * reads a cartridge never tests for the key. The runtime schemas keep their arrays optional,
+ * because Compose drops a list that resolves to nothing.
+ */
+export const cartridgeArray = <A extends S.Constraint>(schema: A) =>
+  S.Array(schema).pipe(S.withDecodingDefaultKey(Effect.succeed([])));
+
+/**
+ * One entry of a cartridge job's `environment`: a literal value, or a role of one of the
+ * cartridge's databases. A cartridge never spells a role name; it names the database and the
+ * role it wants, and `Cartridge.expand` resolves that to the role name of that instance.
+ */
+export const CartridgeEnvironmentEntry = S.Union([
+  S.Struct({ name: EnvironmentVariable, value: S.String }),
+  S.Struct({
+    name: EnvironmentVariable,
+    database: DatabaseIdentifier,
+    role: S.Literals(["owner", "visitor"]),
+  }),
+]);
+export type CartridgeEnvironmentEntry = typeof CartridgeEnvironmentEntry.Type;
+
+/** One entry of a rendered job's `environment`: the name and value the task sees. */
+const EnvironmentValue = S.Struct({ name: EnvironmentVariable, value: S.String });
+
 const JobBaseFields = {
   name: ResourceName,
   image: S.String,
@@ -145,7 +171,7 @@ const JobBaseFields = {
   readOnlyMounts: S.optionalKey(S.Array(Storage)),
   placement: S.optionalKey(Placement),
   routes: S.optionalKey(S.Array(Route)),
-  environment: S.Array(S.Struct({ name: EnvironmentVariable, value: S.String })),
+  environment: S.Array(EnvironmentValue),
   command: S.optionalKey(S.String),
   args: S.optionalKey(S.Array(S.String)),
   connections: S.Array(ServiceConnection),
@@ -170,12 +196,17 @@ export const ExpandedSecretReference = S.Union([
 ]);
 export type ExpandedSecretReference = typeof ExpandedSecretReference.Type;
 
-// A step that runs to completion in the service image before the service starts, with its own secrets.
-const migrateStep = <S extends S.Top>(secret: S) =>
+/**
+ * A step that runs to completion in the service image before the service starts, with its own
+ * secrets. The secrets field itself is a parameter: a cartridge file may leave it out, so the
+ * cartridge schema decodes an absent list as empty, while the runtime schemas Compose builds
+ * keep it optional and drop a list that resolves to nothing.
+ */
+const migrateStep = <S extends S.Constraint>(secrets: S) =>
   S.Struct({
     command: S.optionalKey(S.String),
     args: S.optionalKey(S.Array(S.String)),
-    secrets: S.optionalKey(S.Array(secret)),
+    secrets,
   });
 
 const hostNetworkPorts = S.makeFilter(
@@ -188,21 +219,28 @@ const hostNetworkPorts = S.makeFilter(
 export const ExpandedJob = S.Struct({
   ...JobBaseFields,
   secrets: S.optionalKey(S.Array(ExpandedSecretReference)),
-  migrate: S.optionalKey(migrateStep(ExpandedSecretReference)),
+  migrate: S.optionalKey(migrateStep(S.optionalKey(S.Array(ExpandedSecretReference)))),
 }).check(hostNetworkPorts);
 export type ExpandedJob = typeof ExpandedJob.Type;
 
 export const Job = S.Struct({
   ...JobBaseFields,
   secrets: S.optionalKey(S.Array(SecretReference)),
-  migrate: S.optionalKey(migrateStep(SecretReference)),
+  migrate: S.optionalKey(migrateStep(S.optionalKey(S.Array(SecretReference)))),
 }).check(hostNetworkPorts);
 export type Job = typeof Job.Type;
 
+/**
+ * What a cartridge file says about one job. It may leave `routes`, `secrets` and migrate
+ * `secrets` out, and it states the environment as literal values or database roles, so those
+ * keys are decoded rather than left optional.
+ */
 export const CartridgeJob = S.Struct({
   ...JobBaseFields,
-  secrets: S.optionalKey(S.Array(CartridgeSecretReference)),
-  migrate: S.optionalKey(migrateStep(CartridgeSecretReference)),
+  environment: S.Array(CartridgeEnvironmentEntry),
+  routes: cartridgeArray(Route),
+  secrets: cartridgeArray(CartridgeSecretReference),
+  migrate: S.optionalKey(migrateStep(cartridgeArray(CartridgeSecretReference))),
 }).check(hostNetworkPorts);
 export type CartridgeJob = typeof CartridgeJob.Type;
 

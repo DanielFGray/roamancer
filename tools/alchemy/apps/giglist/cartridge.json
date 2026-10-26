@@ -23,8 +23,8 @@
         { "name": "MAIL_PROVIDER", "value": "cloudflare" },
         { "name": "EMAIL_FROM", "value": "GigList <noreply@dfg.rocks>" },
         { "name": "DATABASE_NAME", "value": "giglist" },
-        { "name": "DATABASE_OWNER", "value": "giglist_owner" },
-        { "name": "DATABASE_VISITOR", "value": "giglist_visitor" },
+        { "name": "DATABASE_OWNER", "database": "giglist", "role": "owner" },
+        { "name": "DATABASE_VISITOR", "database": "giglist", "role": "visitor" },
         { "name": "OTEL_TRACES_EXPORTER", "value": "otlp" },
         { "name": "OTEL_LOGS_EXPORTER", "value": "otlp" }
       ],

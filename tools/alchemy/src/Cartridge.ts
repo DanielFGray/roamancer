@@ -5,13 +5,15 @@ import * as FileSystem from "effect/FileSystem";
 import * as Graph from "effect/Graph";
 import * as S from "effect/Schema";
 import {
+  CartridgeEnvironmentEntry,
   CartridgeJob,
   CartridgeSecretReference,
+  cartridgeArray,
   ExpandedJob,
   ExpandedSecretReference,
   ResourceName,
 } from "./Job.ts";
-import { ExtensionName, PostgresDatabaseProps } from "./PostgresDatabase.ts";
+import { ExtensionName, postgresRoles, PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { adminCredentialPath } from "./AdminCredential.ts";
 
@@ -33,7 +35,10 @@ const PostgresEntry = S.Struct({
   database: DatabaseName,
   server: S.optionalKey(ResourceName),
   // Created in the database before migrations run. Each must be in the server's image.
-  extensions: S.optionalKey(S.Array(ExtensionName)),
+  extensions: cartridgeArray(ExtensionName),
+  // A live database this one is created as a copy of. The copy has its own owner and visitor
+  // roles; expand derives them from the copy's own database name, never from this one.
+  copyFrom: S.optionalKey(DatabaseName),
 });
 
 const ValkeyEntry = S.Struct({
@@ -44,33 +49,33 @@ const ValkeyEntry = S.Struct({
 export const Cartridge = S.Struct({
   apiVersion: S.Literals(["server-ansible/v2"]),
   name: AppName,
-  servers: S.optionalKey(S.Array(S.Union([PostgresServerDeclaration, ValkeyServerDeclaration]))),
-  postgres: S.optionalKey(S.Array(PostgresEntry)),
+  servers: cartridgeArray(S.Union([PostgresServerDeclaration, ValkeyServerDeclaration])),
+  postgres: cartridgeArray(PostgresEntry),
   valkey: S.optionalKey(ValkeyEntry),
   services: S.Array(CartridgeJob),
 }).check(
   S.makeFilter((cartridge) => {
     const issues: Array<string> = [];
     if (
-      (cartridge.servers?.length ?? 0) > 0 &&
-      ((cartridge.postgres?.length ?? 0) > 0 || cartridge.valkey !== undefined)
+      cartridge.servers.length > 0 &&
+      (cartridge.postgres.length > 0 || cartridge.valkey !== undefined)
     ) {
       issues.push("a cartridge cannot both declare servers and postgres/valkey");
     }
     const allJobNames = [
-      ...(cartridge.servers ?? []).map((server) => server.service.name),
+      ...cartridge.servers.map((server) => server.service.name),
       ...cartridge.services.map((service) => service.name),
     ];
     const duplicateJobNames = allJobNames.filter(
       (name, index) => allJobNames.indexOf(name) !== index,
     );
     issues.push(...duplicateJobNames.map((name) => `duplicate job name '${name}'`));
-    const dbNames = (cartridge.postgres ?? []).map((entry) => entry.database);
+    const dbNames = cartridge.postgres.map((entry) => entry.database);
     const duplicateDbNames = dbNames.filter((name, index) => dbNames.indexOf(name) !== index);
     issues.push(...duplicateDbNames.map((name) => `duplicate database '${name}'`));
     const appUnderscore = appIdentifier(cartridge.name);
     issues.push(
-      ...(cartridge.postgres ?? [])
+      ...cartridge.postgres
         .map((entry) => entry.database)
         .filter(
           (database) => !(database === appUnderscore || database.startsWith(`${appUnderscore}_`)),
@@ -79,13 +84,11 @@ export const Cartridge = S.Struct({
     );
     const allJobs = declaredJobs(cartridge).map(({ job }) => job);
     const secretIssues = allJobs.flatMap((job) => {
-      const jobSecrets = [...(job.secrets ?? []), ...(job.migrate?.secrets ?? [])];
+      const jobSecrets = [...job.secrets, ...(job.migrate?.secrets ?? [])];
       return jobSecrets.flatMap((secret) => {
         const result: Array<string> = [];
         if (secret._tag === "PostgresCredentials") {
-          const found = (cartridge.postgres ?? []).some(
-            (entry) => entry.database === secret.database,
-          );
+          const found = cartridge.postgres.some((entry) => entry.database === secret.database);
           if (!found)
             result.push(
               `PostgresCredentials references database '${secret.database}' not in \`postgres\``,
@@ -97,7 +100,7 @@ export const Cartridge = S.Struct({
         return result;
       });
     });
-    const serverMigrateIssues = (cartridge.servers ?? [])
+    const serverMigrateIssues = cartridge.servers
       .filter((server) => server.service.migrate !== undefined)
       .map(() => "server declarations may not declare `migrate`");
     issues.push(...secretIssues);
@@ -173,8 +176,16 @@ const mapSecret = (
   return result;
 };
 
+/**
+ * The value one cartridge environment entry becomes in a rendered task: a literal value stands
+ * as it is, and a database role resolves through the one role-name convention, so no cartridge
+ * ever spells a role name.
+ */
+const environmentValue = (entry: CartridgeEnvironmentEntry) =>
+  "value" in entry ? entry : { name: entry.name, value: postgresRoles(entry.database)[entry.role] };
+
 const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => {
-  const secrets = (job.secrets ?? []).map((secret) => mapSecret(cartridge, secret));
+  const secrets = job.secrets.map((secret) => mapSecret(cartridge, secret));
   const migrateSecrets = (job.migrate?.secrets ?? []).map((secret) => mapSecret(cartridge, secret));
   const migrate =
     job.migrate === undefined
@@ -198,7 +209,7 @@ const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => 
     readOnlyMounts: job.readOnlyMounts,
     placement: job.placement,
     routes: job.routes,
-    environment: job.environment,
+    environment: job.environment.map(environmentValue),
     command: job.command,
     args: job.args,
     connections: job.connections,
@@ -209,13 +220,14 @@ const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => 
 };
 
 export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> => {
-  const databaseResources = (cartridge.postgres ?? []).map((entry) => {
+  const databaseResources = cartridge.postgres.map((entry) => {
     const database = entry.database;
     const server = entry.server ?? "postgres";
+    const roles = postgresRoles(database);
     const props: PostgresDatabaseProps = {
       name: database,
       server,
-      extensions: entry.extensions ?? [],
+      extensions: entry.extensions,
       adminUsername: "postgres",
       adminCredential: {
         _tag: "KvSecret",
@@ -223,8 +235,9 @@ export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> =>
         key: "password",
         env: "POSTGRES_PASSWORD",
       },
-      ownerRole: `${database}_owner`,
-      visitorRole: `${database}_visitor`,
+      ownerRole: roles.owner,
+      visitorRole: roles.visitor,
+      copyFrom: entry.copyFrom,
       connectionName: `alchemy_${database}`,
       credentialRole: postgresLoginRole(database, "api"),
       migrationCredentialRole: postgresLoginRole(database, "migration"),
@@ -304,7 +317,7 @@ export const find = Effect.fn("Cartridge.find")(function* (root: string, name: s
 /** Each OpenBao KV path the cartridge's services read, with the keys it reads there. */
 export const kvKeys = (cartridge: Cartridge) => {
   const references = cartridge.services.flatMap((service) =>
-    [...(service.secrets ?? []), ...(service.migrate?.secrets ?? [])].filter(
+    [...service.secrets, ...(service.migrate?.secrets ?? [])].filter(
       (secret) => secret._tag === "KvSecret",
     ),
   );
@@ -358,13 +371,13 @@ const orderedJobResources = (cartridge: Cartridge): ReadonlyArray<ExpandedResour
  * services, then services. Node indexes in buildJobGraph are positions in this list.
  */
 const declaredJobs = (cartridge: {
-  readonly servers?: ReadonlyArray<{
+  readonly servers: ReadonlyArray<{
     readonly _tag: "PostgresServer" | "ValkeyServer";
     readonly service: CartridgeJob;
   }>;
   readonly services: ReadonlyArray<CartridgeJob>;
 }) => [
-  ...(cartridge.servers ?? []).map((server) => ({ _tag: server._tag, job: server.service })),
+  ...cartridge.servers.map((server) => ({ _tag: server._tag, job: server.service })),
   ...cartridge.services.map((job) => ({ _tag: "NomadService" as const, job })),
 ];
 
