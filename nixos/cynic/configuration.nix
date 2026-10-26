@@ -17,7 +17,8 @@
   networking.networkmanager.enable = true;
 
   # Bun runs Alchemy and scripts/ops-on-host.sh.
-  environment.systemPackages = [ pkgs.bun ];
+  # pg_dump/pg_restore (postgresql_17) are used by ops to copy Postgres databases.
+  environment.systemPackages = [ pkgs.bun pkgs.postgresql_17 ];
 
   users.groups.alchemy = { };
   users.users.dan.extraGroups = [ "alchemy" ];

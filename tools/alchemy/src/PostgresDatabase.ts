@@ -9,6 +9,12 @@ import * as Redacted from "effect/Redacted";
 import * as S from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as PgClient from "@effect/sql-pg/PgClient";
+import { ChildProcess } from "effect/process";
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
+import * as Stream from "effect/Stream";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { filterAclRestoreList, filterRestoreList, remapAclRoles } from "./RestoreList.ts";
 import { KvSecretReference } from "./Job.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
@@ -36,10 +42,17 @@ export const PostgresDatabaseProps = S.Struct({
   credentialRole: CredentialRoleName,
   // The migration login. It joins the owner role.
   migrationCredentialRole: CredentialRoleName,
+  // When set, the database is created as a copy of this live database.
+  copyFrom: S.optional(DatabaseIdentifier),
   defaultTtl: S.String.check(S.isPattern(/^[1-9][0-9]*(s|m|h)$/)),
   maxTtl: S.String.check(S.isPattern(/^[1-9][0-9]*(s|m|h)$/)),
 });
 export type PostgresDatabaseProps = typeof PostgresDatabaseProps.Type;
+
+export const postgresRoles = (database: string) => ({
+  owner: `${database}_owner`,
+  visitor: `${database}_visitor`,
+});
 
 export interface PostgresDatabase extends Alchemy.Resource<
   "Postgres.Database",
@@ -55,6 +68,9 @@ export interface PostgresDatabase extends Alchemy.Resource<
     credentialPath: string;
     migrationCredentialRole: string;
     migrationCredentialPath: string;
+    // True when this resource created the database as a copy. Only such a database is
+    // dropped on delete, so a copyFrom written into a live cartridge cannot drop live data.
+    copy: boolean;
   }
 > {}
 
@@ -65,15 +81,20 @@ export class PostgresDatabaseError extends S.TaggedError<PostgresDatabaseError>(
   {
     operation: S.String,
     target: S.String,
+    detail: S.optional(S.String),
   },
 ) {
   override get message() {
-    return `${this.operation}: ${this.target}`;
+    return `${this.operation}: ${this.target}${Option.match(Option.fromNullishOr(this.detail), {
+      onNone: () => "",
+      onSome: (detail) => `: ${detail}`,
+    })}`;
   }
 }
 
-const attributes = (id: string, props: PostgresDatabaseProps) => ({
+const attributes = (id: string, props: PostgresDatabaseProps, copy: boolean) => ({
   id,
+  copy,
   name: props.name,
   server: props.server,
   ownerRole: props.ownerRole,
@@ -167,10 +188,10 @@ const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (inp
     ),
   );
   const databaseOwner = Option.map(Arr.head(databases), (database) => database.owner);
-  yield* Option.match(databaseOwner, {
+  const created = yield* Option.match(databaseOwner, {
     onNone: () =>
       sql`CREATE DATABASE ${sql(input.name)} OWNER ${sql(input.ownerRole)}`.pipe(
-        Effect.asVoid,
+        Effect.as(true),
         Effect.mapError(
           () =>
             new PostgresDatabaseError({
@@ -181,7 +202,7 @@ const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (inp
       ),
     onSome: (owner) =>
       owner === input.ownerRole
-        ? Effect.void
+        ? Effect.succeed(false)
         : Effect.fail(
             new PostgresDatabaseError({
               operation: "validate database owner",
@@ -190,7 +211,7 @@ const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (inp
           ),
   });
 
-  return yield* Effect.void;
+  return created;
 });
 
 // Runs as the admin, a superuser, so untrusted extensions work too. It checks every name before
@@ -246,29 +267,193 @@ const connectionUrl = (
 ) =>
   `postgresql://{{username}}:{{password}}@${hostForConnectionUrl(location.Address)}:${location.Port}/${database}?sslmode=disable`;
 
-const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
-  readonly id: string;
-  readonly news: PostgresDatabaseProps;
+const runStep = Effect.fn("PostgresDatabase.runStep")(function* (input: {
+  readonly operation: string;
+  readonly target: string;
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+  readonly env: Readonly<Record<string, string>>;
+}) {
+  const spawner = yield* ChildProcessSpawner;
+  const handle = yield* spawner.spawn(
+    ChildProcess.make(input.command, input.args, {
+      env: input.env,
+      // Adds the password to the inherited environment; without it the child has no PATH.
+      extendEnv: true,
+      stdout: "pipe",
+      stderr: "pipe",
+    }),
+  );
+  // Read both pipes at once: a child that fills one pipe while the other is being
+  // drained blocks forever.
+  const [stdout, stderr, exitCode] = yield* Effect.all(
+    [
+      Stream.mkString(Stream.decodeText(handle.stdout)),
+      Stream.mkString(Stream.decodeText(handle.stderr)),
+      handle.exitCode,
+    ],
+    { concurrency: "unbounded" },
+  );
+  if (exitCode !== 0) {
+    return yield* new PostgresDatabaseError({
+      operation: input.operation,
+      target: input.target,
+      detail: stderr.trim(),
+    });
+  }
+  return stdout;
+}, Effect.scoped);
+
+const dropDatabase = Effect.fn("PostgresDatabase.dropDatabase")(function* (name: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const databases = yield* sql<{ readonly name: string }>`
+    SELECT datname AS name FROM pg_database WHERE datname = ${name}
+  `.pipe(
+    Effect.mapError(
+      () => new PostgresDatabaseError({ operation: "find database to drop", target: name }),
+    ),
+  );
+  yield* Option.match(Arr.head(databases), {
+    onNone: () => Effect.void,
+    onSome: () =>
+      Effect.gen(function* () {
+        yield* sql`ALTER DATABASE ${sql(name)} WITH ALLOW_CONNECTIONS false`.pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            () =>
+              new PostgresDatabaseError({
+                operation: "disable database connections",
+                target: name,
+              }),
+          ),
+        );
+        yield* sql`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${name}`.pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            () =>
+              new PostgresDatabaseError({ operation: "terminate database sessions", target: name }),
+          ),
+        );
+        yield* sql`DROP DATABASE IF EXISTS ${sql(name)}`.pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            () => new PostgresDatabaseError({ operation: "drop database", target: name }),
+          ),
+        );
+      }),
+  });
+});
+
+export const copyDatabase = Effect.fn("PostgresDatabase.copyDatabase")(function* (input: {
+  readonly source: string;
+  readonly target: string;
+  readonly location: { readonly Address: string; readonly Port: number };
+  readonly admin: string;
+  readonly password: Redacted.Redacted<string>;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const tmpDir = yield* fs.makeTempDirectoryScoped();
+  const dumpFile = path.join(tmpDir, "dump.fc");
+  const listFile = path.join(tmpDir, "list");
+  const aclListFile = path.join(tmpDir, "acl-list");
+  const restoreFile = path.join(tmpDir, "restore.sql");
+  const env = { PGPASSWORD: Redacted.value(input.password) };
+  const connectionArgs = [
+    "-h",
+    input.location.Address,
+    "-p",
+    String(input.location.Port),
+    "-U",
+    input.admin,
+  ];
+  yield* runStep({
+    operation: "pg_dump",
+    target: input.source,
+    command: "pg_dump",
+    args: ["-Fc", ...connectionArgs, "-f", dumpFile, input.source],
+    env,
+  });
+  const listText = yield* runStep({
+    operation: "pg_restore -l",
+    target: input.source,
+    command: "pg_restore",
+    args: ["-l", dumpFile],
+    env,
+  });
+  yield* fs.writeFileString(listFile, filterRestoreList(listText));
+  yield* fs.writeFileString(aclListFile, filterAclRestoreList(listText));
+  const nonAclSql = yield* runStep({
+    operation: "pg_restore non-ACL script",
+    target: input.target,
+    command: "pg_restore",
+    args: [
+      "--no-owner",
+      `--role=${postgresRoles(input.target).owner}`,
+      "-L",
+      listFile,
+      "-f",
+      "-",
+      dumpFile,
+    ],
+    env,
+  });
+  const aclSql = yield* runStep({
+    operation: "pg_restore ACL script",
+    target: input.target,
+    command: "pg_restore",
+    args: ["-L", aclListFile, "-f", "-", dumpFile],
+    env,
+  });
+  const sourceRoles = postgresRoles(input.source);
+  const targetRoles = postgresRoles(input.target);
+  const remappedAclSql = remapAclRoles(
+    remapAclRoles(aclSql, sourceRoles.owner, targetRoles.owner),
+    sourceRoles.visitor,
+    targetRoles.visitor,
+  );
+  yield* fs.writeFileString(restoreFile, `${nonAclSql}\n${remappedAclSql}`);
+  yield* runStep({
+    operation: "psql restore transaction",
+    target: input.target,
+    command: "psql",
+    args: [
+      "--single-transaction",
+      "-v",
+      "ON_ERROR_STOP=1",
+      ...connectionArgs,
+      "-d",
+      input.target,
+      "-f",
+      restoreFile,
+    ],
+    env,
+  });
+}, Effect.scoped);
+
+/** The server's address, its admin password, and a client layer for one of its databases. */
+const adminConnection = Effect.fn("PostgresDatabase.adminConnection")(function* (input: {
+  readonly props: PostgresDatabaseProps;
   readonly openBao: typeof OpenBao.Service;
   readonly nomad: typeof Nomad.Service;
 }) {
   const location = yield* firstServiceLocation(
-    input.news.server,
-    input.nomad.service(input.news.server),
+    input.props.server,
+    input.nomad.service(input.props.server),
     dependencyRegistrationRetry,
   ).pipe(
     Effect.catchTag("ServiceNotRegistered", () =>
       Effect.fail(
         new PostgresDatabaseError({
           operation: "find PostgreSQL service",
-          target: input.news.server,
+          target: input.props.server,
         }),
       ),
     ),
   );
   const password = yield* input.openBao.readKv(
-    input.news.adminCredential.path,
-    input.news.adminCredential.key,
+    input.props.adminCredential.path,
+    input.props.adminCredential.key,
   );
   const adminLayer = (database: string) =>
     PgClient.layerFrom(
@@ -276,11 +461,26 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
         host: location.Address,
         port: location.Port,
         database,
-        username: input.news.adminUsername,
+        username: input.props.adminUsername,
         password,
         applicationName: "alchemy-postgres-provider",
       }),
     );
+  return { location, password, adminLayer };
+});
+
+const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
+  readonly id: string;
+  readonly news: PostgresDatabaseProps;
+  readonly output: Option.Option<PostgresDatabase["Attributes"]>;
+  readonly openBao: typeof OpenBao.Service;
+  readonly nomad: typeof Nomad.Service;
+}) {
+  const { location, password, adminLayer } = yield* adminConnection({
+    props: input.news,
+    openBao: input.openBao,
+    nomad: input.nomad,
+  });
   const connectError = () =>
     Effect.fail(
       new PostgresDatabaseError({
@@ -288,7 +488,7 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
         target: input.news.server,
       }),
     );
-  yield* provisionDatabase({
+  const created = yield* provisionDatabase({
     username: input.news.adminUsername,
     password,
     name: input.news.name,
@@ -296,12 +496,49 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
     visitorRole: input.news.visitorRole,
   }).pipe(Effect.provide(adminLayer("postgres")), Effect.catchTag("SqlError", connectError));
   // CREATE EXTENSION acts on the database of the connection, so this one opens the app's database.
-  if (input.news.extensions.length > 0) {
-    yield* createExtensions({
-      database: input.news.name,
-      extensions: input.news.extensions,
-    }).pipe(Effect.provide(adminLayer(input.news.name)), Effect.catchTag("SqlError", connectError));
-  }
+  yield* Option.match(Option.fromNullishOr(input.news.copyFrom), {
+    onNone: () =>
+      created && input.news.extensions.length > 0
+        ? createExtensions({ database: input.news.name, extensions: input.news.extensions }).pipe(
+            Effect.provide(adminLayer(input.news.name)),
+            Effect.catchTag("SqlError", connectError),
+          )
+        : Effect.void,
+    onSome: (source) =>
+      created
+        ? Effect.gen(function* () {
+            if (input.news.extensions.length > 0) {
+              yield* createExtensions({
+                database: input.news.name,
+                extensions: input.news.extensions,
+              }).pipe(
+                Effect.provide(adminLayer(input.news.name)),
+                Effect.catchTag("SqlError", connectError),
+              );
+            }
+            yield* copyDatabase({
+              source,
+              target: input.news.name,
+              location,
+              admin: input.news.adminUsername,
+              password,
+            });
+          }).pipe(
+            Effect.onError(() =>
+              dropDatabase(input.news.name).pipe(
+                Effect.provide(adminLayer("postgres")),
+                Effect.catchTag("SqlError", () =>
+                  Effect.logError("Failed to connect while cleaning up a failed database copy"),
+                ),
+                Effect.catchTag("PostgresDatabaseError", (error) =>
+                  Effect.logError(`Failed to clean up a failed database copy: ${error.message}`),
+                ),
+                Effect.ignore,
+              ),
+            ),
+          )
+        : Effect.void,
+  });
 
   const engineConfigName = input.news.connectionName;
   const url = connectionUrl(location, input.news.name);
@@ -335,7 +572,10 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
       },
     ],
   );
-  return attributes(input.id, input.news);
+  const copy =
+    Option.exists(input.output, (output) => output.copy) ||
+    (created && input.news.copyFrom !== undefined);
+  return attributes(input.id, input.news, copy);
 });
 
 export const PostgresDatabaseProvider = () =>
@@ -345,6 +585,10 @@ export const PostgresDatabaseProvider = () =>
       const nomad = yield* Nomad;
       const openBao = yield* OpenBao;
       const journal = yield* OperationJournal;
+      // The copy of a staged database runs pg_dump and pg_restore and writes their files.
+      const platform = yield* Effect.context<
+        ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+      >();
 
       return PostgresDatabase.Provider.of({
         list: () => Effect.succeed([]),
@@ -364,7 +608,7 @@ export const PostgresDatabaseProvider = () =>
             ? undefined
             : { action: "update" as const };
         }),
-        reconcile: Effect.fn(function* ({ news, fqn }) {
+        reconcile: Effect.fn(function* ({ news, output, fqn }) {
           return yield* journal.run(
             {
               resourceId: fqn,
@@ -372,11 +616,12 @@ export const PostgresDatabaseProvider = () =>
               target: `${news.server}/${news.name}`,
               action: "reconcile",
             },
-            reconcile({ id: fqn, news, openBao, nomad }),
+            reconcile({ id: fqn, news, output: Option.fromNullishOr(output), openBao, nomad }).pipe(
+              Effect.provideContext(platform),
+            ),
           );
         }),
-        delete: Effect.fn(function* ({ fqn, olds }) {
-          // Database data and roles outlive an Alchemy deployment. Deletion only releases state ownership.
+        delete: Effect.fn(function* ({ fqn, olds, output }) {
           yield* journal.run(
             {
               resourceId: fqn,
@@ -384,7 +629,44 @@ export const PostgresDatabaseProvider = () =>
               target: `${olds.server}/${olds.name}`,
               action: "delete",
             },
-            Effect.void,
+            // Database data and roles outlive an Alchemy deployment, so deletion only
+            // releases state ownership. A copy is the exception: its writes are discarded
+            // by design, so deleting it drops the database and its own roles.
+            output.copy
+              ? Effect.gen(function* () {
+                  const { adminLayer } = yield* adminConnection({ props: olds, openBao, nomad });
+                  const sql = adminLayer("postgres");
+                  yield* dropDatabase(olds.name).pipe(
+                    Effect.provide(sql),
+                    Effect.catchTag("SqlError", () =>
+                      Effect.fail(
+                        new PostgresDatabaseError({
+                          operation: "connect to PostgreSQL",
+                          target: olds.server,
+                        }),
+                      ),
+                    ),
+                  );
+                  yield* Effect.forEach(
+                    [olds.ownerRole, olds.visitorRole],
+                    (role) =>
+                      Effect.gen(function* () {
+                        const client = yield* SqlClient.SqlClient;
+                        yield* client`DROP ROLE IF EXISTS ${client(role)}`.pipe(
+                          Effect.asVoid,
+                          Effect.mapError(
+                            () =>
+                              new PostgresDatabaseError({
+                                operation: "drop database role",
+                                target: role,
+                              }),
+                          ),
+                        );
+                      }).pipe(Effect.provide(sql)),
+                    { discard: true },
+                  );
+                })
+              : Effect.void,
           );
         }),
       });
