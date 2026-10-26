@@ -25,24 +25,21 @@ export const HealthCheck = S.Union([
 ]);
 export type HealthCheck = typeof HealthCheck.Type;
 
-// A route through Traefik. Tailnet routes accept only Tailscale source ranges.
-// Path prefixes narrow the host, and a longer rule wins in Traefik.
-export const Route = S.Struct({
-  access: S.Literals(["public", "tailnet"]).pipe(
-    S.withDecodingDefaultKey(Effect.succeed("public" as const)),
-  ),
-  host: S.String.check(
-    S.isPattern(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/),
-  ),
+// Public routes carry host routing details; tailnet routes use Tailscale Serve and carry none.
+const RouteHost = S.String.check(
+  S.isPattern(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/),
+);
+const PublicRoute = S.Struct({
+  access: S.Literals(["public"]).pipe(S.withDecodingDefaultKey(Effect.succeed("public" as const))),
+  host: RouteHost,
   pathPrefixes: S.optionalKey(S.NonEmptyArray(S.String.check(S.isPattern(/^\/[A-Za-z0-9_./-]*$/)))),
   responseHeaders: S.optionalKey(
     S.Array(S.Struct({ name: S.String.check(S.isPattern(/^[A-Za-z0-9-]+$/)), value: S.String })),
   ),
 });
+const TailnetRoute = S.Struct({ access: S.Literals(["tailnet"]) });
+export const Route = S.Union([PublicRoute, TailnetRoute]);
 export type Route = typeof Route.Type;
-
-// The source ranges Tailscale assigns its nodes, IPv4 and IPv6.
-const tailscaleRanges = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"];
 
 export const KvSecretReference = S.TaggedStruct("KvSecret", {
   path: SecretPath,
@@ -154,11 +151,15 @@ export const CartridgeEnvironmentEntry = S.Union([
     database: DatabaseIdentifier,
     role: S.Literals(["owner", "visitor"]),
   }),
+  S.Struct({ name: EnvironmentVariable, route: ResourceName }),
 ]);
 export type CartridgeEnvironmentEntry = typeof CartridgeEnvironmentEntry.Type;
 
 /** One entry of a rendered job's `environment`: the name and value the task sees. */
-const EnvironmentValue = S.Struct({ name: EnvironmentVariable, value: S.String });
+const EnvironmentValue = S.Union([
+  S.Struct({ name: EnvironmentVariable, value: S.String }),
+  S.Struct({ name: EnvironmentVariable, route: ResourceName }),
+]);
 
 const JobBaseFields = {
   name: ResourceName,
@@ -177,7 +178,6 @@ const JobBaseFields = {
   readOnlyMounts: S.optionalKey(S.Array(Storage)),
   placement: S.optionalKey(Placement),
   routes: S.optionalKey(S.Array(Route)),
-  environment: S.Array(EnvironmentValue),
   command: S.optionalKey(S.String),
   args: S.optionalKey(S.Array(S.String)),
   connections: S.Array(ServiceConnection),
@@ -215,25 +215,42 @@ const migrateStep = <S extends S.Constraint>(secrets: S) =>
     secrets,
   });
 
+const atMostOneTailnetRoute = S.makeFilter((job: { routes?: ReadonlyArray<Route> }) =>
+  (job.routes?.filter((route) => route.access === "tailnet").length ?? 0) > 1
+    ? "a job may have at most one tailnet route"
+    : undefined,
+);
+
 const hostNetworkPorts = S.makeFilter(
-  (job: { networkMode: string; hostPort: string | number; containerPort: number }) =>
-    job.networkMode === "host" && job.hostPort !== job.containerPort
+  (job: {
+    networkMode: string;
+    hostPort: string | number;
+    containerPort: number;
+    routes?: ReadonlyArray<Route>;
+  }) => {
+    if (job.networkMode === "host" && job.routes?.some((route) => route.access === "tailnet")) {
+      return "tailnet routes require bridge or pasta networking";
+    }
+    return job.networkMode === "host" && job.hostPort !== job.containerPort
       ? "host networking requires a fixed hostPort equal to containerPort"
-      : undefined,
+      : undefined;
+  },
 );
 
 export const ExpandedJob = S.Struct({
   ...JobBaseFields,
+  environment: S.Array(EnvironmentValue),
   secrets: S.optionalKey(S.Array(ExpandedSecretReference)),
   migrate: S.optionalKey(migrateStep(S.optionalKey(S.Array(ExpandedSecretReference)))),
-}).check(hostNetworkPorts);
+}).check(hostNetworkPorts, atMostOneTailnetRoute);
 export type ExpandedJob = typeof ExpandedJob.Type;
 
 export const Job = S.Struct({
   ...JobBaseFields,
+  environment: S.Array(S.Struct({ name: EnvironmentVariable, value: S.String })),
   secrets: S.optionalKey(S.Array(SecretReference)),
   migrate: S.optionalKey(migrateStep(S.optionalKey(S.Array(SecretReference)))),
-}).check(hostNetworkPorts);
+}).check(hostNetworkPorts, atMostOneTailnetRoute);
 export type Job = typeof Job.Type;
 
 /**
@@ -247,7 +264,7 @@ export const CartridgeJob = S.Struct({
   routes: cartridgeArray(Route),
   secrets: cartridgeArray(CartridgeSecretReference),
   migrate: S.optionalKey(migrateStep(cartridgeArray(CartridgeSecretReference))),
-}).check(hostNetworkPorts);
+}).check(hostNetworkPorts, atMostOneTailnetRoute);
 export type CartridgeJob = typeof CartridgeJob.Type;
 
 // Ends each environment line in a rendered template. A trim marker (`{{-`) strips the template
@@ -533,7 +550,7 @@ const toTask = (
  * check the same path too.
  */
 export const routeTags = (job: Job): ReadonlyArray<string> => {
-  const routes = job.routes ?? [];
+  const routes = (job.routes ?? []).filter((route) => route.access === "public");
   if (routes.length === 0) return [];
   const service = job.name;
   const healthTags =
@@ -551,27 +568,11 @@ export const routeTags = (job: Job): ReadonlyArray<string> => {
         ? `Host(\`${route.host}\`)`
         : `Host(\`${route.host}\`) && (${paths.join(" || ")})`;
     const headers = route.responseHeaders ?? [];
-    const tailnet = route.access === "tailnet";
-    // A router has one middlewares label, so every middleware the route needs goes in it.
-    const middlewares = [
-      ...(tailnet ? [`${router}-tailnet`] : []),
-      ...(headers.length === 0 ? [] : [`${router}-headers`]),
-    ];
+    const middlewares = headers.length === 0 ? [] : [`${router}-headers`];
     return [
       `traefik.http.routers.${router}.rule=${rule}`,
       `traefik.http.routers.${router}.entrypoints=web`,
       `traefik.http.routers.${router}.service=${service}`,
-      // A tailnet route shares the public entrypoint, so the allow list is what keeps it off
-      // the internet: Traefik runs on the host network and sees each client's real address.
-      // Its certificate is the wildcard of its parent domain, from the DNS-01 resolver, because
-      // Let's Encrypt cannot reach a tailnet host for the TLS challenge.
-      ...(tailnet
-        ? [
-            `traefik.http.middlewares.${router}-tailnet.ipallowlist.sourcerange=${tailscaleRanges.join(",")}`,
-            `traefik.http.routers.${router}.tls.certresolver=cloudflare`,
-            `traefik.http.routers.${router}.tls.domains[0].main=*.${route.host.slice(route.host.indexOf(".") + 1)}`,
-          ]
-        : []),
       ...headers.map(
         (header) =>
           `traefik.http.middlewares.${router}-headers.headers.customresponseheaders.${header.name}=${header.value}`,

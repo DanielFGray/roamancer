@@ -44,7 +44,7 @@ case "${1:-}" in
   destroy)
     # Destroy is defined by persisted state and must not evaluate the cartridge.
     bun src/cli.ts check-login
-    exec bunx alchemy "$@" destroy.run.ts
+    exec bunx alchemy "$@" -c state.run.ts
     ;;
   drift)
     # Drift reads OpenBao, and Alchemy reports an expired token deep inside a provider
@@ -53,7 +53,8 @@ case "${1:-}" in
     exec bunx alchemy "$@"
     ;;
   state)
-    exec bunx alchemy "$@"
+    # State commands read the store only; the state-only entry needs no cartridge or image.
+    exec bunx alchemy "$@" -c state.run.ts
     ;;
   *)
     exec bun src/cli.ts "$@"

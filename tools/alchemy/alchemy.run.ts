@@ -8,6 +8,7 @@ import { NomadJob } from "./src/NomadJob.ts";
 import { PostgresDatabase } from "./src/PostgresDatabase.ts";
 import { ValkeyAccess } from "./src/ValkeyAccess.ts";
 import { AdminCredential } from "./src/AdminCredential.ts";
+import { TailscaleServe } from "./src/TailscaleServe.ts";
 import * as Cartridge from "./src/Cartridge.ts";
 import * as StagedCartridge from "./src/StagedCartridge.ts";
 import { compose } from "./src/Compose.ts";
@@ -45,13 +46,30 @@ const stack = Alchemy.Stack(
           return Cartridge.expand(staged);
         }),
     });
-    const deployed = yield* compose(resources, {
+    // Each constructor needs its own provider; the union names them all, which inference cannot.
+    const deployed = yield* compose<
+      | Alchemy.Provider<NomadJob>
+      | Alchemy.Provider<PostgresDatabase>
+      | Alchemy.Provider<ValkeyAccess>
+      | Alchemy.Provider<AdminCredential>
+      | Alchemy.Provider<TailscaleServe>
+    >(resources, {
       NomadJob,
       PostgresDatabase,
       ValkeyAccess,
       AdminCredential,
-    });
-    return { resources: deployed.outputs };
+      TailscaleServe,
+    }).pipe(
+      // The stack fails only with ConfigError; an unresolved route reference is one.
+      Effect.mapError(
+        (error) =>
+          new Config.ConfigError(new ConfigProvider.SourceError({ message: error.message })),
+      ),
+    );
+    return {
+      resources: deployed.outputs,
+      tailnetUrls: deployed.tailnetServes.map((serve) => serve.resource.url),
+    };
   }),
 );
 

@@ -3,6 +3,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Graph from "effect/Graph";
+import * as Match from "effect/Match";
 import * as S from "effect/Schema";
 import {
   CartridgeEnvironmentEntry,
@@ -114,7 +115,19 @@ export const Cartridge = S.Struct({
             `Service '${job.name}' connects to undeclared service '${connection.service}'`,
         ),
     );
-    issues.push(...undeclaredIssues);
+    const routeIssues = allJobs.flatMap((job) =>
+      job.environment.flatMap((entry) => {
+        if (!("route" in entry)) return [];
+        const target = allJobs.find((candidate) => candidate.name === entry.route);
+        if (target === undefined) {
+          return [`Service '${job.name}' references undeclared tailnet route '${entry.route}'`];
+        }
+        return target.routes.some((route) => route.access === "tailnet")
+          ? []
+          : [`Service '${job.name}' references '${entry.route}', which has no tailnet route`];
+      }),
+    );
+    issues.push(...undeclaredIssues, ...routeIssues);
     const jobGraph = buildJobGraph(allJobs);
     if (!Graph.isAcyclic(jobGraph)) {
       const cycleIssues = Graph.stronglyConnectedComponents(jobGraph)
@@ -139,7 +152,8 @@ export type ExpandedResource =
   | { readonly _tag: "ValkeyServer"; readonly service: ExpandedJob }
   | { readonly _tag: "NomadService"; readonly service: ExpandedJob }
   | { readonly _tag: "PostgresDatabase"; readonly database: PostgresDatabaseProps }
-  | { readonly _tag: "ValkeyAccess"; readonly access: ValkeyAccessConfig };
+  | { readonly _tag: "ValkeyAccess"; readonly access: ValkeyAccessConfig }
+  | { readonly _tag: "TailscaleServe"; readonly serviceName: string };
 
 export const postgresLoginRole = (database: string, login: "api" | "migration") =>
   login === "api" ? `alchemy_${database}_api` : `alchemy_${database}_migration`;
@@ -182,7 +196,11 @@ const mapSecret = (
  * ever spells a role name.
  */
 const environmentValue = (entry: CartridgeEnvironmentEntry) =>
-  "value" in entry ? entry : { name: entry.name, value: postgresRoles(entry.database)[entry.role] };
+  "value" in entry
+    ? entry
+    : "database" in entry
+      ? { name: entry.name, value: postgresRoles(entry.database)[entry.role] }
+      : entry;
 
 const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => {
   const secrets = job.secrets.map((secret) => mapSecret(cartridge, secret));
@@ -357,13 +375,31 @@ export const decodeFile = Effect.fn("Cartridge.decodeFile")(function* (path: str
 const orderedJobResources = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> => {
   const jobs = declaredJobs(cartridge);
   const order = Graph.topo(buildJobGraph(jobs.map(({ job }) => job)));
-  return [...Graph.values(order)].map(
-    (index) =>
-      ({
-        _tag: jobs[index]._tag,
-        service: toRenderedJob(cartridge, jobs[index].job),
-      }) as ExpandedResource,
-  );
+  return [...Graph.values(order)].flatMap((index) => {
+    const { _tag, job } = jobs[index];
+    const service = toRenderedJob(cartridge, job);
+    const serveResources: ReadonlyArray<ExpandedResource> = job.routes.some(
+      (route) => route.access === "tailnet",
+    )
+      ? [{ _tag: "TailscaleServe", serviceName: job.name }]
+      : [];
+    const jobResource = Match.value(_tag).pipe(
+      Match.when(
+        "PostgresServer",
+        () => ({ _tag: "PostgresServer", service }) satisfies ExpandedResource,
+      ),
+      Match.when(
+        "ValkeyServer",
+        () => ({ _tag: "ValkeyServer", service }) satisfies ExpandedResource,
+      ),
+      Match.when(
+        "NomadService",
+        () => ({ _tag: "NomadService", service }) satisfies ExpandedResource,
+      ),
+      Match.exhaustive,
+    );
+    return [...serveResources, jobResource];
+  });
 };
 
 /**
@@ -391,10 +427,16 @@ const buildJobGraph = (jobs: ReadonlyArray<CartridgeJob>): Graph.DirectedGraph<n
   return Graph.directed<number, string>((mutable) => {
     const nodes = jobs.map((_, index) => Graph.addNode(mutable, index));
     jobs.forEach((job, index) => {
-      for (const connection of job.connections) {
-        const provider = indexByName.get(connection.service);
+      const dependencies = [
+        ...job.connections.map((connection) => connection.service),
+        ...job.environment.flatMap((entry) =>
+          "route" in entry && entry.route !== job.name ? [entry.route] : [],
+        ),
+      ];
+      for (const dependency of dependencies) {
+        const provider = indexByName.get(dependency);
         if (provider !== undefined) {
-          Graph.addEdge(mutable, nodes[provider], nodes[index], connection.service);
+          Graph.addEdge(mutable, nodes[provider], nodes[index], dependency);
         }
       }
     });

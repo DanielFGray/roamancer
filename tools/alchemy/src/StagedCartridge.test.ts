@@ -6,13 +6,7 @@ import * as S from "effect/Schema";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
 import { Cartridge, decodeFile, expand } from "./Cartridge.ts";
-import {
-  ImagesNotShared,
-  UntaggedImage,
-  WritableStorage,
-  baseName,
-  staged,
-} from "./StagedCartridge.ts";
+import { ImagesNotShared, WritableStorage, baseName, staged } from "./StagedCartridge.ts";
 
 const candidate = "registry.cluster:5000/candidate:abc123@sha256:staged";
 
@@ -69,17 +63,11 @@ describe("staged cartridge", () => {
     const copy = await stage(live);
     assert.deepEqual(
       copy.services.flatMap((service) => service.routes),
-      [
-        {
-          ...live.services[0].routes[0],
-          host: "abc123.staged.giglist.dfg.rocks",
-          access: "tailnet",
-        },
-      ],
+      [{ access: "tailnet" }],
     );
   });
 
-  it("rewrites route root URLs and refuses an untagged image", async () => {
+  it("rewrites live route root URLs to the staged service reference", async () => {
     const live = await load("../apps/giglist/cartridge.json");
     const withRoot: Cartridge = {
       ...live,
@@ -95,15 +83,47 @@ describe("staged cartridge", () => {
     assert.ok(
       copy.services[0].environment.some(
         (entry) =>
-          "value" in entry &&
-          entry.name === "ROOT_URL" &&
-          entry.value === "https://abc123.staged.giglist.dfg.rocks",
+          "route" in entry && entry.name === "ROOT_URL" && entry.route === "giglist-api-staged",
       ),
     );
-    const error = await Effect.runPromise(
-      Effect.flip(staged(live, "registry.cluster/candidate@sha256:digest")),
+    assert.equal(copy.services[0].image, candidate);
+  });
+
+  it("retargets route entries for its own services and preserves external route names", async () => {
+    const live = await load("../apps/giglist/cartridge.json");
+    const withRoutes: Cartridge = {
+      ...live,
+      services: live.services.map((service) =>
+        service.name === "giglist-api"
+          ? {
+              ...service,
+              environment: [
+                ...service.environment,
+                { name: "OWN_ROUTE", route: "giglist-api" },
+                { name: "EXTERNAL_ROUTE", route: "platform-openobserve" },
+              ],
+            }
+          : service,
+      ),
+    };
+    const copy = await stage(withRoutes);
+    const environment = copy.services.find(
+      (service) => service.name === "giglist-api-staged",
+    )?.environment;
+    assert.ok(
+      environment?.some(
+        (entry) =>
+          "route" in entry && entry.name === "OWN_ROUTE" && entry.route === "giglist-api-staged",
+      ),
     );
-    assert.ok(error instanceof UntaggedImage);
+    assert.ok(
+      environment?.some(
+        (entry) =>
+          "route" in entry &&
+          entry.name === "EXTERNAL_ROUTE" &&
+          entry.route === "platform-openobserve",
+      ),
+    );
   });
 
   it("expands the staged copy with expand unchanged", async () => {

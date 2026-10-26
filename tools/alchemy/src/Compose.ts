@@ -2,11 +2,13 @@ import * as Effect from "effect/Effect";
 import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
+import * as S from "effect/Schema";
 import type { ExpandedResource } from "./Cartridge.ts";
 import { Job, ExpandedJob, ExpandedSecretReference, SecretReference } from "./Job.ts";
 import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { AdminCredentialProps } from "./AdminCredential.ts";
+import { TailscaleServeProps, backendPort } from "./TailscaleServe.ts";
 
 type NomadJobOutput = {
   readonly id: string;
@@ -29,6 +31,9 @@ type AdminCredentialOutput = {
   readonly path: string;
 };
 
+type TailscaleServeOutput = { readonly id: string; readonly port: number; readonly url: string };
+type DeployedServe = { readonly name: string; readonly resource: TailscaleServeOutput };
+
 type DeployedService = {
   readonly name: string;
   readonly resource: NomadJobOutput;
@@ -46,10 +51,15 @@ type DeployedPostgresDatabase = {
   readonly resource: PostgresDatabaseOutput;
 };
 
+export class ComposeError extends S.TaggedError<ComposeError>()("ComposeError", {
+  message: S.String,
+}) {}
+
 export type DeployedState = {
   readonly services: ReadonlyArray<DeployedService>;
   readonly valkeyAccesses: ReadonlyArray<DeployedValkeyAccess>;
   readonly postgresDatabases: ReadonlyArray<DeployedPostgresDatabase>;
+  readonly tailnetServes: ReadonlyArray<DeployedServe>;
   readonly outputs: ReadonlyArray<{
     readonly kind: string;
     readonly id: string;
@@ -69,6 +79,10 @@ export type Constructors<R> = {
     id: string,
     props: ValkeyAccessConfig,
   ) => Effect.Effect<ValkeyAccessOutput, never, R>;
+  readonly TailscaleServe: (
+    id: string,
+    props: TailscaleServeProps,
+  ) => Effect.Effect<TailscaleServeOutput, never, R>;
   readonly AdminCredential: (
     id: string,
     props: AdminCredentialProps,
@@ -85,12 +99,29 @@ export type Constructors<R> = {
 export const compose = <R>(
   resources: ReadonlyArray<ExpandedResource>,
   constructors: Constructors<R>,
-): Effect.Effect<DeployedState, never, R> =>
+): Effect.Effect<DeployedState, ComposeError, R> =>
   Effect.reduce(
     resources,
     () => initialState(),
     (state, declaration) =>
       Match.value(declaration).pipe(
+        Match.when({ _tag: "TailscaleServe" }, ({ serviceName }) =>
+          Effect.gen(function* () {
+            const resource = yield* constructors.TailscaleServe(
+              `tailscale-serve-${serviceName}`,
+              {},
+            );
+            return {
+              ...state,
+              tailnetServes: Arr.append(state.tailnetServes, { name: serviceName, resource }),
+              outputs: Arr.append(state.outputs, {
+                kind: "TailscaleServe",
+                id: resource.id,
+                name: serviceName,
+              }),
+            };
+          }),
+        ),
         Match.when({ _tag: "NomadService" }, ({ service }) =>
           declareJob("NomadService", service, state, [], constructors),
         ),
@@ -174,6 +205,7 @@ const initialState = (): DeployedState => ({
   services: Arr.empty<DeployedService>(),
   valkeyAccesses: Arr.empty<DeployedValkeyAccess>(),
   postgresDatabases: Arr.empty<DeployedPostgresDatabase>(),
+  tailnetServes: Arr.empty<DeployedServe>(),
   outputs: Arr.empty<{ readonly kind: string; readonly id: string; readonly name: string }>(),
 });
 
@@ -255,8 +287,36 @@ const declareJob = <R>(
       service.migrate === undefined
         ? undefined
         : { ...service.migrate, secrets: migrateSecrets.length === 0 ? undefined : migrateSecrets };
+    const environment = yield* Effect.forEach(service.environment, (entry) =>
+      "value" in entry
+        ? Effect.succeed(entry)
+        : Option.match(
+            Arr.findFirst(state.tailnetServes, (serve) => serve.name === entry.route),
+            {
+              onNone: () =>
+                Effect.fail(
+                  new ComposeError({ message: `unresolved tailnet route '${entry.route}'` }),
+                ),
+              onSome: (serve) => Effect.succeed({ name: entry.name, value: serve.resource.url }),
+            },
+          ),
+    );
+    const hostPort = service.routes?.some((route) => route.access === "tailnet")
+      ? Option.match(
+          Arr.findFirst(state.tailnetServes, (serve) => serve.name === service.name),
+          {
+            onNone: () =>
+              Effect.fail(
+                new ComposeError({ message: `unresolved Tailscale Serve '${service.name}'` }),
+              ),
+            onSome: (serve) => Effect.succeed(backendPort(serve.resource.port)),
+          },
+        )
+      : Effect.succeed(service.hostPort);
     const resource = yield* constructors.NomadJob(service.name, {
       ...service,
+      hostPort: yield* hostPort,
+      environment,
       connections,
       secrets: secrets.length === 0 ? undefined : secrets,
       migrate,

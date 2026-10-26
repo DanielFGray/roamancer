@@ -1,9 +1,53 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as S from "effect/Schema";
-import { Job, toJobSpec, secretPolicyPaths } from "./Job.ts";
+import { Job, Route, toJobSpec, secretPolicyPaths } from "./Job.ts";
 
 describe("Nomad workload rendering", () => {
+  it("decodes public routes by default and accepts a hostless tailnet route", () => {
+    assert.deepEqual(S.decodeUnknownSync(Route)({ host: "example.test" }), {
+      access: "public",
+      host: "example.test",
+    });
+    assert.deepEqual(S.decodeUnknownSync(Route)({ access: "tailnet" }), { access: "tailnet" });
+  });
+
+  it("rejects tailnet routes on host networking with a specific reason", () => {
+    assert.throws(
+      () =>
+        S.decodeUnknownSync(Job)({
+          name: "preview",
+          image: "image",
+          hostPort: 80,
+          containerPort: 80,
+          cpu: 100,
+          memoryMB: 128,
+          networkMode: "host",
+          environment: [],
+          connections: [],
+          routes: [{ access: "tailnet" }],
+        }),
+      /tailnet routes require bridge or pasta networking/,
+    );
+  });
+
+  it("rejects a job with two tailnet routes", () => {
+    assert.equal(
+      S.decodeUnknownOption(Job)({
+        name: "preview",
+        image: "image",
+        hostPort: "dynamic",
+        containerPort: 3000,
+        cpu: 100,
+        memoryMB: 128,
+        networkMode: "bridge",
+        environment: [],
+        connections: [],
+        routes: [{ access: "tailnet" }, { access: "tailnet" }],
+      })._tag,
+      "None",
+    );
+  });
   it("places a job on one named node, on every node, or anywhere", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "edge",
@@ -74,7 +118,7 @@ describe("Nomad workload rendering", () => {
       "None",
     );
   });
-  it("renders tailnet access controls and cloudflare certificate tags", () => {
+  it("does not send tailnet routes to public Traefik", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "preview",
       image: "image",
@@ -85,31 +129,10 @@ describe("Nomad workload rendering", () => {
       networkMode: "bridge",
       environment: [],
       connections: [],
-      routes: [
-        {
-          host: "abc.staged.giglist.dfg.rocks",
-          access: "tailnet",
-          responseHeaders: [{ name: "X-Robots-Tag", value: "noindex" }],
-        },
-      ],
+      routes: [{ access: "tailnet" }],
     });
     const tags = toJobSpec(job, "o").TaskGroups[0].Services[0].Tags;
-    assert.ok(
-      tags.includes(
-        "traefik.http.middlewares.preview-0-tailnet.ipallowlist.sourcerange=100.64.0.0/10,fd7a:115c:a1e0::/48",
-      ),
-    );
-    assert.ok(tags.includes("traefik.http.routers.preview-0.tls.certresolver=cloudflare"));
-    // One middlewares label carries both, so response headers never drop the allow list.
-    assert.deepEqual(
-      tags.filter((tag) => tag.startsWith("traefik.http.routers.preview-0.middlewares=")),
-      ["traefik.http.routers.preview-0.middlewares=preview-0-tailnet,preview-0-headers"],
-    );
-    assert.ok(
-      tags.includes(
-        "traefik.http.routers.preview-0.tls.domains[0].main=*.staged.giglist.dfg.rocks",
-      ),
-    );
+    assert.deepEqual(tags, []);
   });
   it("gives every task the node's OTLP collector address, which the job's own environment overrides", () => {
     const job = S.decodeUnknownSync(Job)({

@@ -43,10 +43,24 @@ const stage = Command.make(
   args,
   Effect.fn(function* ({ name, folder }) {
     const image = yield* buildAndPush(name, folder);
-    yield* run(`${root}/scripts/ops`, ["deploy", "--stage", `${name}-staged`], {
+    const stageName = `${name}-staged`;
+    yield* run(`${root}/scripts/ops`, ["deploy", "--stage", stageName], {
       STAGED_IMAGE: image.tagged,
     });
+    const state = yield* output(`${root}/scripts/ops`, [
+      "state",
+      "read",
+      `cartridge/${stageName}/output`,
+    ]);
+    const deployed = yield* S.decodeUnknownEffect(
+      S.fromJsonString(S.Struct({ tailnetUrls: S.Array(S.String) })),
+    )(state).pipe(
+      Effect.mapError(
+        (cause) => new ReleaseError({ message: `could not read staged URLs: ${cause}` }),
+      ),
+    );
     yield* Console.log(`Staged ${image.tagged}`);
+    yield* Effect.forEach(deployed.tailnetUrls, (url) => Console.log(url));
   }),
 ).pipe(Command.withDescription("Build and deploy a tailnet-only staged instance"));
 

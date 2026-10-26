@@ -10,6 +10,7 @@ import { Job } from "./Job.ts";
 import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { AdminCredentialProps } from "./AdminCredential.ts";
+import { TailscaleServeProps } from "./TailscaleServe.ts";
 
 const readCartridge = (rel: string) => {
   const path = fileURLToPath(new URL(rel, import.meta.url));
@@ -22,6 +23,7 @@ const makeConstructors = () => {
   const postgresDatabaseCalls: Array<{ id: string; props: PostgresDatabaseProps }> = [];
   const valkeyAccessCalls: Array<{ id: string; props: ValkeyAccessConfig }> = [];
   const adminCredentialCalls: Array<{ id: string; props: AdminCredentialProps }> = [];
+  const tailscaleServeCalls: Array<{ id: string; props: TailscaleServeProps }> = [];
   // Alchemy keys resources by logical ID within a stack, so a repeated ID would merge two resources.
   const declaredIds = new Set<string>();
   const declare = <A>(id: string, output: A) =>
@@ -54,6 +56,10 @@ const makeConstructors = () => {
         credentialPath: `secret/data/valkey/${props.resourceName}`,
       });
     },
+    TailscaleServe: (id: string, props: TailscaleServeProps) => {
+      tailscaleServeCalls.push({ id, props });
+      return declare(id, { id: `${id}-ts`, port: 9000, url: `https://cynic.tail.example:9000` });
+    },
     AdminCredential: (id: string, props: AdminCredentialProps) => {
       adminCredentialCalls.push({ id, props });
       return declare(id, {
@@ -69,10 +75,45 @@ const makeConstructors = () => {
     postgresDatabaseCalls,
     valkeyAccessCalls,
     adminCredentialCalls,
+    tailscaleServeCalls,
   };
 };
 
 describe("Compose", () => {
+  it("declares a Serve lease before the job and resolves its route URL and backend port", async () => {
+    const source = readCartridge("../examples/app-needs/cartridge.json");
+    const service = source.services[0];
+    const cartridge: Cartridge = {
+      ...source,
+      services: source.services.map((job) =>
+        job.name === service.name
+          ? {
+              ...job,
+              routes: [{ access: "tailnet" }],
+              environment: [...job.environment, { name: "ROOT_URL", route: job.name }],
+            }
+          : job,
+      ),
+    };
+    const { constructors, nomadJobCalls, tailscaleServeCalls } = makeConstructors();
+    const deployed = await Effect.runPromise(compose(expand(cartridge), constructors));
+    assert.deepEqual(
+      deployed.tailnetServes.map((serve) => serve.resource.url),
+      ["https://cynic.tail.example:9000"],
+    );
+    assert.equal(tailscaleServeCalls.length, 1);
+    const job = nomadJobCalls.find((call) => call.id === service.name);
+    assert.ok(job);
+    assert.equal(job.props.hostPort, 10000);
+    assert.ok(
+      job.props.environment.some(
+        (entry) =>
+          "value" in entry &&
+          entry.name === "ROOT_URL" &&
+          entry.value === "https://cynic.tail.example:9000",
+      ),
+    );
+  });
   it("composes app-needs: postgres and valkey servers, credential paths, urls", async () => {
     const cartridge = readCartridge("../examples/app-needs/cartridge.json");
     const resources = expand(cartridge);
