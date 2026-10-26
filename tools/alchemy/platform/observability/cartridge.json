@@ -35,6 +35,12 @@
           "key": "root_password",
           "env": "ZO_ROOT_USER_PASSWORD"
         }
+      ],
+      "routes": [
+        {
+          "host": "o11y.danielfgray.com",
+          "access": "tailnet"
+        }
       ]
     },
     {
@@ -65,9 +71,7 @@
           "value": "ops@example.com"
         }
       ],
-      "args": [
-        "--config=env:OTEL_CONFIG"
-      ],
+      "args": ["--config=env:OTEL_CONFIG"],
       "connections": [
         {
           "service": "openobserve",
