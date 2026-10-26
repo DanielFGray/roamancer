@@ -5,6 +5,7 @@ Every host backs up to one restic repository in Cloudflare R2. Restic encrypts o
 | Host | Unit | What | When |
 | --- | --- | --- | --- |
 | cynic | `restic-backups-postgres` | `pg_dumpall` of every database and role, as `postgres.sql` | 03:00, then prune and check |
+| cynic | `restic-backups-alchemy` | Alchemy state (`~/alchemy/.alchemy/state` of the operator account) and a `VACUUM INTO` copy of its operation journal, `alchemy-operations.sqlite` | 02:00 |
 | atheist | `restic-backups-files` | `/srv/www` (static site releases) and `/var/lib/nomad/traefik-acme` (Let's Encrypt account and certificates) | 01:00 |
 
 Each timer adds up to 30 minutes of random delay, and runs a missed backup at the next boot.
@@ -62,6 +63,8 @@ sudo restic-files restore latest --host atheist --target /tmp/restore --include 
 ```
 
 Then compare and copy the folders you need. Restore into an empty target, never over the live folder.
+
+To restore Alchemy state onto a rebuilt cynic, restore `--host cynic --include /home/dan/alchemy/.alchemy/state --include /var/lib/backups/alchemy-operations.sqlite` the same way, then put the state folder back at `~/alchemy/.alchemy/state` and the journal at `~/alchemy/.alchemy/operations.sqlite` before the first `ops plan`.
 
 ## Restore the Postgres cluster
 
