@@ -23,6 +23,10 @@
   users.groups.alchemy = { };
   users.users.dan.extraGroups = [ "alchemy" ];
 
+  # Alchemy runs as dan and serves tailnet routes with `tailscale serve`, which needs the
+  # Tailscale operator; without it every serve change would need sudo.
+  services.tailscale.extraSetFlags = [ "--operator=dan" ];
+
   # dan's password lives only in /etc/shadow (users.mutableUsers), set with
   # `sudo passwd dan`.
   system.stateVersion = "26.05";
