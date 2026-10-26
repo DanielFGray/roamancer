@@ -58,7 +58,12 @@ const makeConstructors = () => {
     },
     TailscaleServe: (id: string, props: TailscaleServeProps) => {
       tailscaleServeCalls.push({ id, props });
-      return declare(id, { id: `${id}-ts`, port: 9000, url: `https://cynic.tail.example:9000` });
+      return declare(id, {
+        id: `${id}-ts`,
+        port: 9000,
+        backendPort: 10000,
+        url: `https://cynic.tail.example:9000`,
+      });
     },
     AdminCredential: (id: string, props: AdminCredentialProps) => {
       adminCredentialCalls.push({ id, props });

@@ -8,7 +8,7 @@ import { Job, ExpandedJob, ExpandedSecretReference, SecretReference } from "./Jo
 import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { AdminCredentialProps } from "./AdminCredential.ts";
-import { TailscaleServeProps, backendPort } from "./TailscaleServe.ts";
+import { TailscaleServeProps } from "./TailscaleServe.ts";
 
 type NomadJobOutput = {
   readonly id: string;
@@ -31,7 +31,13 @@ type AdminCredentialOutput = {
   readonly path: string;
 };
 
-type TailscaleServeOutput = { readonly id: string; readonly port: number; readonly url: string };
+type TailscaleServeOutput = {
+  readonly id: string;
+  readonly port: number;
+  // A resource attribute, not port + 1000 here: at plan time the port is an unresolved Output.
+  readonly backendPort: number;
+  readonly url: string;
+};
 type DeployedServe = { readonly name: string; readonly resource: TailscaleServeOutput };
 
 type DeployedService = {
@@ -309,7 +315,7 @@ const declareJob = <R>(
               Effect.fail(
                 new ComposeError({ message: `unresolved Tailscale Serve '${service.name}'` }),
               ),
-            onSome: (serve) => Effect.succeed(backendPort(serve.resource.port)),
+            onSome: (serve) => Effect.succeed(serve.resource.backendPort),
           },
         )
       : Effect.succeed(service.hostPort);

@@ -56,7 +56,7 @@ export type TailscaleServeProps = typeof TailscaleServeProps.Type;
 export interface TailscaleServe extends Alchemy.Resource<
   "Tailscale.Serve",
   TailscaleServeProps,
-  { id: string; port: number; url: string }
+  { id: string; port: number; backendPort: number; url: string }
 > {}
 export const TailscaleServe = Alchemy.Resource<TailscaleServe>("Tailscale.Serve");
 
@@ -145,7 +145,12 @@ export const TailscaleServeProvider = Provider.effect(
         if (ownership._tag === "Missing") {
           yield* ensureServed(port, backendPort(port));
         }
-        return { id: fqn, port, url: `https://${hostname}:${port}` };
+        return {
+          id: fqn,
+          port,
+          backendPort: backendPort(port),
+          url: `https://${hostname}:${port}`,
+        };
       }),
       delete: Effect.fn(function* ({ output }) {
         const status = yield* decodeCommand(ServeStatus, ["serve", "status", "--json"]);
