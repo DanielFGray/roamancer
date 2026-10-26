@@ -13,6 +13,7 @@ const job: JobSnapshot = {
   Stable: false,
   JobModifyIndex: 41,
   Meta: { "alchemy.owner": owner, "alchemy.provider": "Nomad.Job" },
+  TaskGroups: [],
 };
 const deployment = (status: Deployment["Status"], description: string): Deployment => ({
   ID: "d1",

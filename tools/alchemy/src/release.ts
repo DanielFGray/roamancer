@@ -1,10 +1,6 @@
-/**
- * `ops release <name> [folder]`: ships an app's current commit. It builds the image from a
- * clean git checkout, pushes it to the cluster registry, pins the pushed digest in the
- * cartridge, deploys the cartridge through `scripts/ops`, and commits the pin.
- *
- * It runs on the workstation, not the control host: the workstation's Docker holds the
- * registry's client certificate (nixos/cynic/cluster-tls-operations.md).
+/*
+ * Workstation-side image commands. Build and push happen once here; the control host
+ * receives only the immutable reference and runs Alchemy against its own state.
  */
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
@@ -14,87 +10,149 @@ import { Argument, Command } from "effect/cli";
 import { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Cartridge from "./Cartridge.ts";
+import { imageDigest, sameImageDigest } from "./ReleaseImage.ts";
 
-/** A failure the operator can act on: printed as its message alone, without a stack trace. */
+/** A failure the operator can act on, printed without a stack trace. */
 export class ReleaseError extends S.TaggedError<ReleaseError>()("ReleaseError", {
   message: S.String,
 }) {
   readonly [Runtime.errorReported] = false;
 }
 
-// The script's folder's parent, so the command works from any current folder.
 const root = new URL("..", import.meta.url).pathname;
+const args = {
+  name: Argument.String("name").pipe(Argument.withDescription("The cartridge's name")),
+  folder: Argument.String("folder").pipe(
+    Argument.withDescription("The app's build folder, a clean git checkout"),
+    Argument.withDefault("."),
+  ),
+};
 
 const release = Command.make(
   "release",
-  {
-    name: Argument.String("name").pipe(Argument.withDescription("The cartridge's name")),
-    folder: Argument.String("folder").pipe(
-      Argument.withDescription("The app's build folder, a clean git checkout"),
-      Argument.withDefault("."),
-    ),
-  },
+  args,
   Effect.fn(function* ({ name, folder }) {
-    const { path, cartridge } = yield* Cartridge.find(root, name);
-    const repository = yield* oneRepository(cartridge, path);
-
-    // The image is tagged with the commit, so uncommitted changes would ship under a
-    // commit that does not contain them.
-    const changes = yield* output("git", ["-C", folder, "status", "--porcelain"]);
-    if (changes.trim() !== "") {
-      return yield* new ReleaseError({
-        message: `${folder} has uncommitted changes; commit them first.`,
-      });
-    }
-    // Fails on an expired OpenBao token now, not after the build.
-    yield* run(`${root}/scripts/ops`, ["check-login"]);
-
-    const commit = (yield* output("git", ["-C", folder, "rev-parse", "--short", "HEAD"])).trim();
-    const image = `${repository}:${commit}`;
-    yield* run("docker", ["build", "-t", image, folder]);
-    yield* run("docker", ["push", image]);
-    // The registry compresses the layers again, so only the pushed digest names what
-    // Nomad pulls.
-    const digests = yield* output("docker", [
-      "inspect",
-      "--format",
-      "{{range .RepoDigests}}{{println .}}{{end}}",
-      image,
-    ]);
-    const pinned = yield* Arr.findFirst(digests.split("\n"), (d) =>
-      d.startsWith(`${repository}@`),
-    ).pipe(
-      Option.match({
-        onNone: () =>
-          Effect.fail(new ReleaseError({ message: `docker records no digest for ${image}` })),
-        onSome: Effect.succeed,
-      }),
-    );
-
-    const fs = yield* FileSystem.FileSystem;
-    const text = yield* fs.readFileString(path);
-    const pins = new Set(images(cartridge));
-    yield* fs.writeFileString(
-      path,
-      [...pins].reduce((t, pin) => t.replaceAll(pin, pinned), text),
-    );
-
-    yield* run(`${root}/scripts/ops`, ["deploy", "--stage", name]);
-    yield* pins.has(pinned)
-      ? Console.log(`${name} was already pinned to ${pinned}`)
-      : run("git", [
-          "-C",
-          root,
-          "commit",
-          "-q",
-          "-m",
-          `chore(${name}): release ${commit}`,
-          "--",
-          path,
-        ]);
-    yield* Console.log(`Released ${pinned}`);
+    const image = yield* buildAndPush(name, folder);
+    yield* pinAndDeploy(name, image);
+    yield* Console.log(`Released ${image.pinned}`);
   }),
 ).pipe(Command.withDescription("Build, push, pin and deploy an app's current commit"));
+
+const stage = Command.make(
+  "stage",
+  args,
+  Effect.fn(function* ({ name, folder }) {
+    const image = yield* buildAndPush(name, folder);
+    yield* run(`${root}/scripts/ops`, ["deploy", "--stage", `${name}-staged`], {
+      STAGED_IMAGE: image.tagged,
+    });
+    yield* Console.log(`Staged ${image.tagged}`);
+  }),
+).pipe(Command.withDescription("Build and deploy a tailnet-only staged instance"));
+
+const promote = Command.make(
+  "promote",
+  args,
+  Effect.fn(function* ({ name, folder }) {
+    const image = yield* buildAndPush(name, folder);
+    const staged = (yield* output(`${root}/scripts/ops`, ["stage-image", "--stable", name])).trim();
+    if (!sameImageDigest(image.tagged, staged)) {
+      return yield* new ReleaseError({
+        message: `refusing promotion: staged image ${staged} does not match ${image.tagged}`,
+      });
+    }
+    yield* pinAndDeploy(name, image);
+    yield* run(`${root}/scripts/ops`, ["destroy", "--stage", `${name}-staged`], {
+      STAGED_IMAGE: staged,
+    });
+    yield* Console.log(`Promoted ${image.pinned} and discarded ${name}-staged`);
+  }),
+).pipe(Command.withDescription("Release the staged commit live, then discard its stage"));
+
+const discard = Command.make(
+  "discard",
+  { name: args.name },
+  Effect.fn(function* ({ name }) {
+    const image = (yield* output(`${root}/scripts/ops`, ["stage-image", name])).trim();
+    yield* run(`${root}/scripts/ops`, ["destroy", "--stage", `${name}-staged`], {
+      STAGED_IMAGE: image,
+    });
+    yield* Console.log(`Discarded ${name}-staged`);
+  }),
+).pipe(Command.withDescription("Destroy a staged instance"));
+
+const commands = Command.make("ops-image").pipe(
+  Command.withDescription("Build and manage staged application images"),
+  Command.withSubcommands([release, stage, promote, discard]),
+);
+
+/** Build one commit, push it, and retain both the mutable tag and pushed digest. */
+const buildAndPush = Effect.fn("buildAndPush")(function* (name: string, folder: string) {
+  const { path, cartridge } = yield* Cartridge.find(root, name);
+  const repository = yield* oneRepository(cartridge, path);
+  const changes = yield* output("git", ["-C", folder, "status", "--porcelain"]);
+  if (changes.trim() !== "") {
+    return yield* new ReleaseError({
+      message: `${folder} has uncommitted changes; commit them first.`,
+    });
+  }
+  yield* run(`${root}/scripts/ops`, ["check-login"]);
+  const commit = (yield* output("git", ["-C", folder, "rev-parse", "--short", "HEAD"])).trim();
+  const tagged = `${repository}:${commit}`;
+  yield* run("docker", ["build", "-t", tagged, folder]);
+  yield* run("docker", ["push", tagged]);
+  const digests = yield* output("docker", [
+    "inspect",
+    "--format",
+    "{{range .RepoDigests}}{{println .}}{{end}}",
+    tagged,
+  ]);
+  const pinned = yield* Arr.findFirst(digests.split("\n"), (digest) =>
+    digest.startsWith(`${repository}@`),
+  ).pipe(
+    Option.match({
+      onNone: () =>
+        Effect.fail(new ReleaseError({ message: `docker records no digest for ${tagged}` })),
+      onSome: Effect.succeed,
+    }),
+  );
+  const digest = yield* Option.match(imageDigest(pinned), {
+    onNone: () =>
+      Effect.fail(new ReleaseError({ message: `docker records an invalid digest for ${tagged}` })),
+    onSome: Effect.succeed,
+  });
+  return { commit, pinned, tagged: `${tagged}@${digest}` };
+});
+
+const pinAndDeploy = Effect.fn("pinAndDeploy")(function* (
+  name: string,
+  image: { readonly commit: string; readonly pinned: string },
+) {
+  const { pinned } = image;
+  const { path, cartridge } = yield* Cartridge.find(root, name);
+  const fs = yield* FileSystem.FileSystem;
+  const text = yield* fs.readFileString(path);
+  const pins = new Set(images(cartridge));
+  yield* fs.writeFileString(
+    path,
+    [...pins].reduce((contents, pin) => contents.replaceAll(pin, pinned), text),
+  );
+  yield* run(`${root}/scripts/ops`, ["deploy", "--stage", name]);
+  if (pins.has(pinned)) {
+    yield* Console.log(`${name} was already pinned to ${pinned}`);
+  } else {
+    yield* run("git", [
+      "-C",
+      root,
+      "commit",
+      "-q",
+      "-m",
+      `chore(${name}): release ${image.commit}`,
+      "--",
+      path,
+    ]);
+  }
+});
 
 /** Every image reference in the cartridge's services. */
 const images = (cartridge: Cartridge.Cartridge) =>
@@ -103,7 +161,7 @@ const images = (cartridge: Cartridge.Cartridge) =>
 /** The one registry repository the cartridge's images come from, without tag or digest. */
 const oneRepository = (cartridge: Cartridge.Cartridge, path: string) => {
   const repositories = [
-    ...new Set(images(cartridge).map((image) => image.replace(/[@:][^/]*$/, ""))),
+    ...new Set(images(cartridge).map((image) => image.replace(/@.*$/, "").replace(/:[^/:]+$/, ""))),
   ];
   return repositories.length === 1
     ? Effect.succeed(repositories[0])
@@ -114,30 +172,42 @@ const oneRepository = (cartridge: Cartridge.Cartridge, path: string) => {
       );
 };
 
-/** Runs a command with the terminal attached, and fails when it exits non-zero. */
-const run = Effect.fn("run")(function* (command: string, args: ReadonlyArray<string>) {
+const run = Effect.fn("run")(function* (
+  command: string,
+  commandArgs: ReadonlyArray<string>,
+  env?: Record<string, string>,
+) {
   const spawner = yield* ChildProcessSpawner;
   const code = yield* spawner.exitCode(
-    ChildProcess.make(command, args, { stdin: "inherit", stdout: "inherit", stderr: "inherit" }),
+    ChildProcess.make(command, commandArgs, {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+      env,
+      extendEnv: env !== undefined,
+    }),
   );
-  if (code !== 0) {
-    return yield* new ReleaseError({ message: `${command} ${args.join(" ")} exited ${code}` });
-  }
+  if (code !== 0)
+    return yield* new ReleaseError({
+      message: `${command} ${commandArgs.join(" ")} exited ${code}`,
+    });
 });
 
-/** Runs a command and returns its output, failing when it exits non-zero. */
-const output = Effect.fn("output")(function* (command: string, args: ReadonlyArray<string>) {
+const output = Effect.fn("output")(function* (command: string, commandArgs: ReadonlyArray<string>) {
   const spawner = yield* ChildProcessSpawner;
-  const handle = yield* spawner.spawn(ChildProcess.make(command, args, { stderr: "inherit" }));
+  const handle = yield* spawner.spawn(
+    ChildProcess.make(command, commandArgs, { stderr: "inherit" }),
+  );
   const text = yield* Stream.mkString(Stream.decodeText(handle.stdout));
   const code = yield* handle.exitCode;
-  if (code !== 0) {
-    return yield* new ReleaseError({ message: `${command} ${args.join(" ")} exited ${code}` });
-  }
+  if (code !== 0)
+    return yield* new ReleaseError({
+      message: `${command} ${commandArgs.join(" ")} exited ${code}`,
+    });
   return text;
 }, Effect.scoped);
 
-release.pipe(
+commands.pipe(
   Command.run({ version: "1" }),
   Effect.tapErrorTag("ReleaseError", (error) => Console.error(error.message)),
   Effect.provide(BunServices.layer),

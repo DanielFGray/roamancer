@@ -26,6 +26,12 @@ const JobSnapshot = S.Struct({
   Stable: S.Boolean,
   JobModifyIndex: S.Number,
   Meta: S.NullOr(NomadMeta),
+  // A task of a driver other than podman or docker has no image.
+  TaskGroups: S.Array(
+    S.Struct({
+      Tasks: S.Array(S.Struct({ Config: S.Struct({ image: S.optionalKey(S.String) }) })),
+    }),
+  ),
 });
 export type JobSnapshot = typeof JobSnapshot.Type;
 

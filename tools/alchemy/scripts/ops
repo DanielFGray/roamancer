@@ -5,6 +5,9 @@
 #   ops secret set giglist github_client_secret
 #   ops status giglist
 #   ops release giglist [folder]  build, push, pin and deploy the app's current commit
+#   ops stage giglist [folder]    deploy the current commit as a staged instance
+#   ops promote giglist [folder]  deploy the staged commit live, then discard the stage
+#   ops discard giglist           destroy a staged instance
 #   ops --help
 # The control host runs the Nomad server, OpenBao and the Alchemy state; set
 # OPS_HOST to reach a different one. Each run first syncs tools/alchemy to
@@ -12,11 +15,32 @@
 # The host's Alchemy state and node_modules stay.
 set -eu
 # Building and pushing need the workstation's Docker and registry certificate.
-[ "${1:-}" = release ] && { shift; exec bun "$(dirname "$0")/../src/release.ts" "$@"; }
+case "${1:-}" in
+  --help | -h)
+    printf '%s\n' \
+      'Usage: ops <command> [arguments]' \
+      '  release <name> [folder]  build, push, pin and deploy a commit' \
+      '  stage <name> [folder]    deploy the commit as a tailnet-only stage' \
+      '  promote <name> [folder]  release the staged commit live, then discard it' \
+      '  discard <name>           destroy the staged instance' \
+      '  deploy|plan|destroy ...  run Alchemy on the control host' \
+      '  secret|status|logs ...   manage secrets and inspect Nomad' \
+      'Set OPS_HOST to select the control host.'
+    exit 0
+    ;;
+  release | stage | promote | discard)
+    command=$1
+    shift
+    exec bun "$(dirname "$0")/../src/release.ts" "$command" "$@"
+    ;;
+esac
 host=${OPS_HOST:-cynic.dlab}
 here=$(cd "$(dirname "$0")/.." && pwd)
 rsync -a --exclude node_modules --exclude .alchemy --exclude logs "$here/" "$host:alchemy/"
 quoted=""
 for arg in "$@"; do quoted="$quoted '$(printf %s "$arg" | sed "s/'/'\\\\''/g")'"; done
+# A staged deploy reads its image from STAGED_IMAGE; pass it through `env`, quoted like the arguments.
+remote="alchemy/scripts/ops-on-host.sh$quoted"
+if [ "${STAGED_IMAGE+x}" = x ]; then remote="env '$(printf %s "STAGED_IMAGE=$STAGED_IMAGE" | sed "s/'/'\\\\''/g")' $remote"; fi
 # The remote shell starts in the home folder.
-exec ssh -t "$host" "alchemy/scripts/ops-on-host.sh$quoted"
+exec ssh -t "$host" "$remote"

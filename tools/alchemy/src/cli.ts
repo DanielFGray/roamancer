@@ -28,6 +28,7 @@ import * as NomadLive from "./Nomad.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
 import * as TaskLog from "./TaskLog.ts";
+import * as StagedCartridge from "./StagedCartridge.ts";
 
 /** A failure the operator can act on: printed as its message alone, without a stack trace. */
 export class CliError extends S.TaggedError<CliError>()("CliError", { message: S.String }) {
@@ -129,7 +130,8 @@ const secret = Command.make("secret").pipe(
 
 /** Each KV path the cartridge reads, the keys it reads there, and the keys stored there. */
 const storedSecrets = Effect.fn("storedSecrets")(function* (name: string) {
-  const { cartridge } = yield* Cartridge.find(root, name);
+  const cartridgeName = Option.getOrElse(StagedCartridge.baseName(name), () => name);
+  const { cartridge } = yield* Cartridge.find(root, cartridgeName);
   yield* requireLogin;
   const bao = yield* OpenBao;
   return yield* Effect.forEach(Cartridge.kvKeys(cartridge), ([path, keys]) =>
@@ -259,9 +261,60 @@ const referencedPath = (
   return Effect.succeed(path);
 };
 
+const stageImage = Command.make(
+  "stage-image",
+  {
+    name,
+    stable: Flag.Boolean("stable").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription("Fail unless every staged job's current version deployed successfully"),
+    ),
+  },
+  Effect.fn(function* ({ name, stable }) {
+    const { cartridge } = yield* Cartridge.find(root, name);
+    const nomad = yield* Nomad;
+    // Only application services run the candidate image; a server keeps its own.
+    const jobs = cartridge.services.map(
+      (service) => `${service.name}${StagedCartridge.stagedSuffix}`,
+    );
+    // A staged deploy can stop after registering some jobs, so the jobs Nomad has are enough.
+    const snapshots = (yield* Effect.forEach(jobs, (job) => nomad.job(job))).flatMap(
+      Option.toArray,
+    );
+    if (snapshots.length === 0) {
+      return yield* new CliError({
+        message: `Nomad has no staged job of '${name}'; if the staged deploy stopped before registering one, run STAGED_IMAGE=<image> ops destroy --stage ${name}${StagedCartridge.stagedSuffix}`,
+      });
+    }
+    const unstable = snapshots
+      .filter((snapshot) => !snapshot.Stable)
+      .map((snapshot) => snapshot.ID);
+    if (stable && (snapshots.length < jobs.length || unstable.length > 0)) {
+      return yield* new CliError({
+        message: `the staged instance of '${name}' is not fully deployed (${[...unstable, ...jobs.filter((job) => !snapshots.some((s) => s.ID === job))].join(", ")}); fix or discard it first`,
+      });
+    }
+    const unique = [
+      ...new Set(
+        snapshots.flatMap((snapshot) =>
+          snapshot.TaskGroups.flatMap((group) =>
+            group.Tasks.flatMap((task) => Option.toArray(Option.fromNullishOr(task.Config.image))),
+          ),
+        ),
+      ),
+    ];
+    if (unique.length !== 1) {
+      return yield* new CliError({
+        message: `the staged jobs of '${name}' run ${unique.length} images; expected one`,
+      });
+    }
+    yield* Console.log(unique[0]);
+  }),
+).pipe(Command.withDescription("Print the image a staged instance runs"));
+
 const cli = Command.make("ops").pipe(
-  Command.withDescription("OpenBao login, secrets, and Nomad status and logs"),
-  Command.withSubcommands([login, checkLogin, secret, status, logs]),
+  Command.withDescription("OpenBao login, secrets, Nomad status and logs"),
+  Command.withSubcommands([login, checkLogin, secret, status, logs, stageImage]),
 );
 
 cli.pipe(
