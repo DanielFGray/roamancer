@@ -41,8 +41,13 @@ case "${1:-}" in
     bun src/cli.ts secret check "$(stage "$@")"
     exec bunx alchemy "$@"
     ;;
-  destroy | drift)
-    # These read OpenBao, and Alchemy reports an expired token deep inside a provider
+  destroy)
+    # Destroy is defined by persisted state and must not evaluate the cartridge.
+    bun src/cli.ts check-login
+    exec bunx alchemy "$@" destroy.run.ts
+    ;;
+  drift)
+    # Drift reads OpenBao, and Alchemy reports an expired token deep inside a provider
     # call, so check it first.
     bun src/cli.ts check-login
     exec bunx alchemy "$@"

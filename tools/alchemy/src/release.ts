@@ -62,9 +62,7 @@ const promote = Command.make(
       });
     }
     yield* pinAndDeploy(name, image);
-    yield* run(`${root}/scripts/ops`, ["destroy", "--stage", `${name}-staged`], {
-      STAGED_IMAGE: staged,
-    });
+    yield* run(`${root}/scripts/ops`, ["destroy", "--stage", `${name}-staged`]);
     yield* Console.log(`Promoted ${image.pinned} and discarded ${name}-staged`);
   }),
 ).pipe(Command.withDescription("Release the staged commit live, then discard its stage"));
@@ -73,10 +71,7 @@ const discard = Command.make(
   "discard",
   { name: args.name },
   Effect.fn(function* ({ name }) {
-    const image = (yield* output(`${root}/scripts/ops`, ["stage-image", name])).trim();
-    yield* run(`${root}/scripts/ops`, ["destroy", "--stage", `${name}-staged`], {
-      STAGED_IMAGE: image,
-    });
+    yield* run(`${root}/scripts/ops`, ["destroy", "--stage", `${name}-staged`]);
     yield* Console.log(`Discarded ${name}-staged`);
   }),
 ).pipe(Command.withDescription("Destroy a staged instance"));

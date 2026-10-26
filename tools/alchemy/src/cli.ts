@@ -283,7 +283,7 @@ const stageImage = Command.make(
     );
     if (snapshots.length === 0) {
       return yield* new CliError({
-        message: `Nomad has no staged job of '${name}'; if the staged deploy stopped before registering one, run STAGED_IMAGE=<image> ops destroy --stage ${name}${StagedCartridge.stagedSuffix}`,
+        message: `Nomad has no staged job of '${name}'.`,
       });
     }
     const unstable = snapshots

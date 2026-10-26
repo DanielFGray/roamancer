@@ -7,7 +7,7 @@
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",
     "plan": "alchemy plan",
     "deploy": "alchemy deploy",
-    "destroy": "alchemy destroy",
+    "destroy": "alchemy destroy destroy.run.ts",
     "staged:plan": "./staged-host-runner.sh plan",
     "staged:deploy": "./staged-host-runner.sh deploy",
     "staged:destroy": "./staged-host-runner.sh destroy",
