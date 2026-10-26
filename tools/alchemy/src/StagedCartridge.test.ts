@@ -5,14 +5,14 @@ import * as Option from "effect/Option";
 import * as S from "effect/Schema";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
-import { Cartridge, decodeFile, expand } from "./Cartridge.ts";
+import { AppCartridge, Cartridge, decodeFile, expand } from "./Cartridge.ts";
 import { ImagesNotShared, WritableStorage, baseName, staged } from "./StagedCartridge.ts";
 
 const candidate = "registry.cluster:5000/candidate:abc123@sha256:staged";
 
 const load = (relative: string) =>
   Effect.runPromise(
-    decodeFile(fileURLToPath(new URL(relative, import.meta.url))).pipe(
+    decodeFile(fileURLToPath(new URL(relative, import.meta.url)), AppCartridge).pipe(
       Effect.provide(NodeFileSystem.layer),
     ),
   );

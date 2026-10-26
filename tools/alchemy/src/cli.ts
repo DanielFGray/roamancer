@@ -28,6 +28,7 @@ import * as NomadLive from "./Nomad.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
 import * as TaskLog from "./TaskLog.ts";
+import * as Deployments from "./Deployments.ts";
 import * as StagedCartridge from "./StagedCartridge.ts";
 
 /** A failure the operator can act on: printed as its message alone, without a stack trace. */
@@ -71,85 +72,50 @@ const checkLogin = Command.make("check-login", {}, () => requireLogin).pipe(
   Command.withDescription("Fail unless the OpenBao token from `login` is still valid"),
 );
 
-const secretSet = Command.make(
-  "set",
-  { name, key: Argument.String("key").pipe(Argument.withDescription("The secret's key")) },
-  Effect.fn(function* ({ name, key }) {
-    const { cartridge } = yield* Cartridge.find(root, name);
-    const paths = [...Cartridge.kvKeys(cartridge)]
-      .filter(([, keys]) => keys.includes(key))
-      .map(([path]) => path);
-    const path = yield* referencedPath(name, key, paths, cartridge);
-    yield* requireLogin;
-    const value = yield* Prompt.run(Prompt.Password({ message: `${path} ${key}` }));
-    const bao = yield* OpenBao;
-    yield* bao.writeKvKey(path, key, value);
-    yield* Console.log(`Set ${key} at ${path}. Running tasks restart with the new value.`);
-  }),
-).pipe(Command.withDescription("Store one secret a cartridge references; prompts for the value"));
-
-const secretList = Command.make(
-  "list",
-  { name },
-  Effect.fn(function* ({ name }) {
-    yield* Effect.forEach(yield* storedSecrets(name), ({ path, keys, stored }) =>
-      Console.log(
-        [
-          path,
-          ...keys.map((key) => `  ${stored.includes(key) ? "set    " : "MISSING"} ${key}`),
-          ...stored.filter((key) => !keys.includes(key)).map((key) => `  unused  ${key}`),
-        ].join("\n"),
-      ),
-    );
-  }),
-).pipe(Command.withDescription("Show which referenced secrets are set; never prints values"));
-
 const secretCheck = Command.make(
   "check",
   { name },
   Effect.fn(function* ({ name }) {
-    const missing = (yield* storedSecrets(name)).flatMap(({ path, keys, stored }) =>
-      keys.filter((key) => !stored.includes(key)).map((key) => `  ${path} ${key}`),
+    const cartridgeName = Option.getOrElse(StagedCartridge.baseName(name), () => name);
+    const cartridge = yield* Cartridge.resolve(root, cartridgeName);
+    yield* requireLogin;
+    const bao = yield* OpenBao;
+    const stored = new Map(
+      yield* Effect.forEach(Cartridge.kvKeys(cartridge).keys(), (path) =>
+        bao
+          .readKvKeys(path)
+          .pipe(
+            Effect.map(
+              (keys) => [path, Option.getOrElse(keys, (): ReadonlyArray<string> => [])] as const,
+            ),
+          ),
+      ),
     );
+    const missing = Cartridge.missingSecrets(cartridge, stored);
     if (missing.length > 0) {
       return yield* new CliError({
         message: [
           `${name} reads secrets that are not set, so its tasks would wait forever:`,
-          ...missing,
-          `Set each with \`ops secret set ${name} <key>\`.`,
+          ...missing.map(({ path, key }) => `  ${path} ${key}`),
+          "Set each with `ops secret set <key>` in the cartridge's repository.",
         ].join("\n"),
       });
     }
   }),
 ).pipe(Command.withDescription("Fail when a secret the cartridge references is not set"));
 
+// The workstation sets and lists secrets (src/secrets.ts); the host keeps the check that
+// guards each plan and deploy against the sent or recorded cartridge.
 const secret = Command.make("secret").pipe(
-  Command.withDescription("Manage a cartridge's OpenBao secrets"),
-  Command.withSubcommands([secretSet, secretList, secretCheck]),
+  Command.withDescription("Check a cartridge's OpenBao secrets before a deploy"),
+  Command.withSubcommands([secretCheck]),
 );
-
-/** Each KV path the cartridge reads, the keys it reads there, and the keys stored there. */
-const storedSecrets = Effect.fn("storedSecrets")(function* (name: string) {
-  const cartridgeName = Option.getOrElse(StagedCartridge.baseName(name), () => name);
-  const { cartridge } = yield* Cartridge.find(root, cartridgeName);
-  yield* requireLogin;
-  const bao = yield* OpenBao;
-  return yield* Effect.forEach(Cartridge.kvKeys(cartridge), ([path, keys]) =>
-    bao.readKvKeys(path).pipe(
-      Effect.map((stored) => ({
-        path,
-        keys,
-        stored: Option.getOrElse(stored, (): ReadonlyArray<string> => []),
-      })),
-    ),
-  );
-});
 
 const status = Command.make(
   "status",
   { name },
   Effect.fn(function* ({ name }) {
-    const { cartridge } = yield* Cartridge.find(root, name);
+    const cartridge = yield* Cartridge.resolve(root, name);
     const nomad = yield* Nomad;
     yield* Effect.forEach(cartridge.services, (service) =>
       nomad.allocations(service.name).pipe(
@@ -238,29 +204,6 @@ const requireLogin = Effect.gen(function* () {
   );
 });
 
-const referencedPath = (
-  name: string,
-  key: string,
-  paths: ReadonlyArray<string>,
-  cartridge: Cartridge.Cartridge,
-) => {
-  const [path, ...others] = paths;
-  if (path === undefined) {
-    const known = [...Cartridge.kvKeys(cartridge).values()].flat().join(", ");
-    return Effect.fail(
-      new CliError({
-        message: `${name} references no secret key '${key}'. Referenced: ${known || "none"}`,
-      }),
-    );
-  }
-  if (others.length > 0) {
-    return Effect.fail(
-      new CliError({ message: `${name} reads '${key}' from several paths: ${paths.join(", ")}` }),
-    );
-  }
-  return Effect.succeed(path);
-};
-
 const stageImage = Command.make(
   "stage-image",
   {
@@ -271,7 +214,7 @@ const stageImage = Command.make(
     ),
   },
   Effect.fn(function* ({ name, stable }) {
-    const { cartridge } = yield* Cartridge.find(root, name);
+    const cartridge = yield* Cartridge.resolve(root, name);
     const nomad = yield* Nomad;
     // Only application services run the candidate image; a server keeps its own.
     const jobs = cartridge.services.map(
@@ -312,16 +255,116 @@ const stageImage = Command.make(
   }),
 ).pipe(Command.withDescription("Print the image a staged instance runs"));
 
+const deploymentList = Command.make(
+  "list",
+  { name },
+  Effect.fn(function* ({ name }) {
+    const deployments = yield* Deployments.Deployments;
+    const all = yield* deployments.list(name);
+    if (all.length === 0) return yield* Console.log(`No recorded deployment of '${name}'.`);
+    yield* Effect.forEach(all, (deployment) =>
+      Console.log(
+        `${deployment.id}\t${deployment.deployedAt}\t${deployment.revision}\t${images(deployment.cartridge).join(" ")}`,
+      ),
+    );
+  }),
+).pipe(Command.withDescription("List an app's recorded deployments, newest first"));
+
+const deploymentCheck = Command.make(
+  "check",
+  { name },
+  Effect.fn(function* ({ name }) {
+    const sent = yield* sentDeployment(name);
+    const deployments = yield* Deployments.Deployments;
+    yield* deployments.checkOrigin(name, sent.origin);
+  }),
+).pipe(
+  Command.withDescription(
+    "Fail unless the cartridge in CARTRIDGE_FILE is valid, pins its images, and comes from the app's repository",
+  ),
+);
+
+const deploymentRecord = Command.make(
+  "record",
+  { name },
+  Effect.fn(function* ({ name }) {
+    const sent = yield* sentDeployment(name);
+    const deployments = yield* Deployments.Deployments;
+    const recorded = yield* deployments.record({ name, ...sent });
+    yield* Console.log(`Recorded deployment ${recorded.id} of ${name} at ${recorded.revision}.`);
+  }),
+).pipe(Command.withDescription("Record the cartridge in CARTRIDGE_FILE as deployed"));
+
+const deploymentRestore = Command.make(
+  "restore",
+  {
+    name,
+    id: Argument.Int("id").pipe(Argument.withDescription("The deployment to restore")),
+    file: Argument.String("file").pipe(Argument.withDescription("Where to write its cartridge")),
+  },
+  Effect.fn(function* ({ name, id, file }) {
+    const deployments = yield* Deployments.Deployments;
+    const found = yield* deployments.get(name, id);
+    if (Option.isNone(found)) {
+      return yield* new CliError({ message: `'${name}' has no recorded deployment ${id}.` });
+    }
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(file, found.value.cartridge);
+    // Read by ops-on-host.sh with `eval`: both values are git object names.
+    yield* Console.log(`ORIGIN=${found.value.origin} REVISION=${found.value.revision}`);
+  }),
+).pipe(
+  Command.withDescription(
+    "Write a recorded deployment's cartridge to a file and print its ORIGIN and REVISION",
+  ),
+);
+
+const deployment = Command.make("deployment").pipe(
+  Command.withDescription("The record of each app's deployed cartridges"),
+  Command.withSubcommands([deploymentList, deploymentCheck, deploymentRecord, deploymentRestore]),
+);
+
+/**
+ * The deployment `ops` sent with a release: the cartridge in CARTRIDGE_FILE, the root
+ * commit of its repository in ORIGIN, and the released commit in REVISION. Every image must
+ * be pinned by digest, so a recorded deployment always names exactly what ran.
+ */
+const sentDeployment = Effect.fn("sentDeployment")(function* (name: string) {
+  const file = yield* Config.String("CARTRIDGE_FILE");
+  const origin = yield* Config.String("ORIGIN");
+  const revision = yield* Config.String("REVISION");
+  const cartridge = yield* Cartridge.resolve(root, name);
+  const unpinned = cartridge.services
+    .map((service) => service.image)
+    .filter((image) => !image.includes("@sha256:"));
+  if (unpinned.length > 0) {
+    return yield* new CliError({
+      message: `${name} names images without a digest: ${unpinned.join(", ")}. Deploy it with \`ops release\`.`,
+    });
+  }
+  const fs = yield* FileSystem.FileSystem;
+  return { origin, revision, cartridge: yield* fs.readFileString(file) };
+});
+
+/** The images a recorded cartridge's services run; the record is valid JSON by construction. */
+const images = (cartridge: string): ReadonlyArray<string> => [
+  ...new Set(
+    (JSON.parse(cartridge) as { services: ReadonlyArray<{ image: string }> }).services.map(
+      (service) => service.image.replace(/^.*@sha256:(.{12}).*$/, "sha256:$1"),
+    ),
+  ),
+];
+
 const cli = Command.make("ops").pipe(
-  Command.withDescription("OpenBao login, secrets, Nomad status and logs"),
-  Command.withSubcommands([login, checkLogin, secret, status, logs, stageImage]),
+  Command.withDescription("OpenBao login, secrets, Nomad status and logs, and deployment records"),
+  Command.withSubcommands([login, checkLogin, secret, status, logs, stageImage, deployment]),
 );
 
 cli.pipe(
   Command.run({ version: "1" }),
   Effect.tapErrorTag("CliError", (error) => Console.error(error.message)),
   Effect.provide(
-    Layer.mergeAll(OpenBao.layer, NomadLive.layer()).pipe(
+    Layer.mergeAll(OpenBao.layer, NomadLive.layer(), Deployments.layer()).pipe(
       Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, BunServices.layer)),
     ),
   ),

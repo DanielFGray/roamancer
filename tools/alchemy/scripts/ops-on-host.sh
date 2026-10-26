@@ -3,7 +3,12 @@
 # Alchemy state. Usage: ops-on-host.sh <command> [args...]
 #   plan, deploy, destroy, drift, state: Alchemy's own commands, for example
 #     `deploy --stage giglist`. All but state need an OpenBao token from `login`.
-#   anything else: src/cli.ts (login, check-login, secret, status, logs). `--help` lists them.
+#   rollback <name> <id>: deploy a recorded deployment again, and record it as the newest.
+#   anything else: src/cli.ts (login, check-login, secret, status, logs, deployment).
+#     `--help` lists them.
+# An app's cartridge comes from CARTRIDGE_FILE when `ops` sent one, otherwise from the
+# newest recorded deployment (src/Cartridge.ts, resolve). A deploy that was sent a
+# cartridge records it once Alchemy succeeds.
 set -eu
 cd ~/alchemy
 # The controller env file is readable by the alchemy group after
@@ -33,13 +38,38 @@ stage() {
   done
 }
 
+# Plan or deploy one stage. A sent app cartridge must pin its images and come from the
+# repository the app was first deployed from; a deploy of one is recorded once it succeeds.
+plan_or_deploy() {
+  name=$(stage "$@")
+  # Only a release or rollback sends ORIGIN with the cartridge. A staged instance is sent
+  # without it, because it is never the deployed version.
+  recorded=
+  if [ "${CARTRIDGE_FILE+x}" = x ] && [ "${ORIGIN+x}" = x ]; then
+    bun src/cli.ts deployment check "$name"
+    recorded=1
+  fi
+  # A task whose secret is unset waits on its template forever, so the deploy fails
+  # only at its timeout and leaves a failed version behind. Refuse first. The check
+  # also fails on an expired OpenBao token.
+  bun src/cli.ts secret check "$name"
+  bunx alchemy "$@"
+  if [ -n "$recorded" ] && [ "$1" = deploy ]; then bun src/cli.ts deployment record "$name"; fi
+}
+
 case "${1:-}" in
   plan | deploy)
-    # A task whose secret is unset waits on its template forever, so the deploy fails
-    # only at its timeout and leaves a failed version behind. Refuse first. The check
-    # also fails on an expired OpenBao token.
-    bun src/cli.ts secret check "$(stage "$@")"
-    exec bunx alchemy "$@"
+    plan_or_deploy "$@"
+    ;;
+  rollback)
+    name=${2:?usage: rollback <name> <id>}
+    id=${3:?usage: rollback <name> <id>}
+    mkdir -p .alchemy/input
+    CARTRIDGE_FILE=".alchemy/input/rollback-$name-$id.json"
+    export CARTRIDGE_FILE
+    # Prints ORIGIN=<root commit> REVISION=<commit>: git object names, safe to evaluate.
+    eval "export $(bun src/cli.ts deployment restore "$name" "$id" "$CARTRIDGE_FILE")"
+    plan_or_deploy deploy --stage "$name"
     ;;
   destroy)
     # Destroy is defined by persisted state and must not evaluate the cartridge.

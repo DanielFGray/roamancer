@@ -10,6 +10,7 @@ import { ValkeyAccess } from "./src/ValkeyAccess.ts";
 import { AdminCredential } from "./src/AdminCredential.ts";
 import { TailscaleServe } from "./src/TailscaleServe.ts";
 import * as Cartridge from "./src/Cartridge.ts";
+import * as Deployments from "./src/Deployments.ts";
 import * as StagedCartridge from "./src/StagedCartridge.ts";
 import { compose } from "./src/Compose.ts";
 
@@ -18,14 +19,14 @@ const stack = Alchemy.Stack(
   { providers, state: Alchemy.localState() },
   Effect.gen(function* () {
     // The stage names the cartridge: `alchemy deploy --stage giglist` deploys the
-    // cartridge whose name is giglist, under apps/ or platform/. A stage of the form
-    // `giglist-staged` deploys a staged instance of giglist instead: the same services
+    // cartridge whose name is giglist; Cartridge.resolve says where it comes from. A stage
+    // of the form `giglist-staged` deploys a staged instance of giglist instead: the same services
     // under suffixed names, on the candidate image, with no public route.
     const stage = yield* Alchemy.Stage;
     const resources = yield* Option.match(StagedCartridge.baseName(stage), {
       onNone: () =>
         Effect.gen(function* () {
-          const { cartridge } = yield* Cartridge.find(".", stage);
+          const cartridge = yield* Cartridge.resolve(".", stage);
           return Cartridge.expand(cartridge);
         }),
       onSome: (base) =>
@@ -33,7 +34,7 @@ const stack = Alchemy.Stack(
           // A staged stage has no default image: without one the run would deploy the
           // live image again, which is the opposite of what the stage asked for.
           const image = yield* Config.String("STAGED_IMAGE");
-          const { cartridge } = yield* Cartridge.find(".", base);
+          const cartridge = yield* Cartridge.resolve(".", base);
           // The stack fails only with ConfigError; a refused cartridge is one.
           const staged = yield* StagedCartridge.staged(cartridge, image).pipe(
             Effect.mapError(
@@ -45,7 +46,30 @@ const stack = Alchemy.Stack(
           );
           return Cartridge.expand(staged);
         }),
-    });
+    }).pipe(
+      Effect.provide(Deployments.layer()),
+      // The stack fails only with ConfigError; an unreadable deployment record is one.
+      Effect.catchTags({
+        PlatformError: (cause) =>
+          Effect.fail(
+            new Config.ConfigError(
+              new ConfigProvider.SourceError({
+                message: "Could not open the deployment record",
+                cause,
+              }),
+            ),
+          ),
+        SqlError: (cause) =>
+          Effect.fail(
+            new Config.ConfigError(
+              new ConfigProvider.SourceError({
+                message: "Could not read the deployment record",
+                cause,
+              }),
+            ),
+          ),
+      }),
+    );
     // Each constructor needs its own provider; the union names them all, which inference cannot.
     const deployed = yield* compose<
       | Alchemy.Provider<NomadJob>

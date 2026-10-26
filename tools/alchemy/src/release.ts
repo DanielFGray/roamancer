@@ -1,16 +1,18 @@
 /*
- * Workstation-side image commands. Build and push happen once here; the control host
- * receives only the immutable reference and runs Alchemy against its own state.
+ * Workstation-side commands, run from an app's repository: releases here, and secrets from
+ * src/secrets.ts. Build and push happen once here; the control host receives the cartridge
+ * with its images pinned, runs Alchemy against its own state, and records what it deployed.
  */
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { Array as Arr, Console, Effect, FileSystem, Option, Runtime, Stream } from "effect";
 import { Schema as S } from "effect";
-import { Argument, Command } from "effect/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Cartridge from "./Cartridge.ts";
 import { imageDigest, sameImageDigest } from "./ReleaseImage.ts";
+import { secret } from "./secrets.ts";
 
 /** A failure the operator can act on, printed without a stack trace. */
 export class ReleaseError extends S.TaggedError<ReleaseError>()("ReleaseError", {
@@ -20,31 +22,33 @@ export class ReleaseError extends S.TaggedError<ReleaseError>()("ReleaseError", 
 }
 
 const root = new URL("..", import.meta.url).pathname;
-const args = {
-  name: Argument.String("name").pipe(Argument.withDescription("The cartridge's name")),
-  folder: Argument.String("folder").pipe(
-    Argument.withDescription("The app's build folder, a clean git checkout"),
-    Argument.withDefault("."),
-  ),
-};
+const folder = Argument.String("folder").pipe(
+  Argument.withDescription("The app's repository, a clean git checkout with cartridge.json"),
+  Argument.withDefault("."),
+);
+const yes = Flag.Boolean("yes").pipe(
+  Flag.withDefault(false),
+  Flag.withDescription("Deploy without Alchemy's approval prompt, as when no terminal is attached"),
+);
 
 const release = Command.make(
   "release",
-  args,
-  Effect.fn(function* ({ name, folder }) {
-    const image = yield* buildAndPush(name, folder);
-    yield* pinAndDeploy(name, image);
+  { folder, yes },
+  Effect.fn(function* ({ folder, yes }) {
+    const image = yield* buildAndPush(folder);
+    yield* deployPinned(folder, image, yes);
     yield* Console.log(`Released ${image.pinned}`);
   }),
-).pipe(Command.withDescription("Build, push, pin and deploy an app's current commit"));
+).pipe(Command.withDescription("Build, push and deploy an app's current commit"));
 
 const stage = Command.make(
   "stage",
-  args,
-  Effect.fn(function* ({ name, folder }) {
-    const image = yield* buildAndPush(name, folder);
-    const stageName = `${name}-staged`;
+  { folder },
+  Effect.fn(function* ({ folder }) {
+    const image = yield* buildAndPush(folder);
+    const stageName = `${image.name}-staged`;
     yield* run(`${root}/scripts/ops`, ["deploy", "--stage", stageName], {
+      CARTRIDGE: cartridgePath(folder),
       STAGED_IMAGE: image.tagged,
     });
     const state = yield* output(`${root}/scripts/ops`, [
@@ -66,24 +70,28 @@ const stage = Command.make(
 
 const promote = Command.make(
   "promote",
-  args,
-  Effect.fn(function* ({ name, folder }) {
-    const image = yield* buildAndPush(name, folder);
-    const staged = (yield* output(`${root}/scripts/ops`, ["stage-image", "--stable", name])).trim();
+  { folder, yes },
+  Effect.fn(function* ({ folder, yes }) {
+    const image = yield* buildAndPush(folder);
+    const staged = (yield* output(`${root}/scripts/ops`, [
+      "stage-image",
+      "--stable",
+      image.name,
+    ])).trim();
     if (!sameImageDigest(image.tagged, staged)) {
       return yield* new ReleaseError({
         message: `refusing promotion: staged image ${staged} does not match ${image.tagged}`,
       });
     }
-    yield* pinAndDeploy(name, image);
-    yield* run(`${root}/scripts/ops`, ["destroy", "--stage", `${name}-staged`]);
-    yield* Console.log(`Promoted ${image.pinned} and discarded ${name}-staged`);
+    yield* deployPinned(folder, image, yes);
+    yield* run(`${root}/scripts/ops`, ["destroy", "--stage", `${image.name}-staged`]);
+    yield* Console.log(`Promoted ${image.pinned} and discarded ${image.name}-staged`);
   }),
 ).pipe(Command.withDescription("Release the staged commit live, then discard its stage"));
 
 const discard = Command.make(
   "discard",
-  { name: args.name },
+  { name: Argument.String("name").pipe(Argument.withDescription("The app's name")) },
   Effect.fn(function* ({ name }) {
     yield* run(`${root}/scripts/ops`, ["destroy", "--stage", `${name}-staged`]);
     yield* Console.log(`Discarded ${name}-staged`);
@@ -91,14 +99,16 @@ const discard = Command.make(
 ).pipe(Command.withDescription("Destroy a staged instance"));
 
 const commands = Command.make("ops-image").pipe(
-  Command.withDescription("Build and manage staged application images"),
-  Command.withSubcommands([release, stage, promote, discard]),
+  Command.withDescription("Workstation commands: release images, manage stages, set secrets"),
+  Command.withSubcommands([release, stage, promote, discard, secret]),
 );
 
+const cartridgePath = (folder: string) => `${folder}/cartridge.json`;
+
 /** Build one commit, push it, and retain both the mutable tag and pushed digest. */
-const buildAndPush = Effect.fn("buildAndPush")(function* (name: string, folder: string) {
-  const { path, cartridge } = yield* Cartridge.find(root, name);
-  const repository = yield* oneRepository(cartridge, path);
+const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string) {
+  const cartridge = yield* Cartridge.decodeFile(cartridgePath(folder), Cartridge.AppCartridge);
+  const repository = yield* oneRepository(cartridge, cartridgePath(folder));
   const changes = yield* output("git", ["-C", folder, "status", "--porcelain"]);
   if (changes.trim() !== "") {
     return yield* new ReleaseError({
@@ -130,37 +140,44 @@ const buildAndPush = Effect.fn("buildAndPush")(function* (name: string, folder: 
       Effect.fail(new ReleaseError({ message: `docker records an invalid digest for ${tagged}` })),
     onSome: Effect.succeed,
   });
-  return { commit, pinned, tagged: `${tagged}@${digest}` };
+  return { name: cartridge.name, commit, pinned, tagged: `${tagged}@${digest}` };
 });
 
-const pinAndDeploy = Effect.fn("pinAndDeploy")(function* (
-  name: string,
-  image: { readonly commit: string; readonly pinned: string },
+/**
+ * Deploy the folder's cartridge with every service image replaced by the pushed digest. The
+ * pinned copy goes to the control host, which records it with the repository and commit;
+ * the app's repository keeps naming its image without a digest.
+ */
+const deployPinned = Effect.fn("deployPinned")(function* (
+  folder: string,
+  image: { readonly name: string; readonly commit: string; readonly pinned: string },
+  yes: boolean,
 ) {
-  const { pinned } = image;
-  const { path, cartridge } = yield* Cartridge.find(root, name);
   const fs = yield* FileSystem.FileSystem;
-  const text = yield* fs.readFileString(path);
-  const pins = new Set(images(cartridge));
-  yield* fs.writeFileString(
-    path,
-    [...pins].reduce((contents, pin) => contents.replaceAll(pin, pinned), text),
+  const cartridge = yield* Cartridge.decodeFile(cartridgePath(folder), Cartridge.AppCartridge);
+  const text = yield* fs.readFileString(cartridgePath(folder));
+  const pinnedText = [...new Set(images(cartridge))].reduce(
+    (contents, reference) => contents.replaceAll(`"${reference}"`, `"${image.pinned}"`),
+    text,
   );
-  yield* run(`${root}/scripts/ops`, ["deploy", "--stage", name]);
-  if (pins.has(pinned)) {
-    yield* Console.log(`${name} was already pinned to ${pinned}`);
-  } else {
-    yield* run("git", [
-      "-C",
-      root,
-      "commit",
-      "-q",
-      "-m",
-      `chore(${name}): release ${image.commit}`,
-      "--",
-      path,
-    ]);
-  }
+  // The repository's root commit names it whatever its remotes are called.
+  const roots = yield* output("git", ["-C", folder, "rev-list", "--max-parents=0", "HEAD"]);
+  const origin = roots.trim().split("\n").sort()[0];
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* fs.makeTempFileScoped({ suffix: ".json" });
+      yield* fs.writeFileString(file, pinnedText);
+      yield* run(
+        `${root}/scripts/ops`,
+        ["deploy", "--stage", image.name, ...(yes ? ["--yes"] : [])],
+        {
+          CARTRIDGE: file,
+          ORIGIN: origin,
+          REVISION: image.commit,
+        },
+      );
+    }),
+  );
 });
 
 /** Every image reference in the cartridge's services. */
@@ -219,6 +236,7 @@ const output = Effect.fn("output")(function* (command: string, commandArgs: Read
 commands.pipe(
   Command.run({ version: "1" }),
   Effect.tapErrorTag("ReleaseError", (error) => Console.error(error.message)),
+  Effect.tapErrorTag("HostSecretsError", (error) => Console.error(error.message)),
   Effect.provide(BunServices.layer),
   BunRuntime.runMain,
 );

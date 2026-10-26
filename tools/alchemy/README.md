@@ -4,42 +4,54 @@ This package deploys app cartridges and shared platform services through Alchemy
 
 ## Operator commands
 
-`scripts/ops` runs every operator command on the control host from your machine. The control host runs the Nomad server, OpenBao and the Alchemy state; it is `cynic.dlab` unless `OPS_HOST` names another. `ops` syncs this folder to `~/alchemy` there, then runs `scripts/ops-on-host.sh` over SSH. The sync leaves the host's Alchemy state and `node_modules` alone. Put `scripts` on your `PATH`, or alias it:
+`scripts/ops` runs every operator command on the control host from your machine. The control host runs the Nomad server, OpenBao and the Alchemy state; it is `cynic.dlab` unless `OPS_HOST` names another. `ops` syncs this folder to `~/alchemy` there with `--delete`, so a file removed here does not linger, then runs `scripts/ops-on-host.sh` over SSH. The sync leaves the host's Alchemy state and `node_modules` alone. Put `scripts` on your `PATH`, or alias it:
 
 ```sh
 ops login                                  # once every 2 hours: mints an OpenBao token from the root token
-ops plan --stage giglist                   # Alchemy plan; `ops deploy --stage giglist` applies it
+ops release ~/build/setlist                # build, push and deploy the app repository's current commit
+ops stage ~/build/setlist                  # deploy that commit at its tailnet-only staged route
+ops promote ~/build/setlist                # promote the exact staged digest, then discard it
+ops discard giglist                        # destroy the staged instance
+ops deployment list giglist                # the recorded deployments, newest first
+ops rollback giglist 12                    # deploy recorded deployment 12 again
+ops plan --stage giglist                   # Alchemy plan of the newest recorded deployment
+ops plan --stage platform-data             # a platform cartridge from this repository; `ops deploy` applies it
 ops logs giglist-worker                    # a Nomad job's recent output, or its task events when it is not running; --tail follows
-ops secret list giglist                    # each referenced key: set, MISSING, or unused; never values
-ops secret check giglist                   # fails when a referenced key is unset; plan and deploy run it first
-ops secret set giglist github_client_secret  # prompts for the value
+ops secret list                            # in an app repository: each referenced key: set, MISSING, or unused; never values
+ops secret check                           # fails when a referenced key is unset
+ops secret set github_client_secret        # prompts for the value
+ops secret list platform/observability     # a platform cartridge, from tools/alchemy
 ops status giglist                         # each service's newest allocations
-ops release giglist ~/build/setlist         # build, push, pin and deploy the app's current commit
-ops stage giglist ~/build/setlist           # deploy that commit at its tailnet-only staged route
-ops promote giglist ~/build/setlist         # promote the exact staged digest, then discard it
-ops discard giglist                         # destroy the staged instance
 ```
 
-`plan`, `deploy`, `destroy`, `state` and `drift` are Alchemy's own commands. Before `plan` and `deploy` the runner runs `ops secret check <stage>`, which fails when a secret the cartridge references is unset (a task would otherwise wait on its template until the deploy times out) or the OpenBao token has expired. Before `destroy` and `drift` it checks the token only. The stage is a cartridge's `name`: the stack finds that cartridge under `apps/*/` or `platform/*/`. The other commands are `src/cli.ts`, for what Alchemy has no place for. `ops logs` reads Nomad by job name, which is the resource's name, so it needs no stage and works for a job whose first deploy failed and left no Alchemy state. It prints stdout and stderr of each running task in the newest running allocation, with the time podman recorded for each line (`src/TaskLog.ts`, which also serves `alchemy logs`).
+`plan`, `deploy`, `destroy`, `state` and `drift` are Alchemy's own commands. Before `plan` and `deploy` the runner runs the host's own `secret check <stage>` against the sent or recorded cartridge, which fails when a secret the cartridge references is unset (a task would otherwise wait on its template until the deploy times out) or the OpenBao token has expired. Before `destroy` and `drift` it checks the token only. The stage is a cartridge's `name`; `Cartridge.resolve` finds the cartridge (see [Where cartridges live](#where-cartridges-live)). The other commands are `src/cli.ts`, for what Alchemy has no place for. `ops logs` reads Nomad by job name, which is the resource's name, so it needs no stage and works for a job whose first deploy failed and left no Alchemy state. It prints stdout and stderr of each running task in the newest running allocation, with the time podman recorded for each line (`src/TaskLog.ts`, which also serves `alchemy logs`).
 
-`stage`, `promote`, and `discard` use one shared local build-and-push step: stage deploys the tagged digest as `<name>-staged`, and promote refuses unless every staged job is stable and uses that same digest before deploying live. Destroy uses `state.run.ts`, which shares the cartridge stack name, providers, and state but declares no resources. It deletes only resources in Alchemy state, so discard works even if Nomad never registered a staged job and needs no image. Only `stage` sends `STAGED_IMAGE`, the image a `-staged` deploy runs. `release` runs on your machine, not the control host, because your Docker holds the registry's client certificate (`nixos/cynic/cluster-tls-operations.md`). It refuses a build folder with uncommitted changes, since the image is tagged with the commit. It builds and pushes the image, writes the pushed digest into every service of the cartridge that uses that image, runs `ops deploy`, and commits the cartridge. A cartridge that names more than one image, such as `platform-data`, is refused. To roll back, put the old digest back in the cartridge and run `ops deploy`; migrations stay applied (see `nixos/backup-operations.md` for restoring data).
+`release`, `stage` and `promote` run in an app's repository, by default the current directory, and share one build-and-push step. `release` and `promote` show Alchemy's plan and ask before they deploy; `--yes` skips the prompt where no terminal is attached. They run on your machine, not the control host, because your Docker holds the registry's client certificate (`nixos/cynic/cluster-tls-operations.md`). They refuse a repository with uncommitted changes, since the image is tagged with the commit. A cartridge that names more than one image repository is refused. `release` builds and pushes the image, copies the repository's `cartridge.json` with the pushed digest in every service, and deploys that copy; the host records it once the deploy succeeds. Nothing is committed. `stage` deploys the tagged digest as `<name>-staged` and sends `STAGED_IMAGE`, the image a `-staged` deploy runs. `promote` refuses unless every staged job is stable and runs that same digest, then releases it. Destroy uses `state.run.ts`, which shares the cartridge stack name, providers, and state but declares no resources. It deletes only resources in Alchemy state, so discard works even if Nomad never registered a staged job and needs no image. `rollback` deploys a recorded deployment again, spec and image together, and records it as the newest; migrations stay applied (see `nixos/backup-operations.md` for restoring data).
 
-`secret set` accepts only a key that the cartridge references with a `KvSecret`, at that reference's path, so a misspelled key fails before anything is stored. It keeps the other keys at that path. Nomad restarts a running task when a value it reads changes. The runner reads the Nomad token from `/var/lib/nomad-acl/controller.env`, so no command needs sudo.
+The secret commands run on the workstation against the `cartridge.json` in the given folder, default the current directory, so a key added to the cartridge can be set before it is released. An app folder is held to its namespace; a folder under `platform/` is trusted. Each command makes one `ssh` to the control host, which runs its `bao` CLI with the `login` token there (`src/HostSecrets.ts`): the value goes on stdin, and reads return key names, never values. `secret set` accepts only a key that the cartridge references with a `KvSecret`, at that reference's path, so a misspelled key fails before anything is stored. It keeps the other keys at that path. Nomad restarts a running task when a value it reads changes. The runner reads the Nomad token from `/var/lib/nomad-acl/controller.env`, so no command needs sudo.
+
+## Where cartridges live
+
+A platform cartridge lives in this package at `platform/<folder>/cartridge.json`. An app cartridge lives at the root of the app's own repository, and names its image repository without a digest. This package holds no app cartridge, so it knows no app until one is deployed.
+
+On the control host, an app's cartridge comes from one of two places. When `ops` sends a file (`release`, `stage`, or `CARTRIDGE=<file>` with any host command), it is copied to `.alchemy/input/` and passed as `CARTRIDGE_FILE`. Otherwise the host reads the newest recorded deployment, so `plan`, `drift` and the deploy-time secret check work without the app's repository.
+
+`src/Deployments.ts` keeps the record in a `deployments` table of `.alchemy/operations.sqlite`: the app name, the repository's root commit, the released commit, and the cartridge exactly as deployed, with its digests. A release must pin every image, and the first deployment of a name binds it to its repository: a cartridge with the same name from a repository with another root commit is refused. A root commit names a repository whatever its remotes are called.
 
 ## Plan and deploy
 
-A cartridge is a versioned JSON file that describes services and their data needs. The platform orders jobs by their dependencies. Each cartridge lives in this package at `apps/<name>/cartridge.json` or `platform/<name>/cartridge.json`, and the stage selects it by its `name`. Connect to the target Nomad API before planning or deploying. This example assumes a local API or an SSH forward on port `4646`:
+A cartridge is a versioned JSON file that describes services and their data needs. The platform orders jobs by their dependencies, and the stage selects a cartridge by its `name`. Connect to the target Nomad API before planning or deploying. This example assumes a local API or an SSH forward on port `4646`:
 
 ```sh
 export NOMAD_ADDR=http://127.0.0.1:4646
 cd tools/alchemy
-bun run plan --stage noneuclid
-bun run deploy --stage noneuclid
+CARTRIDGE_FILE=~/build/gametests/noneuclid/cartridge.json bun run plan --stage noneuclid
+CARTRIDGE_FILE=~/build/gametests/noneuclid/cartridge.json bun run deploy --stage noneuclid
 ```
 
 `NOMAD_TOKEN` is optional only on an ACL-free testground. State is local and separated by stage. Use the same control machine and state directory for later plans. `bun run destroy --stage noneuclid` removes that cartridge's managed resources, not the Nix host volume. Use `--stage platform-data` for the shared server cartridge.
 
-The Nomad provider records reconcile and delete operations in `.alchemy/operations.sqlite`. If a process stops after an operation starts but before it records the result, the next plan detects that pending operation and reconciles the resource against live Nomad state. Inspect the history with `bun run history`. Keep the journal and Alchemy state under `.alchemy` together. This is local operation history, not shared state or a backup. The staged plan, deploy, and destroy commands use `staged-host-runner.sh`, which snapshots input and serializes applies through one lock. The NixOS module gives the operator command the `/var/lib/alchemy` state directory.
+The Nomad provider records reconcile and delete operations in `.alchemy/operations.sqlite`. If a process stops after an operation starts but before it records the result, the next plan detects that pending operation and reconciles the resource against live Nomad state. Inspect the history with `bun run history`. Keep the journal and Alchemy state under `.alchemy` together. This is local operation history, not shared state. On cynic, `restic-backups-alchemy` backs up the state and a consistent copy of the journal (`nixos/backup-operations.md`). The staged plan, deploy, and destroy commands use `staged-host-runner.sh`, which snapshots input and serializes applies through one lock. The NixOS module gives the operator command the `/var/lib/alchemy` state directory.
 
 The platform reads the versioned cartridge and checks its API version and job fields against the supported schema, then translates each service declaration into a Nomad job. The initial bridge-network update produced job version 2. In that proof, a cartridge update and restoration left job version 4 healthy, HTTP returned 200, and the final Alchemy plan reported no changes. These are saved results, not a current VM status check.
 
@@ -122,7 +134,7 @@ This proves ordered multi-job deployment, runtime secret delivery, and an authen
 
 ### Shared Valkey service and app access
 
-In v2 a platform cartridge (see `platform/data/cartridge.json`) declares the shared servers once. An app cartridge declares what it needs with `postgres` and `valkey`; the platform derives every role name, login name, key prefix, secret path, and OpenBao role from the app name. `platform/data` provides `PostgresServer "postgres"` and `ValkeyServer "valkey"`; each generates its own admin password through `AdminCredential`.
+In v2 a platform cartridge (see `platform/data/cartridge.json`) declares the shared servers once. An app cartridge declares what it needs with `postgres` and `valkey`; the platform derives the role names, login names and Valkey key prefix from the app name. Every other identity an app cartridge declares must lie in the app's namespace: each database equals the app name (with `_` for `-`) or starts with it and `_`, each service name and host volume equals the app name or starts with it and `-`, and each KV path equals `secret/data/<app>` or lies under it. A service's OpenBao role is `alchemy-<service name>`, so it is in the namespace too. The app name alone then decides what an app can reach, and no app cartridge can claim another app's database, secrets or volume. Route hostnames cannot follow from the name, so the operator reviews them. Platform cartridges declare shared identities such as `postgres` and `traefik`; they are not held to the namespace because they live in this repository. `platform/data` provides `PostgresServer "postgres"` and `ValkeyServer "valkey"`; each generates its own admin password through `AdminCredential`.
 
 The Valkey server job uses an ACL file on persistent storage and initialises it on first boot so the default user is never passwordless:
 

@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Graph from "effect/Graph";
 import * as Match from "effect/Match";
+import * as Option from "effect/Option";
 import * as S from "effect/Schema";
 import {
   CartridgeEnvironmentEntry,
@@ -17,6 +18,7 @@ import {
 import { ExtensionName, postgresRoles, PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { adminCredentialPath } from "./AdminCredential.ts";
+import { Deployments } from "./Deployments.ts";
 
 const AppName = S.String.check(
   S.isPattern(/^[a-z][a-z0-9-]{0,30}$/),
@@ -74,15 +76,6 @@ export const Cartridge = S.Struct({
     const dbNames = cartridge.postgres.map((entry) => entry.database);
     const duplicateDbNames = dbNames.filter((name, index) => dbNames.indexOf(name) !== index);
     issues.push(...duplicateDbNames.map((name) => `duplicate database '${name}'`));
-    const appUnderscore = appIdentifier(cartridge.name);
-    issues.push(
-      ...cartridge.postgres
-        .map((entry) => entry.database)
-        .filter(
-          (database) => !(database === appUnderscore || database.startsWith(`${appUnderscore}_`)),
-        )
-        .map((database) => `Database '${database}' must equal or start with '${appUnderscore}_'`),
-    );
     const allJobs = declaredJobs(cartridge).map(({ job }) => job);
     const secretIssues = allJobs.flatMap((job) => {
       const jobSecrets = [...job.secrets, ...(job.migrate?.secrets ?? [])];
@@ -146,6 +139,54 @@ export const Cartridge = S.Struct({
   }),
 );
 export type Cartridge = typeof Cartridge.Type;
+
+/**
+ * A cartridge that comes from an app's own repository. Every identity it declares that
+ * grants access (Nomad job, and through it the OpenBao role `alchemy-<job>`; database
+ * and its roles; KV path; host volume) must lie in the app's namespace, so the `name`
+ * alone decides what the app can reach and one app's cartridge cannot claim another's.
+ * Route hostnames cannot follow from the name and stay the operator's to review.
+ * Platform cartridges declare shared identities (`postgres`, `traefik`) and are trusted
+ * because they live in this repository.
+ */
+export const AppCartridge = Cartridge.check(
+  S.makeFilter((cartridge) => {
+    const issues = namespaceIssues(cartridge);
+    return issues.length === 0 ? undefined : issues;
+  }),
+);
+
+const namespaceIssues = (cartridge: Cartridge): ReadonlyArray<string> => {
+  const app = cartridge.name;
+  const appUnderscore = appIdentifier(app);
+  const within = (value: string, prefix: string, separator: string) =>
+    value === prefix || value.startsWith(`${prefix}${separator}`);
+  const jobs = declaredJobs(cartridge).map(({ job }) => job);
+  const kvPaths = jobs.flatMap((job) =>
+    [...job.secrets, ...(job.migrate?.secrets ?? [])].flatMap((secret) =>
+      secret._tag === "KvSecret" ? [secret.path] : [],
+    ),
+  );
+  const volumes = jobs.flatMap((job) => [
+    ...(job.storage === undefined ? [] : [job.storage.volume]),
+    ...(job.readOnlyMounts ?? []).map((mount) => mount.volume),
+  ]);
+  return [
+    ...cartridge.postgres
+      .map((entry) => entry.database)
+      .filter((database) => !within(database, appUnderscore, "_"))
+      .map((database) => `Database '${database}' must equal or start with '${appUnderscore}_'`),
+    ...jobs
+      .filter((job) => !within(job.name, app, "-"))
+      .map((job) => `Service '${job.name}' must equal or start with '${app}-'`),
+    ...[...new Set(kvPaths)]
+      .filter((path) => !within(path, `secret/data/${app}`, "/"))
+      .map((path) => `KV path '${path}' must equal or start with 'secret/data/${app}/'`),
+    ...[...new Set(volumes)]
+      .filter((volume) => !within(volume, app, "-"))
+      .map((volume) => `Volume '${volume}' must equal or start with '${app}-'`),
+  ];
+};
 
 export type ExpandedResource =
   | { readonly _tag: "PostgresServer"; readonly service: ExpandedJob }
@@ -284,52 +325,53 @@ export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> =>
   return [...databaseResources, ...valkeyResource, ...orderedJobResources(cartridge)];
 };
 
-/** The folders under the Alchemy root that hold one cartridge each. */
-export const cartridgeFolders = ["apps", "platform"] as const;
-
 /**
- * Finds the cartridge named `name` under `root`, in `apps/<folder>/cartridge.json`
- * or `platform/<folder>/cartridge.json`. A folder's name need not match its
- * cartridge's name (platform/data holds platform-data), so every cartridge is read.
+ * The cartridge a stage named `name` deploys. A platform cartridge is read from
+ * `platform/<folder>/cartridge.json` under `root`; a folder's name need not match its
+ * cartridge's name (platform/data holds platform-data). Any other name is an app, whose
+ * cartridge lives in its own repository: the file in CARTRIDGE_FILE when `ops` sent one,
+ * otherwise the newest deployment recorded on this host.
  */
-export const find = Effect.fn("Cartridge.find")(function* (root: string, name: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const paths = yield* Effect.forEach(cartridgeFolders, (folder) =>
-    fs
-      .readDirectory(`${root}/${folder}`)
-      .pipe(
-        Effect.map((entries) =>
-          entries.map((entry) => `${root}/${folder}/${entry}/cartridge.json`),
-        ),
-      ),
-  ).pipe(
-    Effect.map((lists) => lists.flat()),
-    Effect.flatMap(Effect.filter((path) => fs.exists(path))),
-    Effect.mapError(
-      (cause) =>
-        new Config.ConfigError(
-          new ConfigProvider.SourceError({
-            message: `Could not list cartridges in '${root}'`,
-            cause,
-          }),
-        ),
-    ),
-  );
-  const cartridges = yield* Effect.forEach(paths, (path) =>
-    decodeFile(path).pipe(Effect.map((cartridge) => ({ path, cartridge }))),
-  );
-  const found = cartridges.find((entry) => entry.cartridge.name === name);
-  if (found === undefined) {
-    const known = cartridges.map((entry) => entry.cartridge.name).join(", ");
+export const resolve = Effect.fn("Cartridge.resolve")(function* (root: string, name: string) {
+  const platform = yield* findPlatform(root, name);
+  if (Option.isSome(platform)) return platform.value;
+  const sent = yield* Config.option(Config.String("CARTRIDGE_FILE"));
+  const cartridge = yield* Option.match(sent, {
+    onSome: (path) => decodeFile(path, AppCartridge),
+    onNone: () =>
+      Effect.gen(function* () {
+        const deployments = yield* Deployments;
+        const latest = yield* deployments.latest(name).pipe(Effect.mapError(configError));
+        return yield* Option.match(latest, {
+          onSome: (deployment) => decodeText(deployment.cartridge, AppCartridge),
+          onNone: () =>
+            Effect.fail(
+              configError(
+                `'${name}' is no platform cartridge and has no recorded deployment; release it from its repository first`,
+              ),
+            ),
+        });
+      }),
+  });
+  if (cartridge.name !== name) {
     return yield* Effect.fail(
-      new Config.ConfigError(
-        new ConfigProvider.SourceError({
-          message: `No cartridge named '${name}'. Known: ${known}`,
-        }),
-      ),
+      configError(`stage '${name}' was given the cartridge of '${cartridge.name}'`),
     );
   }
-  return found;
+  return cartridge;
+});
+
+const findPlatform = Effect.fn("Cartridge.findPlatform")(function* (root: string, name: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const folders = yield* fs
+    .readDirectory(`${root}/platform`)
+    .pipe(Effect.mapError((cause) => configError(`Could not list cartridges in '${root}'`, cause)));
+  const paths = yield* Effect.filter(
+    folders.map((folder) => `${root}/platform/${folder}/cartridge.json`),
+    (path) => fs.exists(path).pipe(Effect.orElseSucceed(() => false)),
+  );
+  const cartridges = yield* Effect.forEach(paths, (path) => decodeFile(path, Cartridge));
+  return Option.fromNullishOr(cartridges.find((cartridge) => cartridge.name === name));
 });
 
 /** Each OpenBao KV path the cartridge's services read, with the keys it reads there. */
@@ -347,8 +389,23 @@ export const kvKeys = (cartridge: Cartridge) => {
   );
 };
 
-/** Read and validate one cartridge file. */
-export const decodeFile = Effect.fn("Cartridge.decodeFile")(function* (path: string) {
+/**
+ * Each KV path and key the cartridge reads that is not in `stored`, the key names stored at
+ * each path. A task waits on its template forever for such a key.
+ */
+export const missingSecrets = (
+  cartridge: Cartridge,
+  stored: ReadonlyMap<string, ReadonlyArray<string>>,
+) =>
+  [...kvKeys(cartridge)].flatMap(([path, keys]) =>
+    keys.filter((key) => !(stored.get(path) ?? []).includes(key)).map((key) => ({ path, key })),
+  );
+
+/** Read one cartridge file and validate it against `schema`: AppCartridge or Cartridge. */
+export const decodeFile = Effect.fn("Cartridge.decodeFile")(function* (
+  path: string,
+  schema: typeof Cartridge,
+) {
   const fs = yield* FileSystem.FileSystem;
   const contents = yield* fs.readFileString(path).pipe(
     Effect.mapError(
@@ -361,11 +418,22 @@ export const decodeFile = Effect.fn("Cartridge.decodeFile")(function* (path: str
         ),
     ),
   );
-  const cartridge = yield* S.decodeUnknownEffect(S.fromJsonString(Cartridge), {
-    onExcessProperty: "error",
-  })(contents).pipe(Effect.mapError((cause) => new Config.ConfigError(cause)));
-  return cartridge;
+  return yield* decodeText(contents, schema);
 });
+
+/** Validate one cartridge document against `schema`: AppCartridge or Cartridge. */
+export const decodeText = (contents: string, schema: typeof Cartridge) =>
+  S.decodeUnknownEffect(S.fromJsonString(schema), { onExcessProperty: "error" })(contents).pipe(
+    Effect.mapError((cause) => new Config.ConfigError(cause)),
+  );
+
+const configError = (message: unknown, cause?: unknown) =>
+  new Config.ConfigError(
+    new ConfigProvider.SourceError({
+      message: typeof message === "string" ? message : String(message),
+      cause: cause ?? (typeof message === "string" ? undefined : message),
+    }),
+  );
 
 /**
  * Jobs in dependency order. compose declares resources one at a time and wires a

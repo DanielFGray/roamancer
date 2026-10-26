@@ -3,7 +3,21 @@ import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
-import { expand, find, kvKeys, decodeFile, Cartridge } from "./Cartridge.ts";
+import {
+  AppCartridge,
+  expand,
+  resolve,
+  kvKeys,
+  missingSecrets,
+  decodeFile,
+  Cartridge,
+} from "./Cartridge.ts";
+import * as Deployments from "./Deployments.ts";
+import * as ConfigProvider from "effect/ConfigProvider";
+import type * as FileSystem from "effect/FileSystem";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as S from "effect/Schema";
 
 describe("cartridge v2", () => {
@@ -35,9 +49,10 @@ describe("cartridge v2", () => {
 
   it("resolves a database role entry to that database's role name", async () => {
     const cartridge = await Effect.runPromise(
-      decodeFile(fileURLToPath(new URL("../apps/giglist/cartridge.json", import.meta.url))).pipe(
-        Effect.provide(NodeFileSystem.layer),
-      ),
+      decodeFile(
+        fileURLToPath(new URL("../apps/giglist/cartridge.json", import.meta.url)),
+        AppCartridge,
+      ).pipe(Effect.provide(NodeFileSystem.layer)),
     );
     const service = expand(cartridge).find((resource) => resource._tag === "NomadService");
     assert.ok(service);
@@ -51,15 +66,75 @@ describe("cartridge v2", () => {
     );
   });
 
-  it("rejects a database name that does not start with the app name", () => {
-    assert.throws(() =>
-      S.decodeUnknownSync(Cartridge)({
-        apiVersion: "server-ansible/v2",
-        name: "app-needs",
-        postgres: [{ database: "other_db" }],
-        services: [],
-      }),
-    );
+  describe("app namespace", () => {
+    const job = (overrides: Record<string, unknown>) => ({
+      name: "shop-web",
+      image: "img",
+      hostPort: "dynamic",
+      containerPort: 80,
+      cpu: 100,
+      memoryMB: 128,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+      secrets: [],
+      ...overrides,
+    });
+    const app = (overrides: Record<string, unknown>) => ({
+      apiVersion: "server-ansible/v2",
+      name: "shop",
+      services: [],
+      ...overrides,
+    });
+    const kv = (path: string) => ({ _tag: "KvSecret", path, key: "k", env: "K" });
+
+    it("accepts identities equal to or under the app name", () => {
+      S.decodeUnknownSync(AppCartridge)(
+        app({
+          postgres: [{ database: "shop" }, { database: "shop_audit" }],
+          services: [
+            job({
+              name: "shop",
+              storage: { volume: "shop-data", mountPath: "/data" },
+              secrets: [kv("secret/data/shop"), kv("secret/data/shop/mail")],
+            }),
+            job({ name: "shop-worker" }),
+          ],
+        }),
+      );
+    });
+
+    const rejected: ReadonlyArray<[string, Record<string, unknown>, string]> = [
+      ["database", { postgres: [{ database: "other_db" }] }, "Database 'other_db'"],
+      ["service", { services: [job({ name: "other-web" })] }, "Service 'other-web'"],
+      ["name that only shares a prefix", { services: [job({ name: "shopping" })] }, "'shopping'"],
+      [
+        "KV path",
+        { services: [job({ secrets: [kv("secret/data/other")] })] },
+        "KV path 'secret/data/other'",
+      ],
+      [
+        "KV path that only shares a prefix",
+        { services: [job({ secrets: [kv("secret/data/shopping")] })] },
+        "'secret/data/shopping'",
+      ],
+      [
+        "volume",
+        { services: [job({ storage: { volume: "other-data", mountPath: "/data" } })] },
+        "Volume 'other-data'",
+      ],
+    ];
+    for (const [what, overrides, message] of rejected) {
+      it(`rejects a ${what} outside the app's namespace`, () => {
+        assert.throws(() => S.decodeUnknownSync(AppCartridge)(app(overrides)), {
+          message: new RegExp(message.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")),
+        });
+      });
+    }
+
+    it("does not hold platform cartridges to it", () => {
+      S.decodeUnknownSync(Cartridge)(app({ services: [job({ name: "traefik" })] }));
+    });
   });
 
   it("rejects a PostgresCredentials naming a database not in postgres", () => {
@@ -464,6 +539,7 @@ describe("cartridge v2", () => {
     const cartridge = await Effect.runPromise(
       decodeFile(
         fileURLToPath(new URL("../platform/ingress/cartridge.json", import.meta.url)),
+        Cartridge,
       ).pipe(Effect.provide(NodeFileSystem.layer)),
     );
     const resource = expand(cartridge).find((entry) => entry._tag === "NomadService");
@@ -477,15 +553,18 @@ describe("cartridge v2", () => {
   });
 
   const committed = [
-    "../platform/observability/cartridge.json",
-    "../platform/ingress/cartridge.json",
-    "../platform/data/cartridge.json",
-    "../examples/app-needs/cartridge.json",
-  ];
-  for (const rel of committed) {
+    ["../platform/observability/cartridge.json", Cartridge],
+    ["../platform/ingress/cartridge.json", Cartridge],
+    ["../platform/data/cartridge.json", Cartridge],
+    ["../examples/app-needs/cartridge.json", AppCartridge],
+    ["../apps/giglist/cartridge.json", AppCartridge],
+    ["../apps/noneuclid/cartridge.json", AppCartridge],
+    ["../apps/postgres-garden/cartridge.json", AppCartridge],
+  ] as const;
+  for (const [rel, schema] of committed) {
     it(`loads ${rel}`, async () => {
       const cartridge = await Effect.runPromise(
-        decodeFile(fileURLToPath(new URL(rel, import.meta.url))).pipe(
+        decodeFile(fileURLToPath(new URL(rel, import.meta.url)), schema).pipe(
           Effect.provide(NodeFileSystem.layer),
         ),
       );
@@ -493,13 +572,53 @@ describe("cartridge v2", () => {
     });
   }
 
-  it("finds a cartridge by its name, not its folder", async () => {
+  describe("resolve", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
-    const found = await Effect.runPromise(
-      find(root, "platform-data").pipe(Effect.provide(NodeFileSystem.layer)),
-    );
-    assert.equal(found.cartridge.name, "platform-data");
-    assert.ok(found.path.endsWith("/platform/data/cartridge.json"));
+    const giglistFile = fileURLToPath(new URL("../apps/giglist/cartridge.json", import.meta.url));
+    const scratch = () => mkdtempSync(join(tmpdir(), "resolve-"));
+    const run = <A, E>(
+      effect: Effect.Effect<A, E, Deployments.Deployments | FileSystem.FileSystem>,
+      env: Record<string, string> = {},
+    ) =>
+      Effect.runPromise(
+        effect.pipe(
+          Effect.provide(Deployments.layer(join(scratch(), "d.sqlite"))),
+          Effect.provide(NodeFileSystem.layer),
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord(env))),
+        ),
+      );
+
+    it("finds a platform cartridge by its name, not its folder", async () => {
+      const found = await run(resolve(root, "platform-data"));
+      assert.equal(found.name, "platform-data");
+    });
+
+    it("reads an app from the file ops sent", async () => {
+      const found = await run(resolve(root, "giglist"), { CARTRIDGE_FILE: giglistFile });
+      assert.equal(found.name, "giglist");
+    });
+
+    it("refuses a sent cartridge whose name is not the stage", async () => {
+      await assert.rejects(run(resolve(root, "postgres-garden"), { CARTRIDGE_FILE: giglistFile }), {
+        message: /stage 'postgres-garden' was given the cartridge of 'giglist'/,
+      });
+    });
+
+    it("reads an app from its newest recorded deployment", async () => {
+      const found = await run(
+        Effect.gen(function* () {
+          const deployments = yield* Deployments.Deployments;
+          const cartridge = readFileSync(giglistFile, "utf8");
+          yield* deployments.record({ name: "giglist", origin: "o", revision: "r", cartridge });
+          return yield* resolve(root, "giglist");
+        }),
+      );
+      assert.equal(found.name, "giglist");
+    });
+
+    it("refuses an app with neither", async () => {
+      await assert.rejects(run(resolve(root, "giglist")), { message: /no recorded deployment/ });
+    });
   });
 
   it("groups the KV keys a cartridge reads by path, across service and migration", () => {
@@ -540,5 +659,9 @@ describe("cartridge v2", () => {
         ["secret/data/shared", ["c"]],
       ]),
     );
+    assert.deepEqual(missingSecrets(cartridge, new Map([["secret/data/app", ["b", "unused"]]])), [
+      { path: "secret/data/app", key: "a" },
+      { path: "secret/data/shared", key: "c" },
+    ]);
   });
 });
