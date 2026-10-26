@@ -74,6 +74,43 @@ describe("Nomad workload rendering", () => {
       "None",
     );
   });
+  it("renders tailnet access controls and cloudflare certificate tags", () => {
+    const job = S.decodeUnknownSync(Job)({
+      name: "preview",
+      image: "image",
+      hostPort: "dynamic",
+      containerPort: 3000,
+      cpu: 100,
+      memoryMB: 128,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+      routes: [
+        {
+          host: "abc.staged.giglist.dfg.rocks",
+          access: "tailnet",
+          responseHeaders: [{ name: "X-Robots-Tag", value: "noindex" }],
+        },
+      ],
+    });
+    const tags = toJobSpec(job, "o").TaskGroups[0].Services[0].Tags;
+    assert.ok(
+      tags.includes(
+        "traefik.http.middlewares.preview-0-tailnet.ipallowlist.sourcerange=100.64.0.0/10,fd7a:115c:a1e0::/48",
+      ),
+    );
+    assert.ok(tags.includes("traefik.http.routers.preview-0.tls.certresolver=cloudflare"));
+    // One middlewares label carries both, so response headers never drop the allow list.
+    assert.deepEqual(
+      tags.filter((tag) => tag.startsWith("traefik.http.routers.preview-0.middlewares=")),
+      ["traefik.http.routers.preview-0.middlewares=preview-0-tailnet,preview-0-headers"],
+    );
+    assert.ok(
+      tags.includes(
+        "traefik.http.routers.preview-0.tls.domains[0].main=*.staged.giglist.dfg.rocks",
+      ),
+    );
+  });
   it("gives every task the node's OTLP collector address, which the job's own environment overrides", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "app",

@@ -6,9 +6,15 @@ import * as S from "effect/Schema";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
 import { Cartridge, decodeFile, expand } from "./Cartridge.ts";
-import { ImagesNotShared, WritableStorage, baseName, staged } from "./StagedCartridge.ts";
+import {
+  ImagesNotShared,
+  UntaggedImage,
+  WritableStorage,
+  baseName,
+  staged,
+} from "./StagedCartridge.ts";
 
-const candidate = "registry.cluster:5000/candidate@sha256:staged";
+const candidate = "registry.cluster:5000/candidate:abc123@sha256:staged";
 
 const load = (relative: string) =>
   Effect.runPromise(
@@ -57,16 +63,47 @@ describe("staged cartridge", () => {
     assert.doesNotThrow(() => S.decodeUnknownSync(Cartridge, { onExcessProperty: "error" })(copy));
   });
 
-  it("removes every route the live services declare", async () => {
+  it("maps each live route to a tailnet-only staged host", async () => {
     const live = await load("../apps/giglist/cartridge.json");
     assert.ok(live.services[0].routes.length > 0);
-
     const copy = await stage(live);
-
     assert.deepEqual(
-      copy.services.map((service) => service.routes),
-      [[], []],
+      copy.services.flatMap((service) => service.routes),
+      [
+        {
+          ...live.services[0].routes[0],
+          host: "abc123.staged.giglist.dfg.rocks",
+          access: "tailnet",
+        },
+      ],
     );
+  });
+
+  it("rewrites route root URLs and refuses an untagged image", async () => {
+    const live = await load("../apps/giglist/cartridge.json");
+    const withRoot: Cartridge = {
+      ...live,
+      services: live.services.map((service) => ({
+        ...service,
+        environment: [
+          ...service.environment,
+          { name: "ROOT_URL", value: "https://giglist.dfg.rocks/" },
+        ],
+      })),
+    };
+    const copy = await stage(withRoot);
+    assert.ok(
+      copy.services[0].environment.some(
+        (entry) =>
+          "value" in entry &&
+          entry.name === "ROOT_URL" &&
+          entry.value === "https://abc123.staged.giglist.dfg.rocks",
+      ),
+    );
+    const error = await Effect.runPromise(
+      Effect.flip(staged(live, "registry.cluster/candidate@sha256:digest")),
+    );
+    assert.ok(error instanceof UntaggedImage);
   });
 
   it("expands the staged copy with expand unchanged", async () => {
@@ -126,9 +163,10 @@ describe("staged cartridge", () => {
       ["postgres_garden_staged", "postgres_garden_staged", "postgres_garden_staged"],
     );
     assert.deepEqual([...new Set(copy.services.map((service) => service.image))], [candidate]);
-    assert.deepEqual(
-      copy.services.map((service) => service.routes),
-      [[], []],
+    assert.ok(
+      copy.services
+        .flatMap((service) => service.routes)
+        .every((route) => route.access === "tailnet"),
     );
     assert.doesNotThrow(() => S.decodeUnknownSync(Cartridge, { onExcessProperty: "error" })(copy));
   });

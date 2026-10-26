@@ -12,7 +12,7 @@ import {
 /**
  * A staged instance is a second copy of a cartridge, deployed beside the live one.
  * `alchemy plan|deploy|destroy --stage <app>-staged` runs the same services on the
- * candidate image under suffixed names, with no public route, so it names, writes and
+ * candidate image under suffixed names, with tailnet-only routes, so it names, writes and
  * routes nothing the live instance owns.
  */
 
@@ -30,6 +30,15 @@ export class ImagesNotShared extends S.TaggedError<ImagesNotShared>()("ImagesNot
         ? "no image"
         : `${this.images.length} images: ${this.images.join(", ")}`;
     return `cartridge '${this.cartridge}' declares ${found}; a staged instance runs one candidate image`;
+  }
+}
+
+/** Refused when the candidate image names no tag: the tag is the commit in the preview host. */
+export class UntaggedImage extends S.TaggedError<UntaggedImage>()("UntaggedImage", {
+  image: S.String,
+}) {
+  override get message() {
+    return `image '${this.image}' has no tag; a staged route requires a commit tag`;
   }
 }
 
@@ -52,7 +61,8 @@ export const baseName = (stage: string): Option.Option<string> =>
 
 /**
  * The staged copy of `cartridge`: every name it derives carries the suffix, every service
- * runs `image`, and no service keeps a public route. The cartridge passed in is not touched.
+ * runs the tagged `image`, and each route is available only from the tailnet. The cartridge
+ * passed in is not touched.
  *
  * An environment entry that names one of the cartridge's databases is replaced by that
  * database's staged name, whether it carries the name as a value or as the database of a
@@ -66,8 +76,12 @@ export const baseName = (stage: string): Option.Option<string> =>
 export const staged = (
   cartridge: Cartridge,
   image: string,
-): Effect.Effect<Cartridge, ImagesNotShared | WritableStorage> =>
+): Effect.Effect<Cartridge, ImagesNotShared | WritableStorage | UntaggedImage> =>
   Effect.gen(function* () {
+    const commit = yield* Option.match(imageTag(image), {
+      onNone: () => Effect.fail(new UntaggedImage({ image })),
+      onSome: Effect.succeed,
+    });
     const jobs = jobsOf(cartridge);
     const images = [...new Set(cartridge.services.map((service) => service.image))];
     if (images.length !== 1) {
@@ -83,6 +97,8 @@ export const staged = (
       ownServices: new Set(jobs.map((job) => job.name)),
       databases: databaseNames(cartridge),
       database: (database) => stagedDatabaseName(cartridge, database),
+      liveHosts: new Set(jobs.flatMap((job) => job.routes.map((route) => route.host))),
+      host: (host) => `${commit}.staged.${host}`,
     };
     return {
       ...cartridge,
@@ -109,6 +125,8 @@ type DerivedNames = {
   readonly ownServices: ReadonlySet<string>;
   readonly databases: ReadonlySet<string>;
   readonly database: (database: string) => string;
+  readonly liveHosts: ReadonlySet<string>;
+  readonly host: (host: string) => string;
 };
 
 /** Every job of the cartridge, the servers' services first, in declaration order. */
@@ -167,12 +185,17 @@ const stagedMigrate = (
  * databases is replaced by that database's staged name. Every other value names no database of
  * this cartridge and stands as it is.
  */
-const stagedEnvironment = (entry: CartridgeEnvironmentEntry, derived: DerivedNames) =>
-  "database" in entry
-    ? { ...entry, database: derived.database(entry.database) }
+const stagedEnvironment = (entry: CartridgeEnvironmentEntry, derived: DerivedNames) => {
+  if ("database" in entry) return { ...entry, database: derived.database(entry.database) };
+  // A root URL names a live route host; the copy serves it at the staged host instead.
+  const url = entry.value.replace(/\/$/, "");
+  const host = url.startsWith("https://") ? url.slice("https://".length) : "";
+  return derived.liveHosts.has(host)
+    ? { ...entry, value: `https://${derived.host(host)}` }
     : derived.databases.has(entry.value)
       ? { ...entry, value: derived.database(entry.value) }
       : entry;
+};
 
 /**
  * One job of the copy, already carrying its staged name and image. Connections to services
@@ -183,8 +206,11 @@ const stagedJob = (job: CartridgeJob, derived: DerivedNames): CartridgeJob => {
   const named = {
     ...job,
     name: `${job.name}${stagedSuffix}`,
-    // A staged instance publishes no route, so the live routes are replaced by none.
-    routes: [],
+    routes: job.routes.map((route) => ({
+      ...route,
+      host: derived.host(route.host),
+      access: "tailnet" as const,
+    })),
     environment: job.environment.map((entry) => stagedEnvironment(entry, derived)),
     connections: job.connections.map((connection) =>
       derived.ownServices.has(connection.service)
@@ -196,4 +222,16 @@ const stagedJob = (job: CartridgeJob, derived: DerivedNames): CartridgeJob => {
   return job.migrate === undefined
     ? named
     : { ...named, migrate: stagedMigrate(job.migrate, derived) };
+};
+
+/**
+ * The tag of an image reference such as `registry:5000/app:3f9c2ab@sha256:…`: the text after
+ * the last colon of the last path segment, once the digest is removed. A registry port is in
+ * an earlier segment, so it is never taken for a tag.
+ */
+const imageTag = (image: string): Option.Option<string> => {
+  const name = image.split("@")[0];
+  const segment = name.slice(name.lastIndexOf("/") + 1);
+  const colon = segment.indexOf(":");
+  return colon === -1 ? Option.none() : Option.some(segment.slice(colon + 1));
 };

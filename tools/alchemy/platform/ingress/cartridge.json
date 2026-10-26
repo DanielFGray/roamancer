@@ -20,6 +20,14 @@
       ],
       "environment": [],
       "connections": [],
+      "secrets": [
+        {
+          "_tag": "KvSecret",
+          "path": "secret/data/platform/ingress",
+          "key": "cloudflare_dns_api_token",
+          "env": "CF_DNS_API_TOKEN"
+        }
+      ],
       "args": [
         "--global.checknewversion=false",
         "--global.sendanonymoususage=false",
@@ -33,6 +41,8 @@
         "--ping.entrypoint=health",
         "--certificatesresolvers.letsencrypt.acme.storage=/var/lib/traefik-acme/acme.json",
         "--certificatesresolvers.letsencrypt.acme.tlschallenge=true",
+        "--certificatesresolvers.cloudflare.acme.storage=/var/lib/traefik-acme/cloudflare.json",
+        "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare",
         "--providers.nomad=true",
         "--providers.nomad.endpoint.address=http://127.0.0.1:4646",
         "--providers.nomad.exposedbydefault=false",

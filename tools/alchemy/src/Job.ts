@@ -25,9 +25,12 @@ export const HealthCheck = S.Union([
 ]);
 export type HealthCheck = typeof HealthCheck.Type;
 
-// A public route to the service through Traefik. Path prefixes narrow the host, and a longer
-// rule wins in Traefik, so an API under a static site's host takes its paths from the site.
+// A route through Traefik. Tailnet routes accept only Tailscale source ranges.
+// Path prefixes narrow the host, and a longer rule wins in Traefik.
 export const Route = S.Struct({
+  access: S.Literals(["public", "tailnet"]).pipe(
+    S.withDecodingDefaultKey(Effect.succeed("public" as const)),
+  ),
   host: S.String.check(
     S.isPattern(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/),
   ),
@@ -37,6 +40,9 @@ export const Route = S.Struct({
   ),
 });
 export type Route = typeof Route.Type;
+
+// The source ranges Tailscale assigns its nodes, IPv4 and IPv6.
+const tailscaleRanges = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"];
 
 export const KvSecretReference = S.TaggedStruct("KvSecret", {
   path: SecretPath,
@@ -545,20 +551,36 @@ export const routeTags = (job: Job): ReadonlyArray<string> => {
         ? `Host(\`${route.host}\`)`
         : `Host(\`${route.host}\`) && (${paths.join(" || ")})`;
     const headers = route.responseHeaders ?? [];
+    const tailnet = route.access === "tailnet";
+    // A router has one middlewares label, so every middleware the route needs goes in it.
+    const middlewares = [
+      ...(tailnet ? [`${router}-tailnet`] : []),
+      ...(headers.length === 0 ? [] : [`${router}-headers`]),
+    ];
     return [
       `traefik.http.routers.${router}.rule=${rule}`,
       `traefik.http.routers.${router}.entrypoints=web`,
       `traefik.http.routers.${router}.service=${service}`,
-      ...(headers.length === 0
+      // A tailnet route shares the public entrypoint, so the allow list is what keeps it off
+      // the internet: Traefik runs on the host network and sees each client's real address.
+      // Its certificate is the wildcard of its parent domain, from the DNS-01 resolver, because
+      // Let's Encrypt cannot reach a tailnet host for the TLS challenge.
+      ...(tailnet
+        ? [
+            `traefik.http.middlewares.${router}-tailnet.ipallowlist.sourcerange=${tailscaleRanges.join(",")}`,
+            `traefik.http.routers.${router}.tls.certresolver=cloudflare`,
+            `traefik.http.routers.${router}.tls.domains[0].main=*.${route.host.slice(route.host.indexOf(".") + 1)}`,
+          ]
+        : []),
+      ...headers.map(
+        (header) =>
+          `traefik.http.middlewares.${router}-headers.headers.customresponseheaders.${header.name}=${header.value}`,
+      ),
+      ...(middlewares.length === 0
         ? []
-        : [
-            ...headers.map(
-              (header) =>
-                `traefik.http.middlewares.${router}-headers.headers.customresponseheaders.${header.name}=${header.value}`,
-            ),
-            `traefik.http.routers.${router}.middlewares=${router}-headers`,
-          ]),
+        : [`traefik.http.routers.${router}.middlewares=${middlewares.join(",")}`]),
     ];
   });
+
   return ["traefik.enable=true", ...healthTags, ...routerTags];
 };
