@@ -97,5 +97,7 @@ for name in ORIGIN REVISION STAGED_IMAGE; do
 done
 remote="alchemy/scripts/ops-on-host.sh$quoted"
 if [ -n "$environment" ]; then remote="env$environment $remote"; fi
-# The remote shell starts in the home folder.
-exec ssh -t "$host" "$remote"
+# The remote shell starts in the home folder. A terminal is asked for only when this
+# one has one: prompts such as `ops login` need it, and piped output does not.
+if [ -t 0 ]; then exec ssh -t "$host" "$remote"; fi
+exec ssh "$host" "$remote"
