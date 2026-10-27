@@ -12,7 +12,7 @@ import * as Git from "./Git.ts";
 import { Remote } from "./Remote.ts";
 import { Site } from "./Site.ts";
 
-/** A `nixosConfigurations` name in nixos/flake.nix, which is also the host's ssh name. */
+/** A `nixosConfigurations` name in the root flake.nix, which is also the host's ssh name. */
 export const HostName = S.String.check(S.isPattern(/^[a-z0-9-]+$/));
 
 /** The `nixosConfigurations` names a flake declares, in file order. */
@@ -37,7 +37,7 @@ export const rebuild = Effect.fn("Nixos.rebuild")(function* (
   const site = yield* (yield* Site).folder;
   const hosts = Option.isSome(named)
     ? [named.value]
-    : flakeHosts(yield* fs.readFileString(`${nixosFolder}/flake.nix`));
+    : flakeHosts(yield* fs.readFileString(`${repositoryRoot}/flake.nix`));
   yield* Effect.forEach(hosts, (host) =>
     Effect.gen(function* () {
       const to = Option.getOrElse(target, () => host);
@@ -50,7 +50,7 @@ export const rebuild = Effect.fn("Nixos.rebuild")(function* (
       yield* Exec.run("ssh", [
         "-t",
         to,
-        `rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/${Git.checkout}/nixos#${host}" --override-input site "path:$HOME/site-tree"`,
+        `rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/${Git.checkout}#${host}" --override-input site "path:$HOME/site-tree"`,
       ]);
     }),
   );
@@ -103,11 +103,12 @@ export const install = Effect.fn("Nixos.install")(function* (options: {
     ]);
   }
 
-  // The committed trees, with the site folder in place of the placeholder one.
+  // The committed trees, with the site folder in place of the placeholder one. The root
+  // flake's source includes tools/, so the archive is the repository HEAD, not nixos/ alone.
   const tree = yield* fs.makeTempDirectoryScoped();
-  yield* Git.exportTree(Git.repository, "HEAD:nixos", tree);
-  yield* fs.remove(`${tree}/site`, { recursive: true, force: true });
-  yield* Git.exportTree(site, "HEAD", `${tree}/site`);
+  yield* Git.exportTree(Git.repository, "HEAD", tree);
+  yield* fs.remove(`${tree}/nixos/site`, { recursive: true, force: true });
+  yield* Git.exportTree(site, "HEAD", `${tree}/nixos/site`);
   yield* Exec.run("docker", [
     ...["run", "--rm", "--network", "host"],
     ...["--volume", `${nixVolume}:/nix`],
@@ -136,7 +137,7 @@ export const install = Effect.fn("Nixos.install")(function* (options: {
   ]);
 }, Effect.scoped);
 
-const nixosFolder = new URL("../../../nixos", import.meta.url).pathname;
+const repositoryRoot = new URL("../../..", import.meta.url).pathname;
 const nixVolume = "server-ansible-nix";
 const nixosAnywhere = "github:nix-community/nixos-anywhere/1.11.0";
 

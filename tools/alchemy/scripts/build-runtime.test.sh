@@ -298,7 +298,7 @@ assert_contains "$docker_log" '--memory=2g' 'the container keeps a 2 GiB memory 
 assert_contains "$docker_log" '--memory-swap=2g' 'the container keeps no swap'
 assert_contains "$docker_log" '--cpus=1' 'the container keeps one CPU'
 assert_contains "$docker_log" '--max-jobs 1 --cores 1' 'the build keeps one Nix build'
-assert_contains "$docker_log" 'NIX_BUILD_TARGET=path:/src#alchemy-staged' 'the default target is the staged package'
+assert_contains "$docker_log" 'NIX_BUILD_TARGET=path:/src#alchemy-runner' 'the default target is the Alchemy runner package'
 assert_not_contains "$docker_log" '/dev/kvm' 'a default build gets no KVM device'
 
 new_workspace

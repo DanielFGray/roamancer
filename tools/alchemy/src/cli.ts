@@ -11,6 +11,7 @@ import {
   Config,
   ConfigProvider,
   Console,
+  Context,
   Effect,
   FileSystem,
   Layer,
@@ -275,48 +276,79 @@ const releaseEnv = (hostEnv: Record<string, string>) =>
     };
   });
 
-/** Command tree for this host process; closes over host settings for Alchemy children. */
-const makeCli = (hostEnv: Record<string, string>) => {
+/**
+ * Controller.env and the OpenBao token file as one record. Loaded only when a
+ * command provides `hostLayer` (help and argument errors never do).
+ */
+class HostEnvironment extends Context.Service<HostEnvironment, Record<string, string>>()(
+  "cli/HostEnvironment",
+) {}
+
+/** HostEnvironment plus Config, OpenBao, Nomad and Deployments for command handlers. */
+const hostLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const env = yield* loadHostEnvironment(controllerEnvPath);
+    return Layer.mergeAll(
+      Layer.succeed(HostEnvironment, env),
+      OpenBao.layer,
+      NomadLive.layer(),
+      Deployments.layer(),
+    ).pipe(
+      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(
+        ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(env), { asPrimary: true }),
+      ),
+    );
+  }),
+);
+
+/** Command tree for this host process. Host files load only inside each command handler. */
+const makeCli = () => {
   const plan = Command.make(
     "plan",
     forwarded,
     Effect.fn(function* ({ args }) {
+      const hostEnv = yield* HostEnvironment;
       yield* planOrDeploy("plan", args, yield* releaseEnv(hostEnv));
-    }),
+    }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Preview an Alchemy deploy of a stage"));
 
   const deploy = Command.make(
     "deploy",
     forwarded,
     Effect.fn(function* ({ args }) {
+      const hostEnv = yield* HostEnvironment;
       yield* planOrDeploy("deploy", args, yield* releaseEnv(hostEnv));
-    }),
+    }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Run Alchemy's deploy of a stage"));
 
   const destroy = Command.make(
     "destroy",
     forwarded,
     Effect.fn(function* ({ args }) {
+      const hostEnv = yield* HostEnvironment;
       yield* requireLogin;
       yield* runAlchemy(["destroy", ...args, "-c", "state.run.ts"], hostEnv);
-    }),
+    }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Destroy a stage's resources from Alchemy state only"));
 
   const drift = Command.make(
     "drift",
     forwarded,
     Effect.fn(function* ({ args }) {
+      const hostEnv = yield* HostEnvironment;
       yield* requireLogin;
       yield* runAlchemy(["drift", ...args], hostEnv);
-    }),
+    }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Report drift between the state and the running resources"));
 
   const state = Command.make(
     "state",
     forwarded,
     Effect.fn(function* ({ args }) {
+      const hostEnv = yield* HostEnvironment;
       yield* runAlchemy(["state", ...args, "-c", "state.run.ts"], hostEnv);
-    }),
+    }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Read Alchemy's state store"));
 
   const rollback = Command.make(
@@ -326,6 +358,7 @@ const makeCli = (hostEnv: Record<string, string>) => {
       id: Argument.Int("id").pipe(Argument.withDescription("The deployment to restore")),
     },
     Effect.fn(function* ({ name, id }) {
+      const hostEnv = yield* HostEnvironment;
       const fs = yield* FileSystem.FileSystem;
       yield* fs.makeDirectory(".alchemy/input", { recursive: true });
       const cartridgeFile = `.alchemy/input/rollback-${name}-${id}.json`;
@@ -336,7 +369,7 @@ const makeCli = (hostEnv: Record<string, string>) => {
         ORIGIN: origin,
         REVISION: revision,
       });
-    }),
+    }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Deploy a recorded deployment again: <name> <id>"));
 
   return Command.make("ops").pipe(
@@ -367,14 +400,15 @@ const login = Command.make(
   "login",
   {},
   Effect.fn(function* () {
-    const tokenFile = yield* Config.String("OPENBAO_TOKEN_FILE");
+    const hostEnv = yield* HostEnvironment;
+    const tokenFile = hostEnv["OPENBAO_TOKEN_FILE"];
+    if (tokenFile === undefined) {
+      return yield* new CliError({ message: "OPENBAO_TOKEN_FILE is not set." });
+    }
     const rootToken = yield* readRootToken;
-    const token = yield* Effect.gen(function* () {
-      const bao = yield* OpenBao;
-      return yield* bao.createToken("2h");
-    }).pipe(
-      // fresh: the program already shares an OpenBao built without a token; this one
-      // must read the root token from the prompt instead.
+    // fresh: the host layer already shares an OpenBao; this one must read the root
+    // token from the prompt instead.
+    const token = yield* Effect.flatMap(OpenBao, (bao) => bao.createToken("2h")).pipe(
       Effect.provide(
         Layer.fresh(OpenBao.layer).pipe(
           Layer.provide(
@@ -389,7 +423,7 @@ const login = Command.make(
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(tokenFile, Redacted.value(token), { mode: 0o600 });
     yield* Console.log(`OpenBao token for 2 hours written to ${tokenFile}.`);
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(
   Command.withDescription(
     "Mint a 2-hour OpenBao token from the root token, typed or piped on stdin",
@@ -417,9 +451,13 @@ const readRootToken = Effect.gen(function* () {
   return Redacted.make(line);
 });
 
-const checkLogin = Command.make("check-login", {}, () => requireLogin).pipe(
-  Command.withDescription("Fail unless the OpenBao token from `login` is still valid"),
-);
+const checkLogin = Command.make(
+  "check-login",
+  {},
+  Effect.fn(function* () {
+    yield* requireLogin;
+  }, Effect.provide(hostLayer)),
+).pipe(Command.withDescription("Fail unless the OpenBao token from `login` is still valid"));
 
 const secretCheck = Command.make(
   "check",
@@ -427,7 +465,7 @@ const secretCheck = Command.make(
   Effect.fn(function* ({ name }) {
     const file = yield* Config.option(Config.String("CARTRIDGE_FILE"));
     yield* checkSecrets(name, Option.getOrUndefined(file));
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(Command.withDescription("Fail when a secret the cartridge references is not set"));
 
 // The workstation sets and lists secrets (src/secrets.ts); the host keeps the check that
@@ -467,7 +505,7 @@ const status = Command.make(
         ),
       ),
     );
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(Command.withDescription("Show each service's newest allocations"));
 
 const logs = Command.make(
@@ -514,7 +552,7 @@ const logs = Command.make(
       Console.log(`${line.timestamp.toISOString()} ${line.message}`);
     yield* Effect.forEach(yield* TaskLog.recent(nomad, job, { limit: lines }), show);
     if (tail) yield* Stream.runForEach(TaskLog.follow(nomad, job), show);
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(Command.withDescription("Print a Nomad job's recent output, or why it is not running"));
 
 const dash = Command.make(
@@ -522,7 +560,7 @@ const dash = Command.make(
   {},
   Effect.fn(function* () {
     yield* Console.log(FleetStatus.render(yield* FleetStatus.snapshot()));
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(Command.withDescription("Print each job's health and each node's load, once"));
 
 /**
@@ -538,7 +576,7 @@ const placeQueued = Command.make(
     yield* Effect.forEach(queued, (job) =>
       nomad.evaluate(job.ID).pipe(Effect.andThen(Console.log(`asked Nomad to place ${job.ID}`))),
     );
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(Command.withDescription("Ask Nomad to place every job that has queued allocations again"));
 
 const stageImage = Command.make(
@@ -589,7 +627,7 @@ const stageImage = Command.make(
       });
     }
     yield* Console.log(unique[0]);
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(Command.withDescription("Print the image a staged instance runs"));
 
 const deploymentList = Command.make(
@@ -604,7 +642,7 @@ const deploymentList = Command.make(
         `${deployment.id}\t${deployment.deployedAt}\t${deployment.revision}\t${images(deployment.cartridge).join(" ")}`,
       ),
     );
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(Command.withDescription("List an app's recorded deployments, newest first"));
 
 const deploymentCheck = Command.make(
@@ -615,7 +653,7 @@ const deploymentCheck = Command.make(
     const origin = yield* Config.String("ORIGIN");
     const revision = yield* Config.String("REVISION");
     yield* checkDeployment(name, file, origin, revision);
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(
   Command.withDescription(
     "Fail unless the cartridge in CARTRIDGE_FILE is valid, pins its images, and comes from the app's repository",
@@ -630,7 +668,7 @@ const deploymentRecord = Command.make(
     const origin = yield* Config.String("ORIGIN");
     const revision = yield* Config.String("REVISION");
     yield* recordDeployment(name, file, origin, revision);
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(Command.withDescription("Record the cartridge in CARTRIDGE_FILE as deployed"));
 
 const deploymentRestore = Command.make(
@@ -643,7 +681,7 @@ const deploymentRestore = Command.make(
   Effect.fn(function* ({ name, id, file }) {
     const { origin, revision } = yield* restoreDeployment(name, id, file);
     yield* Console.log(`ORIGIN=${origin} REVISION=${revision}`);
-  }),
+  }, Effect.provide(hostLayer)),
 ).pipe(
   Command.withDescription(
     "Write a recorded deployment's cartridge to a file and print its ORIGIN and REVISION",
@@ -724,18 +762,8 @@ const runAlchemy = Effect.fn("cli.runAlchemy")(function* (
 });
 
 const main = Effect.gen(function* () {
-  const hostEnv = yield* loadHostEnvironment(controllerEnvPath);
   const args = yield* (yield* Stdio.Stdio).args;
-  yield* Command.runWith(makeCli(hostEnv), { version: "1" })(route(alchemyCommands)(args)).pipe(
-    Effect.provide(
-      Layer.mergeAll(OpenBao.layer, NomadLive.layer(), Deployments.layer()).pipe(
-        Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, BunServices.layer)),
-        Layer.provideMerge(
-          ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(hostEnv), { asPrimary: true }),
-        ),
-      ),
-    ),
-  );
+  yield* Command.runWith(makeCli(), { version: "1" })(route(alchemyCommands)(args));
 }).pipe(
   Effect.tapErrorTag("CliError", (error) => Console.error(error.message)),
   Effect.provide(BunServices.layer),

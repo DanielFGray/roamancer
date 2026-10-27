@@ -1,46 +1,27 @@
-# Host-owned staged runner
+# Host-owned Alchemy runner
 
 ## Problem
 
-The workstation trial stores Alchemy state and its operation journal in one checkout. Its deploy wrapper uses a local file lock, which cannot coordinate with processes on a NixOS host. The host must own the accepted release manifest, Alchemy state, operation journal, and every staged apply.
+The workstation trial stores Alchemy state and its operation journal in one checkout. Its deploy wrapper uses a local file lock, which cannot coordinate with processes on a NixOS host. The host must own the accepted release, Alchemy state, operation journal, and every apply that holds deploy tokens.
 
-## Usage
+## Current design
 
-Operators send manifest bytes over the host's existing SSH connection. The host command stores a private snapshot before it applies the manifest:
+Nix installs the Alchemy runner on the control host (`site.cluster.server`). The package is the host program (`alchemy-runner` → `src/cli.ts`) with production dependencies and loopback defaults for Nomad and OpenBao. A system user `alchemy` owns `/var/lib/alchemy`. Credential-bearing code is only that Nix-installed runner from the last `ops rebuild` switch.
 
-```sh
-cat releases/candidate.json | ssh deploy@host sudo -n -u alchemy -- alchemy-staged plan
-cat releases/candidate.json | ssh deploy@host sudo -n -u alchemy -- alchemy-staged deploy --yes
-```
+Submissions arrive on a unix socket (`/run/alchemy/submit.sock`). The socket front end writes durable queue rows; it does not run the work. Jobs run one at a time as systemd template units (`alchemy-job@<id>.service`, `User=alchemy`), so journald holds the logs. A git push carries data only (stage, cartridge, image digests): never code that runs with tokens. Platform code changes go live through `ops rebuild`.
 
-The host stores state below `/var/lib/alchemy/.alchemy`. The `alchemy` account owns that directory, so the operator command writes it under sudo.
+`deploy-repos.nix` prepares the operator checkouts and advertises push options so a post-receive hook can read them and enqueue.
 
-## Shape
+## What the queue adds
 
-`staged-host-runner.sh` is the only writer entry point. It snapshots an input manifest, takes the state-directory lock, and calls the immutable Alchemy package. A successful deploy atomically replaces `staged-active.json` with the exact snapshot that was applied. A failed deploy keeps the prior accepted manifest and attempts to reconcile it before returning the original failure. `plan`, `deploy`, and `destroy` all take the same lock.
-
-A fixed service account owns the persistent Alchemy directory. Nix owns the Bun runtime, locked dependencies, Alchemy CLI, and stack source. Alchemy continues to own the application desired state; Nomad and Traefik remain the managed providers. Traefik reads routes from Nomad service tags and follows a moved allocation itself, so no allocation-event watcher is needed.
-
-The interface has one transport rule: pass a manifest on standard input. It hides host paths, working directories, dependency versions, and lock sequencing. SSH supplies the caller identity. The first version is synchronous. An SSH disconnect interrupts the request. Changes Nomad already applied stay in place until an operator runs the next deploy.
-
-## Synthesis decision
-
-The direct SSH runner is the base design. It retains one process owner and makes the existing apply sequence available on the host. A persistent queue and socket broker could continue work after an SSH disconnect, but that adds request IDs, queue persistence, status, cancellation, and retention before the project needs asynchronous submissions.
+An earlier synthesis preferred a direct SSH runner with no broker: one process owner and a small surface. A durable queue and socket add request IDs, persistence, status, cancellation, and retention, but they keep work alive after disconnect, serialize applies globally, and keep tokens out of the operator session and out of hook scripts. The project chose the queue on 2026-10-27.
 
 ## Tradeoffs accepted
 
-- We accept synchronous SSH requests in exchange for a small command surface and no new network protocol.
-- We accept one host as the Alchemy writer in exchange for simple state ownership and serialization.
-- We accept that a crash after provider changes but before manifest acceptance leaves those changes running. Nothing restores the accepted manifest at boot. The operator runs the next deploy.
-
-## Alternatives considered
-
-A durable deployment broker hides disconnect handling and request history behind a client command. It adds a queue database and a new protocol, which are not needed to prove host ownership. Independent workstation deploy commands expose checkout paths and cannot share the host lock.
+- We accept one global job at a time in exchange for simple state ownership and no per-stage parallelism.
+- We accept that a crash after provider changes leaves those changes running; a job interrupted by restart becomes `interrupted`, and a plan job is queued to show drift. Nothing auto-reapplies.
+- We accept that push returns after durable enqueue; `ops wait <job>` reports the result.
 
 ## Risks and limits
 
-The SSH account and sudo policy must be configured for the production operator. Route repair after allocation movement needs no Alchemy run: Traefik follows the moved allocation from its Nomad tags. Alchemy's local state and operation journal still need backup and restore. This slice does not add multi-node placement, public preview TLS, or durable asynchronous request status.
-
-## Next implementation step
-
-Package Alchemy and its Bun dependency closure with Nix, install the shared runner as a NixOS command, then prove apply locking and recovery on the disposable VM.
+The SSH account and group membership for the submit socket must match the operator. Alchemy's local state and operation journal still need backup and restore. Cutover still moves Alchemy state under the runner account, removes the operator from group `alchemy`, and routes mutating ops through the socket.

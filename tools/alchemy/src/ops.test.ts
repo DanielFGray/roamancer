@@ -23,7 +23,7 @@ import { flakeHosts, HostName, install, rebuild } from "./Nixos.ts";
 import { hostCommands, Remote, remoteCommand } from "./Remote.ts";
 import { Site } from "./Site.ts";
 
-const nixosFolder = new URL("../../../nixos", import.meta.url).pathname;
+const repositoryRoot = new URL("../../..", import.meta.url).pathname;
 const hostRoute = route(hostCommands.map((command) => command.name));
 
 describe("route", () => {
@@ -175,7 +175,7 @@ describe("rebuild", () => {
     ]);
     assert.equal(
       log[8],
-      `ssh -t root@z rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/server-ansible/nixos#cynic" --override-input site "path:$HOME/site-tree"`,
+      `ssh -t root@z rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/server-ansible#cynic" --override-input site "path:$HOME/site-tree"`,
     );
     assert.equal(
       log[log.length - 1],
@@ -188,7 +188,7 @@ describe("rebuild", () => {
     const switches = log.filter((line) => line.includes("nixos-rebuild switch"));
     assert.equal(
       switches.length,
-      flakeHosts(readFileSync(`${nixosFolder}/flake.nix`, "utf8")).length,
+      flakeHosts(readFileSync(`${repositoryRoot}/flake.nix`, "utf8")).length,
     );
   });
 
@@ -218,13 +218,13 @@ describe("install", () => {
     const archives = log.filter((line) => line.includes(" archive "));
     assert.match(
       archives[0],
-      new RegExp(`^git -C ${Git.repository} archive --format=tar -o \\S+ HEAD:nixos$`),
+      new RegExp(`^git -C ${Git.repository} archive --format=tar -o \\S+ HEAD$`),
     );
     assert.match(archives[1], new RegExp(`^git -C ${site} archive --format=tar -o \\S+ HEAD$`));
     const extractions = log.filter((line) => line.startsWith("tar -xf "));
     const tree = / -C (\S+)$/.exec(extractions[0])?.[1];
     assert.ok(tree !== undefined);
-    assert.ok(extractions[1].endsWith(` -C ${tree}/site`));
+    assert.ok(extractions[1].endsWith(` -C ${tree}/nixos/site`));
     const docker = log[log.length - 1];
     assert.ok(docker.startsWith("docker run --rm --network host --volume server-ansible-nix:/nix"));
     assert.ok(docker.includes(`--volume ${tree}:/src:ro`));

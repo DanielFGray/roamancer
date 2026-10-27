@@ -24,7 +24,7 @@ ops secret list platform/observability     # a platform cartridge, from tools/al
 ops dash                                   # every job's health and why a queued one waits; each node's use and reservations
 ops place-queued                           # ask Nomad to place jobs with queued allocations again; `ops rebuild` runs it last
 ops status giglist                         # each service's newest allocations
-ops rebuild                                # host config (with your OPS_SITE folder) for every host in nixos/flake.nix, one at a time; `ops rebuild cynic` for one. sudo asks for your password on each. It pushes the committed repository and site folder to the host and builds from them; the switch makes a new system generation to roll back to.
+ops rebuild                                # host config (with your OPS_SITE folder) for every host in the root flake.nix, one at a time; `ops rebuild cynic` for one. sudo asks for your password on each. It pushes the committed repository and site folder to the host and builds from them; the switch makes a new system generation to roll back to.
 ops install cynic root@10.0.0.9         # erase that machine's disk and install the host; asks you to type the host name, or pass --yes. Arguments for nixos-anywhere follow --
 ```
 
@@ -55,7 +55,7 @@ CARTRIDGE_FILE=../my-app/cartridge.json bun run deploy --stage my-app
 
 `NOMAD_TOKEN` is optional only on an ACL-free testground. State is local and separated by stage. Use the same control machine and state directory for later plans. `bun run destroy --stage my-app` removes that cartridge's managed resources, not the Nix host volume. Use `--stage platform-data` for the shared server cartridge.
 
-The Nomad provider records reconcile and delete operations in `.alchemy/operations.sqlite`. If a process stops after an operation starts but before it records the result, the next plan detects that pending operation and reconciles the resource against live Nomad state. Inspect the history with `bun run history`. Keep the journal and Alchemy state under `.alchemy` together. This is local operation history, not shared state. On cynic, `restic-backups-alchemy` backs up the state and a consistent copy of the journal (`nixos/backup-operations.md`). The staged plan, deploy, and destroy commands use `staged-host-runner.sh`, which snapshots input and serializes applies through one lock. The NixOS module gives the operator command the `/var/lib/alchemy` state directory.
+The Nomad provider records reconcile and delete operations in `.alchemy/operations.sqlite`. If a process stops after an operation starts but before it records the result, the next plan detects that pending operation and reconciles the resource against live Nomad state. Inspect the history with `bun run history`. Keep the journal and Alchemy state under `.alchemy` together. This is local operation history, not shared state. On cynic, `restic-backups-alchemy` backs up the state and a consistent copy of the journal (`nixos/backup-operations.md`). On the control host, Nix installs `alchemy-runner` (`src/cli.ts`) as the `alchemy` user with state under `/var/lib/alchemy`; submissions go to `/run/alchemy/submit.sock` (queue not built yet).
 
 The platform reads the versioned cartridge and checks its API version and job fields against the supported schema, then translates each service declaration into a Nomad job. The initial bridge-network update produced job version 2. In that proof, a cartridge update and restoration left job version 4 healthy, HTTP returned 200, and the final Alchemy plan reported no changes. These are saved results, not a current VM status check.
 
@@ -75,56 +75,11 @@ For later rollout checks, run `bash scripts/probe-http-rollout.sh URL [INTERVAL_
 
 Noneuclid stores editable levels in one SQLite file on the shared host volume. Do not start two versions against that writable file until a single-writer handoff is designed and tested. A dynamic port alone does not make overlapping versions safe.
 
-## Staged release proof
+## Host runner and staged releases
 
-`staged.run.ts` declares one `Nomad.ReleaseSet` from a JSON manifest. Each release uses a separate Nomad job with a dynamic host port. Routes are Traefik tags on each release job's Nomad service: the selected release carries the stable host and the candidate carries the preview host. Other releases carry no tags. Traefik reads the tags from Nomad, so a moved allocation keeps its route without an Alchemy run. See `platform/ingress/README.md`. Promotion and rollback change the selected release in the manifest. Keep the previous release in `releases` to keep it available for rollback.
+Nix installs `alchemy-runner` on the control host (`nixos/modules/alchemy-runner.nix`): the `alchemy` user owns `/var/lib/alchemy`, and the operator submits on `/run/alchemy/submit.sock` (group `alchemy-submit`). The socket service is a stub until the queue lands; jobs will run as `alchemy-job@<id>.service`. Mutating `ops` commands still reach `src/cli.ts` over SSH today; the socket replaces sudo for enqueue. See `docs/design/host-owned-staged-runner.md`.
 
-A successful staged deploy records the exact applied manifest at `.alchemy/staged-active.json`, so edits to the working manifest do not cause an automatic promotion. A failed deploy attempts to re-apply the accepted manifest and then returns the original failure. No controller re-applies it automatically at boot.
-
-`nixos/modules/alchemy-staged.nix` defines the restricted sudo command for the staged runner. Nix packages the Bun runtime, Alchemy source, production dependency closure, and runner commands. Operators send manifest bytes over SSH:
-
-```sh
-cat releases/candidate.json | ssh operator@host sudo -n -u alchemy -- alchemy-staged plan
-cat releases/candidate.json | ssh operator@host sudo -n -u alchemy -- alchemy-staged deploy --yes
-```
-
-The SSH account must belong to a group listed in `services.alchemyStaged.operatorGroups` (the default is `wheel`). The module does not create an SSH account or install an SSH key.
-
-The Nix production lock is `bun-production.lock`; regenerate it and `bun.nix` with `bun run nix:deps`. Bun 1.4 reads the version 1 lock used here, while the pinned `bun2nix` converter currently rejects Bun's version 2 format. A failed explicit deploy keeps the old accepted manifest and attempts to restore it. If the host restarts after provider changes but before acceptance, the old accepted manifest remains authoritative.
-
-The pinned runtime package now has a fresh disposable-VM proof; see [Current limits](#current-limits). Remote SSH apply and lock contention remain unverified.
-
-This proof uses stateless `whoami` containers. It does not support shared writable volumes, public preview DNS, TLS, A/B traffic splitting, or placing releases on different nodes. The sample `*.localhost` hosts are for local routing checks; a phone cannot reach them. Do not use this flow for Noneuclid while two releases would share its writable SQLite file. Resource settings such as CPU, memory, and health checks apply to every declared release; changing them can update and restart the selected release's job. Keep them fixed during a staged image rollout until job configuration is versioned per release.
-
-The workstation setup uses an SSH port forward to Nomad's loopback API and a Nomad token from the host (see `nixos/cynic/nomad-acl-operations.md`):
-
-```sh
-ssh -N -L 14646:127.0.0.1:4646 cynic &
-export NOMAD_ADDR=http://127.0.0.1:14646
-```
-
-Keep the SSH tunnel open while planning and deploying. From `tools/alchemy`, start with the live-only manifest:
-
-```sh
-export ALCHEMY_RELEASE_SET=examples/staged-probe/live.json
-bun run staged:plan
-bun run staged:deploy --yes
-```
-
-Then use these manifests in order:
-
-1. `candidate.json` keeps v1 selected and adds v2 as the candidate. Open `http://v2.probe.localhost` to inspect the candidate.
-2. `promoted.json` selects v2 and clears the candidate. The stable host becomes v2.
-3. `rollback.json` selects v1 again. The stable host returns to v1.
-4. `single-live.json` removes v2 from desired state and cleans up its job and preview route.
-
-For each change, set `ALCHEMY_RELEASE_SET` to the chosen manifest, run `bun run staged:plan`, then `bun run staged:deploy --yes`. Alchemy local state and the operation journal are stored under `tools/alchemy/.alchemy` in the workstation trial; the NixOS host uses `/var/lib/alchemy/.alchemy`. Back them up together. `ReleaseSet.read` adopts a set when every declared release has exactly one matching owned Nomad job; reconcile then removes extra owned release jobs. On 2026-10-20, a fresh disposable VM ran v1 plus v2 as the candidate. After backing up and moving Alchemy's local state aside while leaving Nomad and Caddy running, a fresh plan adopted the ReleaseSet. Both hosts returned HTTP 200 with the expected `X-Alchemy-Release` headers, Nomad still had exactly one running job per release, and the final plan reported no changes. That proof used the earlier Caddy admin-API routes.
-
-The provider requires the matching allocation to be running, its Nomad deployment health to be successful, and its service health checks to pass. Nomad garbage-collects finished deployments, so a plan reads allocation health, not the deployment record. The host runner is declared in the NixOS module and passed the disposable-VM proof described below.
-
-On 2026-10-21 the same manifests ran on cynic with Traefik routes. Promotion and rollback served every request with HTTP 200 and restarted no allocation. Stopping the selected allocation gave about 5 s of 404 and one 502, then HTTP 200 from the replacement, with no Alchemy run; the next plan reported no changes.
-
-Before that, a disposable VM used Caddy admin-API routes. It returned HTTP 200 with `X-Alchemy-Release: v1` on the stable host, then returned v2 at the preview host while stable traffic remained on v1. Promotion changed the stable header to v2. Rollback changed it to v1. Cleanup removed the v2 job and preview route, and the final plan had no changes. The stable route survived a Caddy restart, and a new Alchemy plan reported no changes. A manual Caddyfile reload removed the route; Alchemy detected and restored it. An allocation reschedule changed its dynamic port; the route returned HTTP 502 until an Alchemy deploy reconciled it. An earlier generated image needed ext4 repair on its disposable overlay; the later fresh-image proof is recorded under [Current limits](#current-limits).
+`ops stage` / `ops promote` deploy a cartridge's staged instance through that host program (Traefik tags on Nomad services; see `platform/ingress/README.md`). The Nix production lock is `bun-production.lock`; regenerate it and `bun.nix` with `bun run nix:deps`.
 
 ## Composed services and OpenBao secrets
 
@@ -289,7 +244,7 @@ Checked on cynic on 2026-10-23: giglist and noneuclid traces and logs reach Open
 
 ## Current limits
 
-The pinned runtime package and testground image build successfully. On 2026-10-20, a fresh disposable VM booted the host-owned staged controller, which this repository has since removed, deployed the sample ReleaseSet as the `alchemy` account, and reconciled both routes after reboot with a final plan reporting no changes. The controller retried while Nomad was starting and then reconciled; that verified recovery, not startup ordering. Since Traefik follows a moved allocation from its Nomad tags, no long-running watcher is needed. The package includes `util-linux` because the shared runner uses `flock`.
+The pinned runtime package and testground image build successfully. On 2026-10-20, a fresh disposable VM booted an earlier host-owned staged controller (since removed), deployed a sample ReleaseSet as the `alchemy` account, and reconciled both routes after reboot with a final plan reporting no changes. Traefik follows a moved allocation from its Nomad tags, so no long-running watcher is needed. The control host now installs `alchemy-runner` from the root flake.
 
 Alchemy supports dependency-ordered Nomad jobs, endpoint templates, health checks, OpenBao workload identity delivery, shared PostgreSQL and Valkey servers, app database and Valkey access resources, and per-service `migrate` prestart tasks. The shared servers passed the cynic proof above; app-scoped provisioning and migrations still need an end-to-end proof. The runner does not build or publish images or configure public TLS. Backup and restore, cross-node routing, state-preserving data rollback, and a production rebuild remain unproven.
 

@@ -25,6 +25,7 @@ in
           ${git} init -q -b deploy "$repo"
         fi
         ${git} -C "$repo" config receive.denyCurrentBranch updateInstead
+        ${git} -C "$repo" config receive.advertisePushOptions true
       done
     ''
     + lib.optionalString controlHost ''

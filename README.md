@@ -112,10 +112,10 @@ secrets, and staged releases work, is in [tools/alchemy/README.md](tools/alchemy
 
 | Path | Contents |
 | --- | --- |
-| `flake.nix` | the Alchemy runtime package, the server's configuration with the staged runner, and a test VM image |
-| `nixos/` | host configurations. `flake.nix` here is what hosts build; `modules/` is shared; `site/` holds the placeholder installation values |
+| `flake.nix` | one flake for every host, the Alchemy runner package, and a test VM image |
+| `nixos/` | host configurations; `modules/` is shared; `site/` holds the placeholder installation values |
 | `tools/alchemy/` | the `ops` command, the Alchemy stacks, the custom Nomad, OpenBao, PostgreSQL, and Valkey resources, the platform cartridges, and the tests |
-| `docs/design/` | design notes for the staged runner, staged releases, and cartridges |
+| `docs/design/` | design notes for the host runner, staged releases, and cartridges |
 | `docs/research/` | PostgreSQL research |
 | `docs/status.md` | dated results from test runs |
 | `testground/` | scripts for a disposable local test VM. They predate the site folder and still name the author's user and subnet |

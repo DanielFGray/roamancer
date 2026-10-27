@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { ConfigProvider, Effect, FileSystem, Layer, Option, Redacted, Sink, Stream } from "effect";
 import { ChildProcess } from "effect/process";
@@ -43,6 +44,24 @@ describe("parseEnvFile", () => {
         OPENBAO_ADDR: "http://127.0.0.1:8200",
       },
     );
+  });
+});
+
+describe("cli --help", () => {
+  it("prints host commands with no controller.env or XDG_RUNTIME_DIR", () => {
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && key !== "XDG_RUNTIME_DIR") env[key] = value;
+    }
+    const result = spawnSync(
+      process.execPath,
+      [new URL("./cli.ts", import.meta.url).pathname, "--help"],
+      { env, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /login/);
+    assert.doesNotMatch(result.stderr, /cannot read/);
+    assert.doesNotMatch(result.stderr, /XDG_RUNTIME_DIR/);
   });
 });
 

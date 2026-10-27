@@ -97,7 +97,7 @@ What is **not** journaled:
 
 ### Native `bun run dev` processes: no integration exists
 
-There is no code in `tools/alchemy` or `tools/infra` that tracks, starts, stops, or records native `bun run dev` processes. The `bun` command is used to *run Alchemy itself* (`alchemy.run.ts`, `staged.run.ts`), not to manage developer workloads as Alchemy resources. `tools/alchemy/src/Cartridge.ts` accepts only `CartridgeJob` → `image`-based Nomad jobs (`tools/alchemy/src/Job.ts:95-121`; `Driver: "podman"` at `tools/alchemy/src/Job.ts:241`). No schema field, provider, or journal event represents a native process.
+There is no code in `tools/alchemy` or `tools/infra` that tracks, starts, stops, or records native `bun run dev` processes. The `bun` command is used to *run Alchemy itself* (`alchemy.run.ts`), not to manage developer workloads as Alchemy resources. `tools/alchemy/src/Cartridge.ts` accepts only `CartridgeJob` → `image`-based Nomad jobs (`tools/alchemy/src/Job.ts:95-121`; `Driver: "podman"` at `tools/alchemy/src/Job.ts:241`). No schema field, provider, or journal event represents a native process.
 
 ## Nomad GC and History Limits (official API)
 

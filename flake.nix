@@ -1,5 +1,5 @@
 {
-  description = "NixOS host and Alchemy runtime for server-ansible";
+  description = "NixOS hosts and Alchemy runtime for server-ansible";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/cd4ea8d57de16f4810bc5f14207bac45fbf19f67";
@@ -17,6 +17,7 @@
     };
     # The installation's own facts, as a folder that holds site.toml. The folder shipped
     # here holds placeholder values; pass yours with `--override-input site path:<folder>`.
+    # `ops rebuild` and `ops install` override this input with your site folder.
     site = { url = "path:./nixos/site"; flake = false; };
   };
 
@@ -31,9 +32,25 @@
           (import ./nixos/cynic/bun.nix)
         ];
       };
+      # One flake for every host, so shared modules and tools/alchemy are inside its source.
+      host = configuration: nixpkgs.lib.nixosSystem {
+        inherit system;
+        specialArgs = { site = siteConfig; siteDir = site; };
+        modules = [
+          disko.nixosModules.disko
+          configuration
+          ./nixos/modules/alchemy-runner.nix
+          {
+            services.alchemyRunner.package = self.packages.${system}.alchemy-runner;
+          }
+        ];
+      };
     in {
       packages.${system} = {
-        alchemy-staged = pkgs.callPackage ./nixos/testground/alchemy-staged-package.nix { };
+        alchemy-runner = pkgs.callPackage ./nixos/modules/alchemy-runner-package.nix { };
+
+        postgres-image =
+          import ./nixos/cynic/postgres-image.nix { pkgs = nixpkgs.legacyPackages.${system}; };
 
         # Disposable QEMU image of the same host config. It lives here, not in a
         # nested flake, so the shared modules under nixos/modules are in its source.
@@ -43,31 +60,18 @@
           specialArgs = { site = siteConfig; siteDir = site; };
           modules = [
             ./nixos/testground/configuration.nix
-            ./nixos/modules/alchemy-staged.nix
+            ./nixos/modules/alchemy-runner.nix
             {
-              services.alchemyStaged = {
+              services.alchemyRunner = {
                 enable = true;
-                package = self.packages.${system}.alchemy-staged;
+                package = self.packages.${system}.alchemy-runner;
               };
             }
           ];
         };
       };
 
-      nixosConfigurations.cynic = nixpkgs.lib.nixosSystem {
-        inherit system;
-        specialArgs = { site = siteConfig; siteDir = site; };
-        modules = [
-          disko.nixosModules.disko
-          ./nixos/cynic/configuration.nix
-          ./nixos/modules/alchemy-staged.nix
-          {
-            services.alchemyStaged = {
-              enable = true;
-              package = self.packages.${system}.alchemy-staged;
-            };
-          }
-        ];
-      };
+      nixosConfigurations.cynic = host ./nixos/cynic/configuration.nix;
+      nixosConfigurations.atheist = host ./nixos/atheist/configuration.nix;
     };
 }

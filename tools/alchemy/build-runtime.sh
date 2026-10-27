@@ -21,7 +21,7 @@ repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 builder_dir="${NIX_BUILDER_DIR:-$HOME/.cache/server-ansible-builder}"
 image="${NIX_BUILDER_IMAGE:-nixos/nix:latest}"
 # A flake reference inside the source snapshot, such as path:/src#testground-vm.
-build_target="${NIX_BUILD_TARGET:-path:/src#alchemy-staged}"
+build_target="${NIX_BUILD_TARGET:-path:/src#alchemy-runner}"
 # NixOS disk images run a VM while they build, so they need /dev/kvm. Opt in per build.
 kvm_args=()
 if [[ "${NIX_BUILDER_KVM:-0}" == "1" ]]; then

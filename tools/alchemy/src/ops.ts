@@ -46,7 +46,7 @@ const rebuildCommand = Command.make(
   "rebuild",
   {
     host: hostName.pipe(
-      Argument.withDescription("A host in nixos/flake.nix; every host when omitted"),
+      Argument.withDescription("A host in the root flake.nix; every host when omitted"),
       Argument.optional,
     ),
     target: Argument.String("target").pipe(
@@ -55,7 +55,9 @@ const rebuildCommand = Command.make(
     ),
   },
   ({ host, target }) => rebuild(host, target),
-).pipe(Command.withDescription("Sync nixos/ to a running host and switch it to that config"));
+).pipe(
+  Command.withDescription("Sync the repository to a running host and switch it to that config"),
+);
 
 const installCommand = Command.make(
   "install",
@@ -64,7 +66,7 @@ const installCommand = Command.make(
       Flag.withDefault(false),
       Flag.withDescription("Erase the disk without asking, as a script without a terminal must"),
     ),
-    host: hostName.pipe(Argument.withDescription("The host in nixos/flake.nix to install")),
+    host: hostName.pipe(Argument.withDescription("The host in the root flake.nix to install")),
     target: Argument.String("target").pipe(
       Argument.withDescription("The ssh target of the machine, such as root@192.168.50.10"),
     ),

@@ -167,18 +167,11 @@ Permission denied
 
 ## Delivering the token to the runner
 
-The Alchemy code reads `NOMAD_TOKEN` from the environment
-(`tools/alchemy/src/NomadConfig.ts`). The `staged-host-runner.sh` wrapper
-reads `/var/lib/nomad-acl/controller.env` by default, or the file named by
-`NOMAD_TOKEN_ENV_FILE` when that is set, because sudo does not pass the
-operator's environment through. The file must be readable by the `alchemy`
-account for those commands; `nomad-acl-issue-controller` sets that mode when
-the group exists.
-
-The repository-root flake declares the staged Alchemy runner for `cynic`.
-Nothing starts at boot: an operator runs the command over SSH. The nested
-`nixos/cynic` flake remains a host-only configuration and does not include the
-runner.
+The Alchemy host program (`alchemy-runner` → `tools/alchemy/src/cli.ts`) reads
+`NOMAD_TOKEN` from `/var/lib/nomad-acl/controller.env` when a command needs Nomad
+(`tools/alchemy/src/NomadConfig.ts`). The file must be readable by the `alchemy`
+group; `nomad-acl-issue-controller` sets that mode when the group exists. The
+root flake enables the runner module on the control host.
 
 ## Recovery
 
