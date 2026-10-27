@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { blockedBy, health } from "./FleetStatus.ts";
+import * as S from "effect/Schema";
+import { blockedBy, health, nodeStatus } from "./FleetStatus.ts";
+import { NodeSchema, NodeStatsSchema, PlacedAllocationSchema } from "./Nomad.ts";
 
 const job = { status: "running", type: "service", running: 1, starting: 0, queued: 0, checks: [] };
 
@@ -39,5 +41,74 @@ describe("blockedBy", () => {
 
   it("is empty when no evaluation failed to place", () => {
     assert.deepEqual(blockedBy([{ Status: "complete", FailedTGAllocs: null }]), []);
+  });
+});
+
+// Trimmed from the responses of a Nomad 2.0.7 dev agent.
+const node = S.decodeUnknownSync(NodeSchema)({
+  ID: "87a88833-64e1-a151-895b-cf41a568565e",
+  Name: "dev",
+  Status: "ready",
+  SchedulingEligibility: "eligible",
+  NodeResources: {
+    Cpu: { CpuShares: 15200, ReservableCpuCores: [0, 1], TotalCpuCores: 8 },
+    Memory: { MemoryMB: 15762 },
+  },
+  ReservedResources: { Cpu: { CpuShares: 200, ReservedCpuCores: null }, Memory: { MemoryMB: 256 } },
+});
+const stats = S.decodeUnknownSync(NodeStatsSchema)({
+  Uptime: 1561100,
+  CPU: [
+    { CPU: "cpu0", Idle: 60, System: 4, TotalPercent: 40, User: 36 },
+    { CPU: "cpu1", Idle: 80, System: 4, TotalPercent: 20, User: 16 },
+  ],
+  Memory: { Available: 5828149248, Free: 1044185088, Total: 16528658432, Used: 10271100928 },
+  DiskStats: [
+    {
+      Available: 10657800192,
+      Device: "/dev/sda5",
+      Mountpoint: "/",
+      Size: 58190864384,
+      Used: 44543946752,
+      UsedPercent: 80.69,
+    },
+  ],
+});
+const allocation = (NodeName: string, ClientStatus: string, MemoryMB: number) =>
+  S.decodeUnknownSync(PlacedAllocationSchema)({
+    ID: "a",
+    JobID: "postgres",
+    NodeName,
+    ClientStatus,
+    AllocatedResources: {
+      Shared: {},
+      Tasks: { server: { Cpu: { CpuShares: 500 }, Memory: { MemoryMB, MemoryMaxMB: 0 } } },
+    },
+  });
+
+describe("nodeStatus", () => {
+  it("sums reservations of running allocations on the node, against capacity less the node's own reserve", () => {
+    const status = nodeStatus(
+      node,
+      [
+        allocation("dev", "running", 512),
+        allocation("dev", "complete", 768),
+        allocation("other", "running", 64),
+      ],
+      stats,
+    );
+    assert.deepEqual(status.reservedMemoryMB, { used: 512, total: 15506 });
+    assert.deepEqual(status.reservedCpuShares, { used: 500, total: 15000 });
+    assert.equal(status.cpuPercent, 30);
+    assert.deepEqual(status.disks, [
+      { mount: "/", bytes: { used: 44543946752, total: 58190864384 } },
+    ]);
+  });
+
+  it("shows no measurements for a node that did not answer", () => {
+    const status = nodeStatus(node, [], null);
+    assert.equal(status.cpuPercent, null);
+    assert.equal(status.memoryBytes, null);
+    assert.deepEqual(status.disks, []);
   });
 });

@@ -21,6 +21,7 @@ ops secret list                            # in an app repository: each referenc
 ops secret check                           # fails when a referenced key is unset
 ops secret set github_client_secret        # prompts for the value
 ops secret list platform/observability     # a platform cartridge, from tools/alchemy
+ops dash                                   # every job's health and why a queued one waits; each node's use and reservations
 ops status giglist                         # each service's newest allocations
 ops rebuild cynic                      # host config: copy nixos/ to the host and switch it; sudo asks for your password, and the old /etc/nixos is kept in /var/tmp
 ```

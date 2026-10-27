@@ -11,8 +11,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as S from "effect/Schema";
-import { Nomad } from "./Nomad.ts";
-import type { Evaluation, JobListItem, Node, PlacedAllocation } from "./Nomad.ts";
+import { Nomad, type NomadError } from "./Nomad.ts";
+import type { Evaluation, JobListItem, Node, NodeStats, PlacedAllocation } from "./Nomad.ts";
 
 export const Health = S.Literals(["healthy", "degraded", "down", "stopped"]);
 export type Health = typeof Health.Type;
@@ -62,8 +62,10 @@ export type Snapshot = typeof Snapshot.Type;
 
 export const snapshot = Effect.fn("FleetStatus.snapshot")(function* () {
   const nomad = yield* Nomad;
+  // Both sections place allocations: on a job, and on a node.
+  const allocations = yield* Effect.cached(nomad.placedAllocations());
   const [jobs, nodes] = yield* Effect.all(
-    [available(jobStatuses(nomad)), available(nodeStatuses(nomad))],
+    [available(readJobs(nomad, allocations)), available(readNodes(nomad, allocations))],
     { concurrency: "unbounded" },
   );
   return { takenAt: new Date().toISOString(), jobs, nodes } satisfies Snapshot;
@@ -106,6 +108,39 @@ export const blockedBy = (evaluations: ReadonlyArray<Evaluation>): ReadonlyArray
     Option.getOrElse(() => []),
   );
 
+/** A node's line in the snapshot; `stats` is null when the node did not answer. */
+export const nodeStatus = (
+  node: Node,
+  allocations: ReadonlyArray<PlacedAllocation>,
+  stats: NodeStats | null,
+): NodeStatus => {
+  const placed = allocations.filter(
+    (allocation) => allocation.NodeName === node.Name && allocation.ClientStatus === "running",
+  );
+  return {
+    name: node.Name,
+    status: node.Status,
+    eligible: node.SchedulingEligibility === "eligible",
+    reservedMemoryMB: {
+      used: reserved(placed, (task) => task.Memory.MemoryMB),
+      total: node.NodeResources.Memory.MemoryMB - node.ReservedResources.Memory.MemoryMB,
+    },
+    reservedCpuShares: {
+      used: reserved(placed, (task) => task.Cpu.CpuShares),
+      total: node.NodeResources.Cpu.CpuShares - node.ReservedResources.Cpu.CpuShares,
+    },
+    cpuPercent:
+      stats === null || stats.CPU.length === 0
+        ? null
+        : 100 - stats.CPU.reduce((sum, cpu) => sum + cpu.Idle, 0) / stats.CPU.length,
+    memoryBytes: stats === null ? null : { used: stats.Memory.Used, total: stats.Memory.Total },
+    disks: (stats?.DiskStats ?? []).map((disk) => ({
+      mount: disk.Mountpoint,
+      bytes: { used: disk.Used, total: disk.Size },
+    })),
+  };
+};
+
 const available = <A, E>(read: Effect.Effect<ReadonlyArray<A>, E>) =>
   read.pipe(
     Effect.map((items) => ({ _tag: "Available" as const, items })),
@@ -117,105 +152,74 @@ const available = <A, E>(read: Effect.Effect<ReadonlyArray<A>, E>) =>
     ),
   );
 
+type Allocations = Effect.Effect<ReadonlyArray<PlacedAllocation>, NomadError>;
+
+const readJobs = Effect.fn("FleetStatus.readJobs")(function* (
+  nomad: typeof Nomad.Service,
+  allocations: Allocations,
+) {
+  const jobs = Arr.sort(
+    yield* nomad.jobs(),
+    Order.mapInput(Order.String, (job: JobListItem) => job.ID),
+  );
+  const placed = yield* allocations;
+  return yield* Effect.forEach(jobs, (job) => readJob(nomad, job, placed), { concurrency: 8 });
+});
+
+const readJob = Effect.fn("FleetStatus.readJob")(function* (
+  nomad: typeof Nomad.Service,
+  job: JobListItem,
+  allocations: ReadonlyArray<PlacedAllocation>,
+) {
+  const running = allocations.filter(
+    (allocation) => allocation.JobID === job.ID && allocation.ClientStatus === "running",
+  );
+  const found = yield* Effect.forEach(running, (allocation) =>
+    nomad.allocationChecks(allocation.ID),
+  );
+  const checks = found.flatMap((checks) =>
+    Option.match(checks, {
+      onNone: () => [],
+      onSome: (byId) =>
+        Object.values(byId).map((check) => ({ service: check.Service, status: check.Status })),
+    }),
+  );
+  const counts = {
+    running: running.length,
+    starting: count(job, "Starting"),
+    queued: count(job, "Queued"),
+  };
+  return {
+    name: job.ID,
+    type: job.Type,
+    health: health({ status: job.Status, type: job.Type, checks, ...counts }),
+    ...counts,
+    blockedBy: counts.queued > 0 ? blockedBy(yield* nomad.evaluations(job.ID)) : [],
+    checks,
+  } satisfies JobStatus;
+});
+
+const readNodes = Effect.fn("FleetStatus.readNodes")(function* (
+  nomad: typeof Nomad.Service,
+  allocations: Allocations,
+) {
+  const nodes = Arr.sort(
+    yield* nomad.nodes(),
+    Order.mapInput(Order.String, (node: Node) => node.Name),
+  );
+  const placed = yield* allocations;
+  return yield* Effect.forEach(
+    nodes,
+    (node) =>
+      (node.Status === "ready" ? Effect.option(nomad.nodeStats(node.ID)) : Effect.succeedNone).pipe(
+        Effect.map((stats) => nodeStatus(node, placed, Option.getOrNull(stats))),
+      ),
+    { concurrency: "unbounded" },
+  );
+});
+
 const count = (job: JobListItem, key: string) =>
   Object.values(job.JobSummary?.Summary ?? {}).reduce((sum, group) => sum + (group[key] ?? 0), 0);
-
-const jobStatuses = (nomad: typeof Nomad.Service) =>
-  Effect.gen(function* () {
-    const [jobs, allocations] = yield* Effect.all([nomad.jobs(), nomad.placedAllocations()], {
-      concurrency: "unbounded",
-    });
-    return yield* Effect.forEach(
-      Arr.sort(
-        jobs,
-        Order.mapInput(Order.String, (job: JobListItem) => job.ID),
-      ),
-      (job) =>
-        Effect.gen(function* () {
-          const running = allocations.filter(
-            (allocation) => allocation.JobID === job.ID && allocation.ClientStatus === "running",
-          );
-          const checks = (yield* Effect.forEach(running, (allocation) =>
-            nomad.allocationChecks(allocation.ID),
-          )).flatMap((found) =>
-            Option.match(found, {
-              onNone: () => [],
-              onSome: (checks) =>
-                Object.values(checks).map((check) => ({
-                  service: check.Service,
-                  status: check.Status,
-                })),
-            }),
-          );
-          const counts = {
-            running: running.length,
-            starting: count(job, "Starting"),
-            queued: count(job, "Queued"),
-          };
-          const blocked = counts.queued > 0 ? blockedBy(yield* nomad.evaluations(job.ID)) : [];
-          return {
-            name: job.ID,
-            type: job.Type,
-            health: health({ status: job.Status, type: job.Type, checks, ...counts }),
-            ...counts,
-            blockedBy: blocked,
-            checks,
-          } satisfies JobStatus;
-        }),
-      { concurrency: 8 },
-    );
-  });
-
-const nodeStatuses = (nomad: typeof Nomad.Service) =>
-  Effect.gen(function* () {
-    const [nodes, allocations] = yield* Effect.all([nomad.nodes(), nomad.placedAllocations()], {
-      concurrency: "unbounded",
-    });
-    return yield* Effect.forEach(
-      Arr.sort(
-        nodes,
-        Order.mapInput(Order.String, (node: Node) => node.Name),
-      ),
-      (node) =>
-        Effect.gen(function* () {
-          const placed = allocations.filter(
-            (allocation) =>
-              allocation.NodeName === node.Name && allocation.ClientStatus === "running",
-          );
-          const stats =
-            node.Status === "ready"
-              ? yield* Effect.option(nomad.nodeStats(node.ID))
-              : Option.none();
-          const measured = Option.getOrNull(stats);
-          return {
-            name: node.Name,
-            status: node.Status,
-            eligible: node.SchedulingEligibility === "eligible",
-            reservedMemoryMB: {
-              used: reserved(placed, (task) => task.Memory.MemoryMB),
-              total: node.NodeResources.Memory.MemoryMB - node.ReservedResources.Memory.MemoryMB,
-            },
-            reservedCpuShares: {
-              used: reserved(placed, (task) => task.Cpu.CpuShares),
-              total: node.NodeResources.Cpu.CpuShares - node.ReservedResources.Cpu.CpuShares,
-            },
-            cpuPercent:
-              measured === null || measured.CPU.length === 0
-                ? null
-                : 100 - measured.CPU.reduce((sum, cpu) => sum + cpu.Idle, 0) / measured.CPU.length,
-            memoryBytes:
-              measured === null
-                ? null
-                : { used: measured.Memory.Used, total: measured.Memory.Total },
-            disks: (measured?.DiskStats ?? []).map((disk) => ({
-              mount: disk.Mountpoint,
-              bytes: { used: disk.Used, total: disk.Size },
-            })),
-          } satisfies NodeStatus;
-        }),
-      { concurrency: "unbounded" },
-    );
-  });
 
 type TaskReservation = NonNullable<PlacedAllocation["AllocatedResources"]>["Tasks"][string];
 

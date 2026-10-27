@@ -1,7 +1,7 @@
 /**
- * The commands Alchemy has no place for: OpenBao login, a cartridge's secrets,
- * its Nomad allocation status, and a job's logs read from Nomad by job name, which
- * also work for a job whose first deploy failed. Deploys and plans are Alchemy's
+ * The commands Alchemy has no place for: OpenBao login, a cartridge's secrets, the
+ * fleet dashboard, a cartridge's Nomad allocation status, and a job's logs read from
+ * Nomad by job name, which also work for a job whose first deploy failed. Deploys and plans are Alchemy's
  * own commands. `scripts/ops` runs both kinds from the laptop over SSH, through
  * `scripts/ops-on-host.sh`.
  */
