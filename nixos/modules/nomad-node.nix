@@ -36,10 +36,15 @@ in
       group = "nomad";
       home = "/var/lib/nomad-user";
       createHome = true;
+      extraGroups = [ "registry-client" ];
       subUidRanges = [{ startUid = 100000; count = 65536; }];
       subGidRanges = [{ startGid = 100000; count = 65536; }];
     };
     users.groups.nomad = { };
+    # Owns the registry client key and cert so Nomad's rootless Podman and the
+    # operator's rootless Podman (a build node) can both push and pull.
+    users.groups.registry-client = { };
+    users.users.${site.operator.name}.extraGroups = [ "registry-client" ];
 
     systemd.tmpfiles.rules = [
       # A unit bind mount would hide Nomad's secrets tmpfs from rootless Podman.

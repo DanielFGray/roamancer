@@ -33,6 +33,12 @@ A **cartridge** is a versioned JSON file that lists an app's services, images, p
 routes, secret references, and database needs. The platform turns each service into one Nomad job
 and orders the jobs by their dependencies.
 
+`ops release`, `ops stage` and `ops promote` build an app's committed HEAD and push it to the
+cluster registry. By default that build runs on the workstation with Docker. Set
+`[build] node = "<host>"` in the site folder's `site.toml` to build on that host with rootless
+Podman instead; the node receives the tree as a tar on ssh stdin and needs no app checkout.
+Both paths pin the same `repository:commit@digest` in the cartridge.
+
 ## What you need
 
 - Two or more x86_64 machines that run NixOS. The shared host modules assume Proxmox-style virtual

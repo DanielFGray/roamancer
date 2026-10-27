@@ -3,11 +3,12 @@
  * once here; the control host receives the cartridge with its images pinned, runs Alchemy
  * against its own state, and records what it deployed.
  */
-import { Array as Arr, Console, Effect, FileSystem, Option } from "effect";
+import { Console, Effect, FileSystem, Option } from "effect";
 import { Schema as S } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
+import { Builder } from "./Builder.ts";
 import * as Cartridge from "./Cartridge.ts";
-import { OpsError, output, run } from "./Exec.ts";
+import { OpsError, output } from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { Remote } from "./Remote.ts";
 import { imageDigest, sameImageDigest } from "./ReleaseImage.ts";
@@ -97,30 +98,17 @@ const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string, tree: 
   const repository = yield* oneRepository(cartridge, cartridgePath(tree));
   yield* (yield* Remote).run(["check-login"]);
   const commit = (yield* output("git", ["-C", folder, "rev-parse", "--short", "HEAD"])).trim();
-  const tagged = `${repository}:${commit}`;
-  yield* run("docker", ["build", "-t", tagged, tree]);
-  yield* run("docker", ["push", tagged]);
-  const digests = yield* output("docker", [
-    "inspect",
-    "--format",
-    "{{range .RepoDigests}}{{println .}}{{end}}",
-    tagged,
-  ]);
-  const pinned = yield* Arr.findFirst(digests.split("\n"), (digest) =>
-    digest.startsWith(`${repository}@`),
-  ).pipe(
-    Option.match({
-      onNone: () =>
-        Effect.fail(new OpsError({ message: `docker records no digest for ${tagged}` })),
-      onSome: Effect.succeed,
-    }),
-  );
-  const digest = yield* Option.match(imageDigest(pinned), {
+  const pinnedRef = yield* (yield* Builder).build(tree, { repository, commit });
+  const digest = yield* Option.match(imageDigest(pinnedRef), {
     onNone: () =>
-      Effect.fail(new OpsError({ message: `docker records an invalid digest for ${tagged}` })),
+      Effect.fail(
+        new OpsError({
+          message: `builder returned an invalid digest for ${repository}:${commit}`,
+        }),
+      ),
     onSome: Effect.succeed,
   });
-  return { name: cartridge.name, commit, pinned, tagged: `${tagged}@${digest}` };
+  return { name: cartridge.name, commit, pinned: `${repository}@${digest}`, tagged: pinnedRef };
 });
 
 /**

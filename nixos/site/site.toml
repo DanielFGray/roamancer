@@ -29,9 +29,17 @@ registryName = "registry.cluster"
 registryPort = 5000
 # The cluster CA and leaf certificates. Root-only; never in the Nix store.
 tlsDir = "/var/lib/cluster-tls"
-# The server's own client certificate for pulling from the registry, readable by the nomad
-# user, whose rootless Podman pulls every job's image.
+# Registry client files for rootless Podman: ca.crt verifies the registry server; the
+# client pair authenticates pulls (nomad) and pushes (operator on a build node). Readable
+# by the registry-client group.
 registryClientDir = "/var/lib/registry-client"
+
+# Optional. When set, `ops release`, `ops stage` and `ops promote` build on this host with
+# rootless Podman instead of Docker on the workstation. The node receives the commit as a
+# tar on ssh stdin, pushes to the cluster registry with its client certificate, and needs
+# no checkout of the app. Omit the table to keep building on the workstation.
+# [build]
+# node = "atheist"
 
 # Machines that run Nomad clients, by Nomad node name. The firewall lets them reach every
 # TCP port on the server, so their jobs reach services such as Postgres's fixed 5432 and

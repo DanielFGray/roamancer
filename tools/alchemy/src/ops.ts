@@ -8,6 +8,7 @@ import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { Config, Console, Effect, Layer, Option, Stdio } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
+import { Builder } from "./Builder.ts";
 import { OpsError, route } from "./Exec.ts";
 import { HostSecretsError } from "./HostSecrets.ts";
 import { HostName, install, rebuild } from "./Nixos.ts";
@@ -93,7 +94,11 @@ const main = Effect.gen(function* () {
   Effect.tapErrorTag("OpsError", (error: OpsError) => Console.error(error.message)),
   Effect.tapErrorTag("HostSecretsError", (error: HostSecretsError) => Console.error(error.message)),
   Effect.provide(
-    Remote.layer.pipe(Layer.provideMerge(Site.layer), Layer.provideMerge(BunServices.layer)),
+    Remote.layer.pipe(
+      Layer.provideMerge(Builder.layer),
+      Layer.provideMerge(Site.layer),
+      Layer.provideMerge(BunServices.layer),
+    ),
   ),
 );
 

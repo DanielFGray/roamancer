@@ -18,10 +18,10 @@ in
     "z ${ca} 0600 root root -"
     "z ${cert} 0600 root root -"
     "z ${key} 0600 root root -"
-    "z ${cluster.registryClientDir} 0750 root nomad -"
-    "z ${cluster.registryClientDir}/ca.crt 0640 root nomad -"
-    "z ${cluster.registryClientDir}/client.cert 0640 root nomad -"
-    "z ${cluster.registryClientDir}/client.key 0640 root nomad -"
+    "z ${cluster.registryClientDir} 0750 root registry-client -"
+    "z ${cluster.registryClientDir}/ca.crt 0640 root registry-client -"
+    "z ${cluster.registryClientDir}/client.cert 0640 root registry-client -"
+    "z ${cluster.registryClientDir}/client.key 0640 root registry-client -"
     # Traefik's Let's Encrypt account and certificates. Losing them means asking for
     # every certificate again, which Let's Encrypt rate-limits.
     "d /var/lib/nomad/traefik-acme 0770 nomad nomad -"

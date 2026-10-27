@@ -4,11 +4,11 @@ let
   credentials = "/run/credentials/docker-registry.service";
 in
 {
-  # Every node pulls job images here, and the workstation pushes them, over the LAN by
-  # the name registryName. Like Nomad RPC, it serves only clients with a certificate from
-  # the cluster CA (cluster-tls.nix): the bridge is shared, and anyone who reached it
-  # could delete manifests. Cartridges pin each image by digest, so a tag pushed again
-  # changes nothing deployed.
+  # Every node pulls job images here, and the workstation (or a build node) pushes them,
+  # over the LAN by the name registryName. The server certificate is the cluster's Nomad
+  # server cert. Client authentication trusts only the registry CA (cluster-tls.nix), so a
+  # Nomad client-agent certificate cannot push or pull. Cartridges pin each image by
+  # digest, so a tag pushed again changes nothing deployed.
   services.dockerRegistry = {
     enable = true;
     listenAddress = cluster.lanAddress;
@@ -18,7 +18,7 @@ in
     extraConfig.http.tls = {
       certificate = "${credentials}/cert";
       key = "${credentials}/key";
-      clientcas = [ "${credentials}/ca" ];
+      clientcas = [ "${credentials}/clientca" ];
     };
   };
 
@@ -31,7 +31,7 @@ in
       LoadCredential = [
         "cert:${cluster.tlsDir}/global-server-nomad.pem"
         "key:${cluster.tlsDir}/global-server-nomad-key.pem"
-        "ca:${cluster.tlsDir}/nomad-agent-ca.pem"
+        "clientca:${cluster.tlsDir}/registry-ca.pem"
       ];
       Restart = "on-failure";
     };

@@ -7,7 +7,10 @@ import { Config, Context, Effect, FileSystem, Layer, Option, Path, Schema as S }
 import { Toml } from "effect/encoding";
 import { OpsError } from "./Exec.ts";
 
-const SiteFile = S.Struct({ cluster: S.Struct({ server: S.String }) });
+const SiteFile = S.Struct({
+  cluster: S.Struct({ server: S.String }),
+  build: S.optionalKey(S.Struct({ node: S.String })),
+});
 
 export class Site extends Context.Service<Site>()("ops/Site", {
   make: Effect.gen(function* () {
@@ -22,10 +25,7 @@ export class Site extends Context.Service<Site>()("ops/Site", {
       Effect.map((given) => path.resolve(given)),
     );
 
-    /** The control host: OPS_HOST when set, otherwise `cluster.server` of the site.toml. */
-    const host = Effect.gen(function* () {
-      const override = yield* Config.option(Config.String("OPS_HOST"));
-      if (Option.isSome(override)) return override.value;
+    const siteFile = Effect.gen(function* () {
       const file = path.join(yield* folder, "site.toml");
       const text = yield* fs
         .readFileString(file)
@@ -34,13 +34,32 @@ export class Site extends Context.Service<Site>()("ops/Site", {
         try: () => Toml.parse(text),
         catch: (cause) => new OpsError({ message: `${file} is not valid TOML: ${cause}` }),
       });
-      const site = yield* S.decodeUnknownEffect(SiteFile)(parsed).pipe(
-        Effect.mapError(() => new OpsError({ message: `cluster.server is not set in ${file}` })),
+      return yield* S.decodeUnknownEffect(SiteFile)(parsed).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OpsError({
+              message: `${file} must set cluster.server and, when present, [build] node: ${cause}`,
+            }),
+        ),
       );
-      return site.cluster.server;
     });
 
-    return { folder, host };
+    /** The control host: OPS_HOST when set, otherwise `cluster.server` of the site.toml. */
+    const host = Effect.gen(function* () {
+      const override = yield* Config.option(Config.String("OPS_HOST"));
+      if (Option.isSome(override)) return override.value;
+      return (yield* siteFile).cluster.server;
+    });
+
+    /**
+     * The build node in `[build] node` of the site.toml, when set. Absence means the
+     * workstation builds with Docker.
+     */
+    const buildNode = Effect.map(siteFile, (site) =>
+      Option.fromNullishOr(site.build).pipe(Option.map((build) => build.node)),
+    );
+
+    return { folder, host, buildNode };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);
