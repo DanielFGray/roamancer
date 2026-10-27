@@ -6,10 +6,11 @@
 { site, ... }:
 let
   cluster = site.cluster;
-  publicAddress = "15.204.150.72";
+  host = site.hosts.atheist;
+  publicAddress = host.publicAddress;
   # OVH's gateway for the additional IP. It is outside the /32, so the route to it is
   # on-link.
-  publicGateway = "40.160.34.254";
+  publicGateway = host.publicGateway;
   publicTable = 100;
 in
 {
@@ -20,11 +21,11 @@ in
   # Each card is named by its MAC, so the two can never swap.
   systemd.network.links = {
     "10-lan" = {
-      matchConfig.PermanentMACAddress = "bc:24:11:13:9f:b3";
+      matchConfig.PermanentMACAddress = host.lanMac;
       linkConfig.Name = "ens18";
     };
     "10-public" = {
-      matchConfig.PermanentMACAddress = "00:50:56:00:2e:e4";
+      matchConfig.PermanentMACAddress = host.publicMac;
       linkConfig.Name = "ens19";
     };
   };
@@ -78,7 +79,7 @@ in
     # The public card serves only the web. SSH reaches atheist over the LAN, which the
     # laptop reaches through fw's WireGuard, and over Tailscale.
     interfaces.ens19.allowedTCPPorts = [ 80 443 ];
-    interfaces.ens18.allowedTCPPorts = [ 10022 ];
+    interfaces.ens18.allowedTCPPorts = [ host.sshPort ];
     trustedInterfaces = [ "tailscale0" ];
     # A packet to the public address arrives on ens19, but the main table would route a
     # reply to its sender through the LAN; strict reverse-path filtering would drop it.

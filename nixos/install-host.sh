@@ -45,6 +45,6 @@ exec docker run --rm --network host \
   nixos/nix:latest sh -euc '
     install -d -m700 /root/.ssh && install -m600 /key /root/.ssh/id
     printf "Host *\n  IdentityFile /root/.ssh/id\n  StrictHostKeyChecking accept-new\n" > /root/.ssh/config
-    cp -r /src /work && rm -rf /work/site && cp -r /site /work/site
+    cp -r /src /work && rm -rf /work/site && cp -r /site /work/site && rm -rf /work/site/.git
     exec nix run "$0" -- --flake "path:/work#$1" --target-host "$2" "${@:3}"
   ' "$anywhere" "$host" "$target" "${extra_args[@]}" "$@"

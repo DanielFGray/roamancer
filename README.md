@@ -44,9 +44,10 @@ and orders the jobs by their dependencies.
 
 ## Configure your installation
 
-Everything that belongs to one installation is in a *site folder*: addresses, host names, the
-operator account and its SSH keys, and the Traefik routes for static sites. `nixos/site` holds
-placeholder values.
+The values that belong to one installation are in a *site folder*: the LAN and registry addresses,
+the operator account and its SSH keys, the ingress machine's public address and network cards, and
+the Traefik routes for static sites. `nixos/site` holds placeholder values. Host folder names and
+`testground/` still hold some installation-specific names (see [Status](#status)).
 
 1. Copy `nixos/site` to a private repository. Edit `site.toml` and the files under `routes/`.
    Do not put secrets there, because the Nix store is readable by every user on a host.
@@ -60,8 +61,19 @@ build of the root flake, pass it yourself:
 nix build .#nixosConfigurations.cynic.config.system.build.toplevel --override-input site path:$OPS_SITE
 ```
 
-`ops` reaches each machine by its bare host name (`ssh cynic`). Put the address and user in
-`~/.ssh/config`. Set `OPS_HOST` to use a control host other than `cluster.server`.
+`ops` reaches each machine by its host name, the same name as its `nixosConfigurations` entry
+(`ssh cynic`). Put the address, port, and user in
+`~/.ssh/config`, for example:
+
+```
+Host cynic
+  HostName 192.168.50.10
+Host atheist
+  HostName 192.168.50.11
+  Port 22
+```
+
+Set `OPS_HOST` to use a control host other than `cluster.server`.
 
 ## Install and operate
 
@@ -130,4 +142,6 @@ Open work:
   concurrent operators are untested.
 - Repair the Nix test-image build so a fresh disk boots without a manual filesystem repair.
 - Replace the test VM's firewall and defaults with production policy before reuse.
+- Name the host folders and Nomad nodes by role. `nixos/cynic`, `nixos/atheist`, and the ingress
+  cartridge's `atheist` placement are the author's names, so a new installation forks those folders.
 - Move the remaining installation-specific values out of `testground/`.

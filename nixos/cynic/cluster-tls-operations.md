@@ -41,7 +41,7 @@ The workstation's Docker pushes to `registry.cluster:5000` over WireGuard with i
 
 1. On cynic, issue a client certificate: `sudo nomad tls cert create -client -region global -ca /var/lib/cluster-tls/nomad-agent-ca.pem -key /var/lib/cluster-tls/nomad-agent-ca-key.pem` in an empty folder. Copy it to the workstation, then delete it from cynic.
 2. On the workstation, put the CA in `/etc/docker/certs.d/registry.cluster:5000/ca.crt`, the certificate in `client.cert` and the key in `client.key` (mode 0600).
-3. Map the name in the workstation's `/etc/hosts`: `10.13.37.196 registry.cluster`.
+3. Map the name in the workstation's `/etc/hosts`: `<lanAddress> registry.cluster`, with `lanAddress` from your `site.toml`.
 
 Then push with `docker push registry.cluster:5000/<name>:<tag>`, and pin the pushed digest in the cartridge as `registry.cluster:5000/<name>@sha256:<digest>`.
 

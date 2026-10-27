@@ -24,7 +24,7 @@ in
 
   networking.hostName = "atheist";
 
-  services.openssh.ports = [ 10022 ];
+  services.openssh.ports = [ site.hosts.atheist.sshPort ];
 
   # Set at activation from a file the install copies in, so the password never enters
   # the Nix store or git. A `passwd` change lasts only until the next rebuild; change

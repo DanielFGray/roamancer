@@ -44,7 +44,7 @@ On atheist:
 systemctl status caddy
 ls -l /var/lib/traefik-routes
 ss -ltn | grep ':8080 '
-curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Site-Release: dfg.rocks/atheist-2026-10-22' http://127.0.0.1:8080/
+curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Site-Release: example.com/2026-01-01' http://127.0.0.1:8080/
 ```
 
 The `ss` line must show `127.0.0.1:8080`.

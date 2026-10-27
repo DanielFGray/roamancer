@@ -49,3 +49,14 @@ name = "operator"
 sshKeys = [
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderPlaceholderPlaceholderPlaceholder operator@example.com",
 ]
+
+# Addressing and hardware of the machine that runs the public ingress. Its two network cards
+# are matched by MAC address, so they can never swap.
+[hosts.atheist]
+sshPort = 22
+lanMac = "02:00:00:00:00:01"
+publicMac = "02:00:00:00:00:02"
+# The public IP that DNS names point at, and the provider's gateway for it. The gateway is
+# outside the /32, so the route to it is on-link.
+publicAddress = "203.0.113.10"
+publicGateway = "203.0.113.1"

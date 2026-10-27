@@ -78,7 +78,8 @@ case "${1:-}" in
     # A host is a nixosConfigurations name in nixos/flake.nix; without one, every host.
     # The ssh target is that name, so ~/.ssh/config supplies the address and user.
     nixos=$(cd "$here/../../nixos" && pwd)
-    site=$(cd "${OPS_SITE:?ops rebuild: set OPS_SITE to the folder that holds your site.toml}" && pwd)
+    [ -n "${OPS_SITE:-}" ] || { echo "ops rebuild: set OPS_SITE to the folder that holds your site.toml" >&2; exit 2; }
+    site=$(cd "$OPS_SITE" && pwd)
     if [ $# -ge 2 ]; then
       hosts=$2
     else

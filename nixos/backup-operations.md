@@ -64,7 +64,7 @@ sudo restic-files restore latest --host atheist --target /tmp/restore --include 
 
 Then compare and copy the folders you need. Restore into an empty target, never over the live folder.
 
-To restore Alchemy state onto a rebuilt cynic, restore `--host cynic --include /home/dan/alchemy/.alchemy/state --include /var/lib/backups/alchemy-operations.sqlite` the same way, then put the state folder back at `~/alchemy/.alchemy/state` and the journal at `~/alchemy/.alchemy/operations.sqlite` before the first `ops plan`.
+To restore Alchemy state onto a rebuilt cynic, restore `--host cynic --include <operator home>/alchemy/.alchemy/state --include /var/lib/backups/alchemy-operations.sqlite` the same way, then put the state folder back at `~/alchemy/.alchemy/state` and the journal at `~/alchemy/.alchemy/operations.sqlite` before the first `ops plan`.
 
 ## Restore the Postgres cluster
 
