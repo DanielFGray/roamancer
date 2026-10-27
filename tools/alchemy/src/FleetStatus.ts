@@ -187,7 +187,7 @@ const readJob = Effect.fn("FleetStatus.readJob")(function* (
   const counts = {
     running: running.length,
     starting: count(job, "Starting"),
-    queued: count(job, "Queued"),
+    queued: queued(job),
   };
   return {
     name: job.ID,
@@ -217,6 +217,9 @@ const readNodes = Effect.fn("FleetStatus.readNodes")(function* (
     { concurrency: "unbounded" },
   );
 });
+
+/** Allocations of the job that wait for a node. */
+export const queued = (job: JobListItem) => count(job, "Queued");
 
 const count = (job: JobListItem, key: string) =>
   Object.values(job.JobSummary?.Summary ?? {}).reduce((sum, group) => sum + (group[key] ?? 0), 0);

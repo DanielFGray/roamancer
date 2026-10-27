@@ -4,7 +4,7 @@
 #   plan, deploy, destroy, drift, state: Alchemy's own commands, for example
 #     `deploy --stage giglist`. All but state need an OpenBao token from `login`.
 #   rollback <name> <id>: deploy a recorded deployment again, and record it as the newest.
-#   anything else: src/cli.ts (login, check-login, secret, dash, status, logs, deployment).
+#   anything else: src/cli.ts (login, check-login, secret, dash, place-queued, status, logs, deployment).
 #     `--help` lists them.
 # An app's cartridge comes from CARTRIDGE_FILE when `ops` sent one, otherwise from the
 # newest recorded deployment (src/Cartridge.ts, resolve). A deploy that was sent a

@@ -22,6 +22,7 @@ ops secret check                           # fails when a referenced key is unse
 ops secret set github_client_secret        # prompts for the value
 ops secret list platform/observability     # a platform cartridge, from tools/alchemy
 ops dash                                   # every job's health and why a queued one waits; each node's use and reservations
+ops place-queued                           # ask Nomad to place jobs with queued allocations again; `ops rebuild` runs it last
 ops status giglist                         # each service's newest allocations
 ops rebuild                                # host config for every host in nixos/flake.nix, one at a time; `ops rebuild cynic` for one. sudo asks for your password on each, and the old /etc/nixos is kept in /var/tmp
 ```

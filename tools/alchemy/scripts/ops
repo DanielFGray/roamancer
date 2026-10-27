@@ -42,6 +42,7 @@ case "${1:-}" in
       '  deploy|plan|destroy ...   run Alchemy on the control host' \
       '  secret set|list|check     the OpenBao secrets that ./cartridge.json reads' \
       '  dash                      every job'\''s health and each node'\''s load' \
+      '  place-queued              ask Nomad to place queued jobs again (rebuild runs it)' \
       '  status|logs ...           inspect Nomad' \
       '  rebuild [host]            sync nixos/ to the host and switch it (default every host)' \
       'Set OPS_HOST to select the control host, CARTRIDGE to send a cartridge file.'
@@ -80,7 +81,9 @@ case "${1:-}" in
       rsync -a --delete --exclude result "$nixos/" "$target:/etc/nixos/"
       ssh -t "$target" "sudo nixos-rebuild switch --flake 'path:/etc/nixos#$flake_host'"
     done
-    exit 0
+    # A switch can add the host volume or memory a queued job waits for; Nomad does not
+    # retry on its own.
+    exec "$0" place-queued
     ;;
 esac
 host=${OPS_HOST:-cynic.dlab}

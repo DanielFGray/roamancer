@@ -200,6 +200,22 @@ const dash = Command.make(
   }),
 ).pipe(Command.withDescription("Print each job's health and each node's load, once"));
 
+/**
+ * Nomad does not retry a queued allocation when a node gains a host volume or memory,
+ * so a rebuild that adds either leaves jobs queued until something asks again.
+ */
+const placeQueued = Command.make(
+  "place-queued",
+  {},
+  Effect.fn(function* () {
+    const nomad = yield* Nomad;
+    const queued = (yield* nomad.jobs()).filter((job) => FleetStatus.queued(job) > 0);
+    yield* Effect.forEach(queued, (job) =>
+      nomad.evaluate(job.ID).pipe(Effect.andThen(Console.log(`asked Nomad to place ${job.ID}`))),
+    );
+  }),
+).pipe(Command.withDescription("Ask Nomad to place every job that has queued allocations again"));
+
 /** OpenBao commands need the 2-hour token that `login` writes. */
 const requireLogin = Effect.gen(function* () {
   const bao = yield* OpenBao;
@@ -368,7 +384,17 @@ const cli = Command.make("ops").pipe(
   Command.withDescription(
     "OpenBao login, secrets, the fleet dashboard, Nomad status and logs, and deployment records",
   ),
-  Command.withSubcommands([login, checkLogin, secret, dash, status, logs, stageImage, deployment]),
+  Command.withSubcommands([
+    login,
+    checkLogin,
+    secret,
+    dash,
+    placeQueued,
+    status,
+    logs,
+    stageImage,
+    deployment,
+  ]),
 );
 
 cli.pipe(

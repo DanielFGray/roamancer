@@ -228,6 +228,8 @@ export class Nomad extends Context.Service<
       id: string,
     ) => Effect.Effect<Option.Option<AllocationChecks>, NomadError>;
     readonly stop: (name: string) => Effect.Effect<void, NomadError>;
+    /** Asks the scheduler to place the job again, such as after a node gains a host volume. */
+    readonly evaluate: (name: string) => Effect.Effect<void, NomadError>;
     readonly allocations: (
       job: string,
     ) => Effect.Effect<ReadonlyArray<AllocationSummary>, NomadError>;
@@ -377,6 +379,10 @@ export const layer = () =>
           ),
         stop: (name) =>
           requestJson("stop", "DELETE", `/v1/job/${encodeURIComponent(name)}?purge=true`).pipe(
+            Effect.asVoid,
+          ),
+        evaluate: (name) =>
+          requestJson("evaluate", "POST", `/v1/job/${encodeURIComponent(name)}/evaluate`).pipe(
             Effect.asVoid,
           ),
         allocations: (job) =>
