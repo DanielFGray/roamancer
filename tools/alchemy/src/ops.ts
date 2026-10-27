@@ -8,7 +8,7 @@ import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { Config, Console, Effect, Layer, Option, Stdio } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import { OpsError } from "./Exec.ts";
+import { OpsError, route } from "./Exec.ts";
 import { HostSecretsError } from "./HostSecrets.ts";
 import { HostName, install, rebuild } from "./Nixos.ts";
 import { commands as releaseCommands } from "./release.ts";
@@ -16,15 +16,7 @@ import { hostCommands, Remote } from "./Remote.ts";
 import { secret } from "./secrets.ts";
 import { Site } from "./Site.ts";
 
-/**
- * The argument list the command tree parses. A host command takes arguments the tree does
- * not declare, such as `--stage`, so a `--` after its name makes the tree pass them on unread.
- */
-export const route = (args: ReadonlyArray<string>) => {
-  const [name, ...rest] = args;
-  const forwarded = hostCommands.some((command) => command.name === name);
-  return forwarded && rest[0] !== "--" ? [name, "--", ...rest] : args;
-};
+const hostCommandNames = hostCommands.map((command) => command.name);
 
 /**
  * A command that runs on the control host. CARTRIDGE names a cartridge file to send with it;
@@ -96,7 +88,7 @@ const ops = Command.make("ops").pipe(
 
 const main = Effect.gen(function* () {
   const args = yield* (yield* Stdio.Stdio).args;
-  yield* Command.runWith(ops, { version: "1" })(route(args));
+  yield* Command.runWith(ops, { version: "1" })(route(hostCommandNames)(args));
 }).pipe(
   Effect.tapErrorTag("OpsError", (error: OpsError) => Console.error(error.message)),
   Effect.tapErrorTag("HostSecretsError", (error: HostSecretsError) => Console.error(error.message)),
@@ -105,5 +97,4 @@ const main = Effect.gen(function* () {
   ),
 );
 
-// Imported by the tests for `route`; run only as the program.
 if (import.meta.main) main.pipe(BunRuntime.runMain);

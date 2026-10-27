@@ -65,6 +65,19 @@ export const succeeds = Effect.fn("Exec.succeeds")(function* (
 /** Quote one word for the remote shell that `ssh` hands its command line to. */
 export const quote = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
 
+/**
+ * Insert `--` after a command whose flags the tree does not declare, so they pass on unread.
+ * `names` are the commands that forward the rest of the argv.
+ */
+export const route =
+  (names: ReadonlyArray<string>) =>
+  (args: ReadonlyArray<string>): ReadonlyArray<string> => {
+    const [name, ...rest] = args;
+    if (name === undefined) return args;
+    const forwarded = names.includes(name);
+    return forwarded && rest[0] !== "--" ? [name, "--", ...rest] : args;
+  };
+
 const exited = (command: string, args: ReadonlyArray<string>, code: number) =>
   `${command} ${args.join(" ")} exited ${code}`;
 

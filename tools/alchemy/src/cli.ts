@@ -1,9 +1,8 @@
 /**
- * The commands Alchemy has no place for: OpenBao login, a cartridge's secrets, the
- * fleet dashboard, a cartridge's Nomad allocation status, and a job's logs read from
- * Nomad by job name, which also work for a job whose first deploy failed. Deploys and plans are Alchemy's
- * own commands. `scripts/ops` runs both kinds from the laptop over SSH, through
- * `scripts/ops-on-host.sh`.
+ * Commands that run on the control host: OpenBao login, a cartridge's secrets, the fleet
+ * dashboard, Nomad status and logs, deployment records, and Alchemy's plan, deploy, destroy,
+ * drift, state and rollback. `scripts/ops` reaches this file over SSH after `bun install` in
+ * ~/alchemy.
  */
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
@@ -24,7 +23,11 @@ import {
 import { Schema as S } from "effect";
 import { Argument, Command, Flag, Prompt } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
+import { ChildProcess } from "effect/process";
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
+import type { PlatformError } from "effect/PlatformError";
 import * as Cartridge from "./Cartridge.ts";
+import { route } from "./Exec.ts";
 import * as NomadLive from "./Nomad.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
@@ -38,8 +41,327 @@ export class CliError extends S.TaggedError<CliError>()("CliError", { message: S
   readonly [Runtime.errorReported] = false;
 }
 
+/** Alchemy exited non-zero; the process exits with that code and prints nothing further. */
+export class AlchemyFailed extends S.TaggedError<AlchemyFailed>()("AlchemyFailed", {
+  code: S.Number,
+}) {
+  readonly [Runtime.errorReported] = false;
+  get [Runtime.errorExitCode]() {
+    return this.code;
+  }
+}
+
 const root = ".";
+const controllerEnvPath = "/var/lib/nomad-acl/controller.env";
 const name = Argument.String("name").pipe(Argument.withDescription("The cartridge's name"));
+
+/** Alchemy commands whose flags, such as `--stage`, pass through unread. */
+const alchemyCommands = ["plan", "deploy", "destroy", "drift", "state"] as const;
+
+/**
+ * KEY=VALUE lines, as `nomad-acl-issue-controller` writes them.
+ */
+export const parseEnvFile = (text: string): Record<string, string> => {
+  const values: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) continue;
+    values[trimmed.slice(0, separator)] = trimmed.slice(separator + 1);
+  }
+  return values;
+};
+
+/** The value of `--stage` / `--stage=` among the arguments; none without one. */
+export const stageFlag = (args: ReadonlyArray<string>): Option.Option<string> => {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === undefined) continue;
+    if (arg === "--stage") return Option.fromNullishOr(args[index + 1]);
+    if (arg.startsWith("--stage=")) return Option.some(arg.slice("--stage=".length));
+  }
+  return Option.none();
+};
+
+/**
+ * Read `controllerEnv` (KEY=VALUE) and the OpenBao token under XDG_RUNTIME_DIR. Defaults
+ * NOMAD_ADDR and OPENBAO_ADDR to the loopback listeners. Fails when the env file is
+ * unreadable or XDG_RUNTIME_DIR is unset.
+ */
+export const loadHostEnvironment = Effect.fn("loadHostEnvironment")(function* (
+  controllerEnv: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const readable = yield* fs.access(controllerEnv, { readable: true }).pipe(
+    Effect.as(true),
+    Effect.orElseSucceed(() => false),
+  );
+  if (!readable) {
+    return yield* new CliError({
+      message: [
+        `cannot read ${controllerEnv}.`,
+        "Run 'sudo nomad-acl-issue-controller' once after the rebuild so the",
+        "env file becomes group-readable by the alchemy group.",
+      ].join("\n"),
+    });
+  }
+  const controller = parseEnvFile(yield* fs.readFileString(controllerEnv));
+  const runtimeDir = yield* Config.option(Config.String("XDG_RUNTIME_DIR"));
+  if (Option.isNone(runtimeDir)) {
+    return yield* new CliError({ message: "XDG_RUNTIME_DIR is not set." });
+  }
+  const tokenFile = `${runtimeDir.value}/openbao.token`;
+  const token = yield* fs.readFileString(tokenFile).pipe(
+    Effect.map((text) => text.trim()),
+    Effect.option,
+  );
+  const values: Record<string, string> =
+    Option.isSome(token) && token.value !== ""
+      ? {
+          ...controller,
+          NOMAD_ADDR: "http://127.0.0.1:4646",
+          OPENBAO_ADDR: "http://127.0.0.1:8200",
+          OPENBAO_TOKEN_FILE: tokenFile,
+          OPENBAO_TOKEN: token.value,
+        }
+      : {
+          ...controller,
+          NOMAD_ADDR: "http://127.0.0.1:4646",
+          OPENBAO_ADDR: "http://127.0.0.1:8200",
+          OPENBAO_TOKEN_FILE: tokenFile,
+        };
+  return values;
+});
+
+/** OpenBao commands need the 2-hour token that `login` writes. */
+const requireLogin = Effect.gen(function* () {
+  const bao = yield* OpenBao;
+  yield* bao.checkToken().pipe(
+    Effect.mapError(
+      () =>
+        new CliError({
+          message: "The OpenBao token is missing or expired. Run `ops login` first.",
+        }),
+    ),
+  );
+});
+
+/** Fail when a secret the cartridge references is not set. */
+const checkSecrets = Effect.fn("checkSecrets")(function* (
+  name: string,
+  cartridgeFile: string | undefined,
+) {
+  const cartridgeName = Option.getOrElse(StagedCartridge.baseName(name), () => name);
+  const cartridge =
+    cartridgeFile === undefined
+      ? yield* Cartridge.resolve(root, cartridgeName)
+      : yield* appCartridgeAt(cartridgeFile, cartridgeName);
+  yield* requireLogin;
+  const bao = yield* OpenBao;
+  const stored = new Map(
+    yield* Effect.forEach(Cartridge.kvKeys(cartridge).keys(), (path) =>
+      bao
+        .readKvKeys(path)
+        .pipe(
+          Effect.map(
+            (keys) => [path, Option.getOrElse(keys, (): ReadonlyArray<string> => [])] as const,
+          ),
+        ),
+    ),
+  );
+  const missing = Cartridge.missingSecrets(cartridge, stored);
+  if (missing.length > 0) {
+    return yield* new CliError({
+      message: [
+        `${name} reads secrets that are not set, so its tasks would wait forever:`,
+        ...missing.map(({ path, key }) => `  ${path} ${key}`),
+        "Set each with `ops secret set <key>` in the cartridge's repository.",
+      ].join("\n"),
+    });
+  }
+});
+
+/**
+ * Fail unless the cartridge at `file` is valid, pins its images, and comes from the app's
+ * repository (`origin`).
+ */
+const checkDeployment = Effect.fn("checkDeployment")(function* (
+  name: string,
+  file: string,
+  origin: string,
+  revision: string,
+) {
+  const sent = yield* sentDeployment(name, file, origin, revision);
+  const deployments = yield* Deployments.Deployments;
+  yield* deployments.checkOrigin(name, sent.origin);
+});
+
+/** Record the cartridge at `file` as deployed. */
+const recordDeployment = Effect.fn("recordDeployment")(function* (
+  name: string,
+  file: string,
+  origin: string,
+  revision: string,
+) {
+  const sent = yield* sentDeployment(name, file, origin, revision);
+  const deployments = yield* Deployments.Deployments;
+  const recorded = yield* deployments.record({ name, ...sent });
+  yield* Console.log(`Recorded deployment ${recorded.id} of ${name} at ${recorded.revision}.`);
+});
+
+/**
+ * Write a recorded deployment's cartridge to `file` and return its ORIGIN and REVISION.
+ */
+const restoreDeployment = Effect.fn("restoreDeployment")(function* (
+  name: string,
+  id: number,
+  file: string,
+) {
+  const deployments = yield* Deployments.Deployments;
+  const found = yield* deployments.get(name, id);
+  if (Option.isNone(found)) {
+    return yield* new CliError({ message: `'${name}' has no recorded deployment ${id}.` });
+  }
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.writeFileString(file, found.value.cartridge);
+  return { origin: found.value.origin, revision: found.value.revision };
+});
+
+/**
+ * Plan or deploy one stage. A sent app cartridge must pin its images and come from the
+ * repository the app was first deployed from; a deploy of one is recorded once Alchemy
+ * exits 0. `env` is one record: host settings plus any CARTRIDGE_FILE, ORIGIN and REVISION.
+ */
+export const planOrDeploy = Effect.fn("planOrDeploy")(function* (
+  command: "plan" | "deploy",
+  args: ReadonlyArray<string>,
+  env: Record<string, string>,
+) {
+  const stage = Option.getOrElse(stageFlag(args), () => "");
+  const cartridgeFile = env["CARTRIDGE_FILE"];
+  const origin = env["ORIGIN"];
+  const revision = env["REVISION"];
+  const recorded = cartridgeFile !== undefined && origin !== undefined && revision !== undefined;
+  if (recorded) yield* checkDeployment(stage, cartridgeFile, origin, revision);
+  yield* checkSecrets(stage, cartridgeFile);
+  yield* runAlchemy([command, ...args], env);
+  if (recorded && command === "deploy") {
+    yield* recordDeployment(stage, cartridgeFile, origin, revision);
+  }
+});
+
+const forwarded = {
+  args: Argument.String("args").pipe(
+    Argument.withDescription("Passed to Alchemy unread"),
+    Argument.variadic(),
+  ),
+};
+
+/**
+ * Host settings plus CARTRIDGE_FILE, ORIGIN and REVISION from the process Config when set
+ * (as `ops` sends them over ssh).
+ */
+const releaseEnv = (hostEnv: Record<string, string>) =>
+  Effect.gen(function* () {
+    const cartridgeFile = yield* Config.option(Config.String("CARTRIDGE_FILE"));
+    const origin = yield* Config.option(Config.String("ORIGIN"));
+    const revision = yield* Config.option(Config.String("REVISION"));
+    return {
+      ...hostEnv,
+      ...(Option.isSome(cartridgeFile) ? { CARTRIDGE_FILE: cartridgeFile.value } : {}),
+      ...(Option.isSome(origin) ? { ORIGIN: origin.value } : {}),
+      ...(Option.isSome(revision) ? { REVISION: revision.value } : {}),
+    };
+  });
+
+/** Command tree for this host process; closes over host settings for Alchemy children. */
+const makeCli = (hostEnv: Record<string, string>) => {
+  const plan = Command.make(
+    "plan",
+    forwarded,
+    Effect.fn(function* ({ args }) {
+      yield* planOrDeploy("plan", args, yield* releaseEnv(hostEnv));
+    }),
+  ).pipe(Command.withDescription("Preview an Alchemy deploy of a stage"));
+
+  const deploy = Command.make(
+    "deploy",
+    forwarded,
+    Effect.fn(function* ({ args }) {
+      yield* planOrDeploy("deploy", args, yield* releaseEnv(hostEnv));
+    }),
+  ).pipe(Command.withDescription("Run Alchemy's deploy of a stage"));
+
+  const destroy = Command.make(
+    "destroy",
+    forwarded,
+    Effect.fn(function* ({ args }) {
+      yield* requireLogin;
+      yield* runAlchemy(["destroy", ...args, "-c", "state.run.ts"], hostEnv);
+    }),
+  ).pipe(Command.withDescription("Destroy a stage's resources from Alchemy state only"));
+
+  const drift = Command.make(
+    "drift",
+    forwarded,
+    Effect.fn(function* ({ args }) {
+      yield* requireLogin;
+      yield* runAlchemy(["drift", ...args], hostEnv);
+    }),
+  ).pipe(Command.withDescription("Report drift between the state and the running resources"));
+
+  const state = Command.make(
+    "state",
+    forwarded,
+    Effect.fn(function* ({ args }) {
+      yield* runAlchemy(["state", ...args, "-c", "state.run.ts"], hostEnv);
+    }),
+  ).pipe(Command.withDescription("Read Alchemy's state store"));
+
+  const rollback = Command.make(
+    "rollback",
+    {
+      name,
+      id: Argument.Int("id").pipe(Argument.withDescription("The deployment to restore")),
+    },
+    Effect.fn(function* ({ name, id }) {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(".alchemy/input", { recursive: true });
+      const cartridgeFile = `.alchemy/input/rollback-${name}-${id}.json`;
+      const { origin, revision } = yield* restoreDeployment(name, id, cartridgeFile);
+      yield* planOrDeploy("deploy", ["--stage", name], {
+        ...hostEnv,
+        CARTRIDGE_FILE: cartridgeFile,
+        ORIGIN: origin,
+        REVISION: revision,
+      });
+    }),
+  ).pipe(Command.withDescription("Deploy a recorded deployment again: <name> <id>"));
+
+  return Command.make("ops").pipe(
+    Command.withDescription(
+      "OpenBao login, secrets, the fleet dashboard, Nomad status and logs, deployment records, and Alchemy on this host",
+    ),
+    Command.withSubcommands([
+      plan,
+      deploy,
+      destroy,
+      drift,
+      state,
+      rollback,
+      login,
+      checkLogin,
+      secret,
+      dash,
+      placeQueued,
+      status,
+      logs,
+      stageImage,
+      deployment,
+    ]),
+  );
+};
 
 const login = Command.make(
   "login",
@@ -103,31 +425,8 @@ const secretCheck = Command.make(
   "check",
   { name },
   Effect.fn(function* ({ name }) {
-    const cartridgeName = Option.getOrElse(StagedCartridge.baseName(name), () => name);
-    const cartridge = yield* Cartridge.resolve(root, cartridgeName);
-    yield* requireLogin;
-    const bao = yield* OpenBao;
-    const stored = new Map(
-      yield* Effect.forEach(Cartridge.kvKeys(cartridge).keys(), (path) =>
-        bao
-          .readKvKeys(path)
-          .pipe(
-            Effect.map(
-              (keys) => [path, Option.getOrElse(keys, (): ReadonlyArray<string> => [])] as const,
-            ),
-          ),
-      ),
-    );
-    const missing = Cartridge.missingSecrets(cartridge, stored);
-    if (missing.length > 0) {
-      return yield* new CliError({
-        message: [
-          `${name} reads secrets that are not set, so its tasks would wait forever:`,
-          ...missing.map(({ path, key }) => `  ${path} ${key}`),
-          "Set each with `ops secret set <key>` in the cartridge's repository.",
-        ].join("\n"),
-      });
-    }
+    const file = yield* Config.option(Config.String("CARTRIDGE_FILE"));
+    yield* checkSecrets(name, Option.getOrUndefined(file));
   }),
 ).pipe(Command.withDescription("Fail when a secret the cartridge references is not set"));
 
@@ -242,19 +541,6 @@ const placeQueued = Command.make(
   }),
 ).pipe(Command.withDescription("Ask Nomad to place every job that has queued allocations again"));
 
-/** OpenBao commands need the 2-hour token that `login` writes. */
-const requireLogin = Effect.gen(function* () {
-  const bao = yield* OpenBao;
-  yield* bao.checkToken().pipe(
-    Effect.mapError(
-      () =>
-        new CliError({
-          message: "The OpenBao token is missing or expired. Run `ops login` first.",
-        }),
-    ),
-  );
-});
-
 const stageImage = Command.make(
   "stage-image",
   {
@@ -325,9 +611,10 @@ const deploymentCheck = Command.make(
   "check",
   { name },
   Effect.fn(function* ({ name }) {
-    const sent = yield* sentDeployment(name);
-    const deployments = yield* Deployments.Deployments;
-    yield* deployments.checkOrigin(name, sent.origin);
+    const file = yield* Config.String("CARTRIDGE_FILE");
+    const origin = yield* Config.String("ORIGIN");
+    const revision = yield* Config.String("REVISION");
+    yield* checkDeployment(name, file, origin, revision);
   }),
 ).pipe(
   Command.withDescription(
@@ -339,10 +626,10 @@ const deploymentRecord = Command.make(
   "record",
   { name },
   Effect.fn(function* ({ name }) {
-    const sent = yield* sentDeployment(name);
-    const deployments = yield* Deployments.Deployments;
-    const recorded = yield* deployments.record({ name, ...sent });
-    yield* Console.log(`Recorded deployment ${recorded.id} of ${name} at ${recorded.revision}.`);
+    const file = yield* Config.String("CARTRIDGE_FILE");
+    const origin = yield* Config.String("ORIGIN");
+    const revision = yield* Config.String("REVISION");
+    yield* recordDeployment(name, file, origin, revision);
   }),
 ).pipe(Command.withDescription("Record the cartridge in CARTRIDGE_FILE as deployed"));
 
@@ -354,15 +641,8 @@ const deploymentRestore = Command.make(
     file: Argument.String("file").pipe(Argument.withDescription("Where to write its cartridge")),
   },
   Effect.fn(function* ({ name, id, file }) {
-    const deployments = yield* Deployments.Deployments;
-    const found = yield* deployments.get(name, id);
-    if (Option.isNone(found)) {
-      return yield* new CliError({ message: `'${name}' has no recorded deployment ${id}.` });
-    }
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs.writeFileString(file, found.value.cartridge);
-    // Read by ops-on-host.sh with `eval`: both values are git object names.
-    yield* Console.log(`ORIGIN=${found.value.origin} REVISION=${found.value.revision}`);
+    const { origin, revision } = yield* restoreDeployment(name, id, file);
+    yield* Console.log(`ORIGIN=${origin} REVISION=${revision}`);
   }),
 ).pipe(
   Command.withDescription(
@@ -376,15 +656,17 @@ const deployment = Command.make("deployment").pipe(
 );
 
 /**
- * The deployment `ops` sent with a release: the cartridge in CARTRIDGE_FILE, the root
- * commit of its repository in ORIGIN, and the released commit in REVISION. Every image must
- * be pinned by digest, so a recorded deployment always names exactly what ran.
+ * The deployment `ops` sent with a release: the cartridge at `file`, the repository root
+ * commit in `origin`, and the released commit in `revision`. Every image must be pinned by
+ * digest, so a recorded deployment always names exactly what ran.
  */
-const sentDeployment = Effect.fn("sentDeployment")(function* (name: string) {
-  const file = yield* Config.String("CARTRIDGE_FILE");
-  const origin = yield* Config.String("ORIGIN");
-  const revision = yield* Config.String("REVISION");
-  const cartridge = yield* Cartridge.resolve(root, name);
+const sentDeployment = Effect.fn("sentDeployment")(function* (
+  name: string,
+  file: string,
+  origin: string,
+  revision: string,
+) {
+  const cartridge = yield* appCartridgeAt(file, name);
   const unpinned = cartridge.services
     .map((service) => service.image)
     .filter((image) => !image.includes("@sha256:"));
@@ -397,6 +679,17 @@ const sentDeployment = Effect.fn("sentDeployment")(function* (name: string) {
   return { origin, revision, cartridge: yield* fs.readFileString(file) };
 });
 
+/** An app cartridge file whose `name` matches the stage. */
+const appCartridgeAt = Effect.fn("appCartridgeAt")(function* (file: string, name: string) {
+  const cartridge = yield* Cartridge.decodeFile(file, Cartridge.AppCartridge);
+  if (cartridge.name !== name) {
+    return yield* new CliError({
+      message: `stage '${name}' was given the cartridge of '${cartridge.name}'`,
+    });
+  }
+  return cartridge;
+});
+
 /** The images a recorded cartridge's services run; the record is valid JSON by construction. */
 const images = (cartridge: string): ReadonlyArray<string> => [
   ...new Set(
@@ -406,30 +699,46 @@ const images = (cartridge: string): ReadonlyArray<string> => [
   ),
 ];
 
-const cli = Command.make("ops").pipe(
-  Command.withDescription(
-    "OpenBao login, secrets, the fleet dashboard, Nomad status and logs, and deployment records",
-  ),
-  Command.withSubcommands([
-    login,
-    checkLogin,
-    secret,
-    dash,
-    placeQueued,
-    status,
-    logs,
-    stageImage,
-    deployment,
-  ]),
+/** Run Alchemy on this terminal with `env` added; on non-zero exit, fail with that code only. */
+const runAlchemy = Effect.fn("cli.runAlchemy")(function* (
+  args: ReadonlyArray<string>,
+  env: Record<string, string>,
+) {
+  const spawner = yield* ChildProcessSpawner;
+  const code = yield* spawner
+    .exitCode(
+      ChildProcess.make("bunx", ["alchemy", ...args], {
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+        env,
+        extendEnv: true,
+      }),
+    )
+    .pipe(
+      Effect.mapError(
+        (error: PlatformError) => new CliError({ message: `bunx: ${error.message}` }),
+      ),
+    );
+  if (code !== 0) return yield* new AlchemyFailed({ code });
+});
+
+const main = Effect.gen(function* () {
+  const hostEnv = yield* loadHostEnvironment(controllerEnvPath);
+  const args = yield* (yield* Stdio.Stdio).args;
+  yield* Command.runWith(makeCli(hostEnv), { version: "1" })(route(alchemyCommands)(args)).pipe(
+    Effect.provide(
+      Layer.mergeAll(OpenBao.layer, NomadLive.layer(), Deployments.layer()).pipe(
+        Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, BunServices.layer)),
+        Layer.provideMerge(
+          ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(hostEnv), { asPrimary: true }),
+        ),
+      ),
+    ),
+  );
+}).pipe(
+  Effect.tapErrorTag("CliError", (error) => Console.error(error.message)),
+  Effect.provide(BunServices.layer),
 );
 
-cli.pipe(
-  Command.run({ version: "1" }),
-  Effect.tapErrorTag("CliError", (error) => Console.error(error.message)),
-  Effect.provide(
-    Layer.mergeAll(OpenBao.layer, NomadLive.layer(), Deployments.layer()).pipe(
-      Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, BunServices.layer)),
-    ),
-  ),
-  BunRuntime.runMain,
-);
+if (import.meta.main) main.pipe(BunRuntime.runMain);

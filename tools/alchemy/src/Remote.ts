@@ -1,9 +1,10 @@
 /**
  * Commands that run on the control host, the machine with the Nomad server, OpenBao and the
  * Alchemy state. Each call first pushes this repository's HEAD to the host, so the host runs
- * the committed platform cartridges and code, then runs scripts/ops-on-host.sh over ssh.
- * The host's checkout is ~/server-ansible, and ~/alchemy links to its tools/alchemy, so
- * Alchemy's state, which git ignores, stays at ~/alchemy/.alchemy through every push.
+ * the committed platform cartridges and code, then runs `src/cli.ts` over ssh after
+ * `bun install`. The host's checkout is ~/server-ansible, and ~/alchemy links to its
+ * tools/alchemy, so Alchemy's state, which git ignores, stays at ~/alchemy/.alchemy through
+ * every push.
  */
 import { Clock, Context, Effect, Layer, Random, Stdio } from "effect";
 import * as Exec from "./Exec.ts";
@@ -44,17 +45,20 @@ export const hostCommands = [
 ] as const;
 
 /**
- * The command line `ssh` hands to the host's shell: the script, then each argument as one
- * word, after the environment the script reads.
+ * The command line `ssh` hands to the host's shell: install dependencies in ~/alchemy, then
+ * run src/cli.ts with each argument as one word. Variables Remote already sends are applied
+ * to that process only, so `bun install` does not see them.
  */
 export const remoteCommand = (
   args: ReadonlyArray<string>,
   environment: ReadonlyArray<readonly [string, string]>,
 ) => {
-  const script = ["alchemy/scripts/ops-on-host.sh", ...args.map(Exec.quote)].join(" ");
-  return environment.length === 0
-    ? script
-    : `env ${environment.map(([name, value]) => Exec.quote(`${name}=${value}`)).join(" ")} ${script}`;
+  const cli = ["bun", "src/cli.ts", ...args.map(Exec.quote)].join(" ");
+  const run =
+    environment.length === 0
+      ? cli
+      : `env ${environment.map(([name, value]) => Exec.quote(`${name}=${value}`)).join(" ")} ${cli}`;
+  return `cd alchemy && bun install --frozen-lockfile --silent && exec ${run}`;
 };
 
 // Runs in the push's ssh call. ~/alchemy is a link into the checkout, dangling until the push lands. A real folder there is the earlier layout, which

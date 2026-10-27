@@ -19,7 +19,7 @@ in
   networking.hostName = "cynic";
   networking.networkmanager.enable = true;
 
-  # Bun runs Alchemy and scripts/ops-on-host.sh.
+  # Bun runs Alchemy and the host commands in tools/alchemy/src/cli.ts.
   # pg_dump/pg_restore (postgresql_17) are used by ops to copy Postgres databases.
   environment.systemPackages = [ pkgs.bun pkgs.postgresql_17 ];
 

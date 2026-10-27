@@ -45,7 +45,7 @@ in
   systemd.services.restic-backups-postgres.environment.XDG_RUNTIME_DIR = "/run/user/1001";
 
   # Alchemy's state and operation journal: the record of what each stage deployed.
-  # `ops` runs Alchemy in ~/alchemy of the operator's account (tools/alchemy/scripts/ops-on-host.sh).
+  # `ops` runs Alchemy in ~/alchemy of the operator's account (tools/alchemy/src/cli.ts).
   # The journal is SQLite in WAL mode, so a file copy taken during a write can be torn;
   # back up a consistent copy made with VACUUM INTO instead of the live files.
   services.restic.backups.alchemy = import ../modules/restic-r2.nix // {

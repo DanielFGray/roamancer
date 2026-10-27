@@ -17,44 +17,47 @@ import { TestConsole } from "effect/testing";
 import { ChildProcess } from "effect/process";
 import { Prompt } from "effect/cli";
 import * as Spawner from "effect/process/ChildProcessSpawner";
-import { OpsError } from "./Exec.ts";
+import { OpsError, route } from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { flakeHosts, HostName, install, rebuild } from "./Nixos.ts";
-import { Remote, remoteCommand } from "./Remote.ts";
-import { route } from "./ops.ts";
+import { hostCommands, Remote, remoteCommand } from "./Remote.ts";
 import { Site } from "./Site.ts";
 
 const nixosFolder = new URL("../../../nixos", import.meta.url).pathname;
+const hostRoute = route(hostCommands.map((command) => command.name));
 
 describe("route", () => {
   it("puts -- after a host command so its flags reach the host", () => {
-    assert.deepEqual(route(["deploy", "--stage", "giglist"]), [
+    assert.deepEqual(hostRoute(["deploy", "--stage", "giglist"]), [
       "deploy",
       "--",
       "--stage",
       "giglist",
     ]);
-    assert.deepEqual(route(["logs", "--", "x"]), ["logs", "--", "x"]);
+    assert.deepEqual(hostRoute(["logs", "--", "x"]), ["logs", "--", "x"]);
   });
 
   it("leaves the commands that run here alone", () => {
-    assert.deepEqual(route(["install", "--yes", "cynic", "root@x"]), [
+    assert.deepEqual(hostRoute(["install", "--yes", "cynic", "root@x"]), [
       "install",
       "--yes",
       "cynic",
       "root@x",
     ]);
-    assert.deepEqual(route(["--help"]), ["--help"]);
-    assert.deepEqual(route([]), []);
+    assert.deepEqual(hostRoute(["--help"]), ["--help"]);
+    assert.deepEqual(hostRoute([]), []);
   });
 });
 
 describe("remoteCommand", () => {
   it("quotes every argument and variable as one word", () => {
-    assert.equal(remoteCommand(["dash"], []), "alchemy/scripts/ops-on-host.sh 'dash'");
+    assert.equal(
+      remoteCommand(["dash"], []),
+      "cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'dash'",
+    );
     assert.equal(
       remoteCommand(["logs", "it's"], [["ORIGIN", "a b"]]),
-      "env 'ORIGIN=a b' alchemy/scripts/ops-on-host.sh 'logs' 'it'\\''s'",
+      "cd alchemy && bun install --frozen-lockfile --silent && exec env 'ORIGIN=a b' bun src/cli.ts 'logs' 'it'\\''s'",
     );
   });
 });
@@ -80,7 +83,9 @@ describe("Remote", () => {
     assert.equal(log.length, 6);
     assert.match(log[3], /^ssh -n ctl git init .*\nif \[ -d alchemy \] && \[ ! -L alchemy \]/s);
     assert.match(log[3], /ln -sfn server-ansible\/tools\/alchemy alchemy$/);
-    assert.deepEqual(log.slice(5), ["ssh ctl alchemy/scripts/ops-on-host.sh 'dash'"]);
+    assert.deepEqual(log.slice(5), [
+      "ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'dash'",
+    ]);
   });
 
   it("asks for a terminal only when stdin is one", async () => {
@@ -88,15 +93,21 @@ describe("Remote", () => {
       Effect.flatMap(Remote, (remote) => remote.run(["login"])),
       { terminal: true },
     );
-    assert.equal(log[log.length - 1], "ssh -t ctl alchemy/scripts/ops-on-host.sh 'login'");
+    assert.equal(
+      log[log.length - 1],
+      "ssh -t ctl cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'login'",
+    );
   });
 
   it("leaves stdin to the host command alone: setup ssh calls never read it", async () => {
     const { log } = await execute(Effect.flatMap(Remote, (remote) => remote.run(["login"])));
-    const setup = log.filter((line) => line.startsWith("ssh ") && !line.includes("ops-on-host"));
+    const setup = log.filter((line) => line.startsWith("ssh ") && !line.includes("src/cli.ts"));
     assert.ok(setup.length > 0);
     assert.ok(setup.every((line) => line.startsWith("ssh -n ")));
-    assert.equal(log[log.length - 1], "ssh ctl alchemy/scripts/ops-on-host.sh 'login'");
+    assert.equal(
+      log[log.length - 1],
+      "ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'login'",
+    );
   });
 
   it("sends a cartridge and what the release records", async () => {
@@ -116,7 +127,7 @@ describe("Remote", () => {
     );
     assert.match(
       log[7],
-      /^ssh ctl env 'CARTRIDGE_FILE=\.alchemy\/input\/cartridge-\d+-\d+\.json' 'ORIGIN=abc' 'REVISION=def' alchemy\/scripts\/ops-on-host\.sh 'deploy' '--stage' 'giglist'$/,
+      /^ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec env 'CARTRIDGE_FILE=\.alchemy\/input\/cartridge-\d+-\d+\.json' 'ORIGIN=abc' 'REVISION=def' bun src\/cli\.ts 'deploy' '--stage' 'giglist'$/,
     );
   });
 
@@ -131,7 +142,10 @@ describe("Remote", () => {
         (line) => !line.startsWith("ssh -n other git init"),
       ),
     );
-    assert.equal(log[log.length - 1], "ssh other alchemy/scripts/ops-on-host.sh 'dash'");
+    assert.equal(
+      log[log.length - 1],
+      "ssh other cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'dash'",
+    );
   });
 
   it("names the uncommitted changes that stay behind", async () => {
@@ -171,7 +185,10 @@ describe("rebuild", () => {
       log[10],
       `ssh -t root@z rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/server-ansible/nixos#cynic" --override-input site "path:$HOME/site-tree"`,
     );
-    assert.equal(log[log.length - 1], "ssh ctl alchemy/scripts/ops-on-host.sh 'place-queued'");
+    assert.equal(
+      log[log.length - 1],
+      "ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'place-queued'",
+    );
   });
 
   it("rebuilds every host the flake declares, one at a time", async () => {
