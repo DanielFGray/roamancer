@@ -8,11 +8,14 @@ import { Schema as S } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import * as Cartridge from "./Cartridge.ts";
 import { OpsError, output, run } from "./Exec.ts";
+import * as Git from "./Git.ts";
 import { Remote } from "./Remote.ts";
 import { imageDigest, sameImageDigest } from "./ReleaseImage.ts";
 
 const folder = Argument.String("folder").pipe(
-  Argument.withDescription("The app's repository, a clean git checkout with cartridge.json"),
+  Argument.withDescription(
+    "The app's git repository with cartridge.json; its committed HEAD is used",
+  ),
   Argument.withDefault("."),
 );
 const yes = Flag.Boolean("yes").pipe(
@@ -24,33 +27,36 @@ const release = Command.make(
   "release",
   { folder, yes },
   Effect.fn(function* ({ folder, yes }) {
-    const image = yield* buildAndPush(folder);
-    yield* deployPinned(folder, image, yes);
+    const tree = yield* committedTree(folder);
+    const image = yield* buildAndPush(folder, tree);
+    yield* deployPinned(folder, tree, image, yes);
     yield* Console.log(`Released ${image.pinned}`);
     yield* printTailnetUrls(image.name);
-  }),
+  }, Effect.scoped),
 ).pipe(Command.withDescription("Build, push and deploy an app's current commit"));
 
 const stage = Command.make(
   "stage",
   { folder },
   Effect.fn(function* ({ folder }) {
-    const image = yield* buildAndPush(folder);
+    const tree = yield* committedTree(folder);
+    const image = yield* buildAndPush(folder, tree);
     const stageName = `${image.name}-staged`;
     yield* (yield* Remote).run(["deploy", "--stage", stageName], {
-      cartridge: cartridgePath(folder),
+      cartridge: cartridgePath(tree),
       stagedImage: image.tagged,
     });
     yield* Console.log(`Staged ${image.tagged}`);
     yield* printTailnetUrls(stageName);
-  }),
+  }, Effect.scoped),
 ).pipe(Command.withDescription("Build and deploy a tailnet-only staged instance"));
 
 const promote = Command.make(
   "promote",
   { folder, yes },
   Effect.fn(function* ({ folder, yes }) {
-    const image = yield* buildAndPush(folder);
+    const tree = yield* committedTree(folder);
+    const image = yield* buildAndPush(folder, tree);
     const remote = yield* Remote;
     const staged = (yield* remote.output(["stage-image", "--stable", image.name])).trim();
     if (!sameImageDigest(image.tagged, staged)) {
@@ -58,10 +64,10 @@ const promote = Command.make(
         message: `refusing promotion: staged image ${staged} does not match ${image.tagged}`,
       });
     }
-    yield* deployPinned(folder, image, yes);
+    yield* deployPinned(folder, tree, image, yes);
     yield* remote.run(["destroy", "--stage", `${image.name}-staged`]);
     yield* Console.log(`Promoted ${image.pinned} and discarded ${image.name}-staged`);
-  }),
+  }, Effect.scoped),
 ).pipe(Command.withDescription("Release the staged commit live, then discard its stage"));
 
 const discard = Command.make(
@@ -78,20 +84,21 @@ export const commands = [release, stage, promote, discard];
 
 const cartridgePath = (folder: string) => `${folder}/cartridge.json`;
 
-/** Build one commit, push it, and retain both the mutable tag and pushed digest. */
-const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string) {
-  const cartridge = yield* Cartridge.decodeFile(cartridgePath(folder), Cartridge.AppCartridge);
-  const repository = yield* oneRepository(cartridge, cartridgePath(folder));
-  const changes = yield* output("git", ["-C", folder, "status", "--porcelain"]);
-  if (changes.trim() !== "") {
-    return yield* new OpsError({
-      message: `${folder} has uncommitted changes; commit them first.`,
-    });
-  }
+/** The committed HEAD of `folder` exported to a temporary folder, so a dirty working tree is never built. */
+const committedTree = Effect.fn("committedTree")(function* (folder: string) {
+  const tree = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped();
+  yield* Git.exportTree(folder, "HEAD", tree);
+  return tree;
+});
+
+/** Build the exported commit, push it, and retain both the mutable tag and pushed digest. */
+const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string, tree: string) {
+  const cartridge = yield* Cartridge.decodeFile(cartridgePath(tree), Cartridge.AppCartridge);
+  const repository = yield* oneRepository(cartridge, cartridgePath(tree));
   yield* (yield* Remote).run(["check-login"]);
   const commit = (yield* output("git", ["-C", folder, "rev-parse", "--short", "HEAD"])).trim();
   const tagged = `${repository}:${commit}`;
-  yield* run("docker", ["build", "-t", tagged, folder]);
+  yield* run("docker", ["build", "-t", tagged, tree]);
   yield* run("docker", ["push", tagged]);
   const digests = yield* output("docker", [
     "inspect",
@@ -123,12 +130,13 @@ const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string) {
  */
 const deployPinned = Effect.fn("deployPinned")(function* (
   folder: string,
+  tree: string,
   image: { readonly name: string; readonly commit: string; readonly pinned: string },
   yes: boolean,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const cartridge = yield* Cartridge.decodeFile(cartridgePath(folder), Cartridge.AppCartridge);
-  const text = yield* fs.readFileString(cartridgePath(folder));
+  const cartridge = yield* Cartridge.decodeFile(cartridgePath(tree), Cartridge.AppCartridge);
+  const text = yield* fs.readFileString(cartridgePath(tree));
   const pinnedText = [...new Set(images(cartridge))].reduce(
     (contents, reference) => contents.replaceAll(`"${reference}"`, `"${image.pinned}"`),
     text,

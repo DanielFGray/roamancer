@@ -1,9 +1,9 @@
 # The facts that belong to one installation, not to the platform. The flakes read this file
 # at build time and pass it to every module as `site`; no host reads it while running. Nothing
 # here may be secret: the Nix store is readable by every user on a host.
-# These are placeholder values. Keep your own copy of this folder in a private repository
-# and set OPS_SITE to it: `ops rebuild` and `ops install` build from a copy of nixos/
-# whose `site` folder is replaced by yours.
+# These are placeholder values. Keep your own copy of this folder in a private git
+# repository and set OPS_SITE to it: `ops rebuild` and `ops install` build the commit at
+# HEAD of this repository with the commit at HEAD of yours in place of this folder.
 
 # Facts the cluster modules share. One machine is the only Nomad server; the others join as
 # Nomad clients over the LAN, with no tunnel.
@@ -42,8 +42,8 @@ registryClientDir = "/var/lib/registry-client"
 atheist = "192.168.50.11"
 
 # The human account on every host: the only wheel user, the holder of the SSH keys that can
-# log in, and the owner of /etc/nixos so `ops rebuild` can copy the configuration there. It
-# is also the account that runs Alchemy on the control host.
+# log in, and the owner of the checkouts `ops` pushes to in its home folder. It is also
+# the account that runs Alchemy on the control host.
 [operator]
 name = "operator"
 sshKeys = [

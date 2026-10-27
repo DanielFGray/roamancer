@@ -62,9 +62,4 @@ in
   security.sudo.wheelNeedsPassword = true;
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
-
-  # `ops rebuild` copies the repo's nixos folder here as the operator, then root builds
-  # from it. The operator can write here, so the copy and the build run back to back in one
-  # command: whatever was here before the copy is replaced, never built.
-  systemd.tmpfiles.rules = [ "d /etc/nixos 0755 ${operator.name} root -" ];
 }

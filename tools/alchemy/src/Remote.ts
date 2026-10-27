@@ -1,11 +1,13 @@
 /**
  * Commands that run on the control host, the machine with the Nomad server, OpenBao and the
- * Alchemy state. Each call first syncs this checkout's tools/alchemy to ~/alchemy there, so
- * the host runs the platform cartridges and code in this checkout, then runs
- * scripts/ops-on-host.sh over ssh. The host's Alchemy state and node_modules stay.
+ * Alchemy state. Each call first pushes this repository's HEAD to the host, so the host runs
+ * the committed platform cartridges and code, then runs scripts/ops-on-host.sh over ssh.
+ * The host's checkout is ~/server-ansible, and ~/alchemy links to its tools/alchemy, so
+ * Alchemy's state, which git ignores, stays at ~/alchemy/.alchemy through every push.
  */
 import { Clock, Context, Effect, Layer, Random, Stdio } from "effect";
 import * as Exec from "./Exec.ts";
+import * as Git from "./Git.ts";
 import { Site } from "./Site.ts";
 
 /** What the host receives besides the command line. */
@@ -52,14 +54,20 @@ export const remoteCommand = (
     : `env ${environment.map(([name, value]) => Exec.quote(`${name}=${value}`)).join(" ")} ${script}`;
 };
 
+// Runs in the push's ssh call. ~/alchemy is a link into the checkout, dangling until the push lands. A real folder there is the earlier layout, which
+// held Alchemy's state: it must be moved into the checkout by hand, never replaced.
+const linkAlchemy = `if [ -d alchemy ] && [ ! -L alchemy ]; then
+  echo "~/alchemy is a folder from the rsync layout. Move its .alchemy and node_modules to ~/${Git.checkout}/tools/alchemy, remove it, and run this again." >&2
+  exit 1
+fi
+ln -sfn ${Git.checkout}/tools/alchemy alchemy`;
+
 export class Remote extends Context.Service<Remote>()("ops/Remote", {
   make: Effect.gen(function* () {
     const site = yield* Site;
     const stdio = yield* Stdio.Stdio;
-    // With the trailing slash rsync wants, to copy the folder's contents.
-    const alchemyContents = new URL("..", import.meta.url).pathname;
 
-    // The folder under .alchemy, which the sync keeps; named per run.
+    // The folder under .alchemy, which a push leaves alone; named per run.
     const sendCartridge = Effect.fn("Remote.sendCartridge")(function* (host: string, file: string) {
       const name = `.alchemy/input/cartridge-${yield* Clock.currentTimeMillis}-${yield* Random.nextIntBetween(0, 1_000_000_000)}.json`;
       yield* Exec.run("ssh", [host, "mkdir -p alchemy/.alchemy/input"]);
@@ -67,25 +75,12 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       return name;
     });
 
-    // --delete, so a file removed here cannot linger on the host; the excluded folders hold
-    // the host's own state.
     const prepare = Effect.fn("Remote.prepare")(function* (
       args: ReadonlyArray<string>,
       sent: Sent,
     ) {
       const host = yield* site.host;
-      yield* Exec.run("rsync", [
-        "-a",
-        "--delete",
-        "--exclude",
-        "node_modules",
-        "--exclude",
-        ".alchemy",
-        "--exclude",
-        "logs",
-        alchemyContents,
-        `${host}:alchemy/`,
-      ]);
+      yield* Git.push(host, Git.repository, Git.checkout, linkAlchemy);
       const cartridgeFile =
         sent.cartridge === undefined ? undefined : yield* sendCartridge(host, sent.cartridge);
       const variables: ReadonlyArray<readonly [string, string | undefined]> = [
@@ -106,7 +101,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       // The remote shell starts in the home folder. A terminal is requested only when this
       // one has one: prompts such as `ops login` need it, and piped output does not.
       const terminal = yield* stdio.stdinIsTerminal;
-      yield* Exec.run("ssh", [...(terminal ? ["-t"] : []), host, command]);
+      yield* Exec.run("ssh", (terminal ? ["-t"] : []).concat(host, command));
     });
 
     /** Run a host command and return what it prints. */

@@ -13,16 +13,17 @@ import {
   Stdio,
   Stream,
 } from "effect";
+import { TestConsole } from "effect/testing";
 import { ChildProcess } from "effect/process";
 import { Prompt } from "effect/cli";
 import * as Spawner from "effect/process/ChildProcessSpawner";
 import { OpsError } from "./Exec.ts";
+import * as Git from "./Git.ts";
 import { flakeHosts, HostName, install, rebuild } from "./Nixos.ts";
 import { Remote, remoteCommand } from "./Remote.ts";
 import { route } from "./ops.ts";
 import { Site } from "./Site.ts";
 
-const alchemyContents = new URL("..", import.meta.url).pathname;
 const nixosFolder = new URL("../../../nixos", import.meta.url).pathname;
 
 describe("route", () => {
@@ -74,19 +75,20 @@ describe("HostName", () => {
 });
 
 describe("Remote", () => {
-  it("syncs this checkout and runs the host command", async () => {
+  it("pushes HEAD to the host and runs the host command", async () => {
     const { log } = await execute(Effect.flatMap(Remote, (remote) => remote.run(["dash"])));
-    assert.deepEqual(log, [syncAlchemy, "ssh ctl alchemy/scripts/ops-on-host.sh 'dash'"]);
+    assert.equal(log.length, 6);
+    assert.match(log[3], /^ssh ctl git init .*\nif \[ -d alchemy \] && \[ ! -L alchemy \]/s);
+    assert.match(log[3], /ln -sfn server-ansible\/tools\/alchemy alchemy$/);
+    assert.deepEqual(log.slice(5), ["ssh ctl alchemy/scripts/ops-on-host.sh 'dash'"]);
   });
 
   it("asks for a terminal only when stdin is one", async () => {
     const { log } = await execute(
       Effect.flatMap(Remote, (remote) => remote.run(["login"])),
-      {
-        terminal: true,
-      },
+      { terminal: true },
     );
-    assert.equal(log.at(-1), "ssh -t ctl alchemy/scripts/ops-on-host.sh 'login'");
+    assert.equal(log[log.length - 1], "ssh -t ctl alchemy/scripts/ops-on-host.sh 'login'");
   });
 
   it("sends a cartridge and what the release records", async () => {
@@ -99,14 +101,13 @@ describe("Remote", () => {
         }),
       ),
     );
-    assert.equal(log[0], syncAlchemy);
-    assert.equal(log[1], "ssh ctl mkdir -p alchemy/.alchemy/input");
+    assert.equal(log[5], "ssh ctl mkdir -p alchemy/.alchemy/input");
     assert.match(
-      log[2],
+      log[6],
       /^scp -q \/tmp\/c\.json ctl:alchemy\/\.alchemy\/input\/cartridge-\d+-\d+\.json$/,
     );
     assert.match(
-      log[3],
+      log[7],
       /^ssh ctl env 'CARTRIDGE_FILE=\.alchemy\/input\/cartridge-\d+-\d+\.json' 'ORIGIN=abc' 'REVISION=def' alchemy\/scripts\/ops-on-host\.sh 'deploy' '--stage' 'giglist'$/,
     );
   });
@@ -114,39 +115,61 @@ describe("Remote", () => {
   it("uses OPS_HOST in place of the site's server", async () => {
     const { log } = await execute(
       Effect.flatMap(Remote, (remote) => remote.run(["dash"])),
+      { env: { OPS_HOST: "other" } },
+    );
+    assert.deepEqual(
+      log.slice(0, 5).filter((line) => !line.startsWith("ssh other git init")),
+      sent("other", Git.repository, Git.checkout).filter(
+        (line) => !line.startsWith("ssh other git init"),
+      ),
+    );
+    assert.equal(log[log.length - 1], "ssh other alchemy/scripts/ops-on-host.sh 'dash'");
+  });
+
+  it("names the uncommitted changes that stay behind", async () => {
+    const { messages } = await execute(
+      Effect.flatMap(Remote, (remote) => remote.run(["dash"])),
       {
-        env: { OPS_HOST: "other" },
+        output: (line) =>
+          line.endsWith("--show-prefix")
+            ? ""
+            : line.endsWith("status --porcelain")
+              ? " M a.ts\n?? b.ts\n"
+              : "abc1234\n",
       },
     );
-    assert.equal(log.at(-1), "ssh other alchemy/scripts/ops-on-host.sh 'dash'");
+    assert.match(messages[0], /abc1234 to ctl:server-ansible \(2 uncommitted changes stay here\)/);
+  });
+
+  it("does not push when the directory is not a repository", async () => {
+    const { log, error } = await execute(
+      Effect.flatMap(Remote, (remote) => remote.run(["dash"])),
+      { reply: (line) => (line.includes("rev-parse") ? 128 : 0) },
+    );
+    assert.ok(error instanceof OpsError);
+    assert.match(error.message, /not a git repository/);
+    assert.equal(log.filter((line) => line.includes("push")).length, 0);
   });
 });
 
 describe("rebuild", () => {
-  it("copies nixos with the site folder and switches the named host", async () => {
+  it("pushes both repositories and switches the named host", async () => {
     const { log, site } = await execute(rebuild(Option.some("cynic"), Option.some("root@z")));
-    assert.deepEqual(log, [
-      "ssh root@z test -w /etc/nixos",
-      "ssh root@z rsync -a --delete /etc/nixos/ /var/tmp/nixos-before-rebuild/",
-      `rsync -a --delete --exclude result --exclude /site ${nixosFolder}/ root@z:/etc/nixos/`,
-      `rsync -a --delete --exclude .git ${site}/ root@z:/etc/nixos/site/`,
-      "ssh -t root@z sudo nixos-rebuild switch --flake 'path:/etc/nixos#cynic'",
-      syncAlchemy,
-      "ssh ctl alchemy/scripts/ops-on-host.sh 'place-queued'",
+    assert.deepEqual(log.slice(0, 10), [
+      ...sent("root@z", Git.repository, Git.checkout),
+      ...sent("root@z", site, "site"),
     ]);
-  });
-
-  it("creates /etc/nixos on a host that has none", async () => {
-    const { log } = await execute(rebuild(Option.some("cynic"), Option.none()), {
-      reply: (line) => (line === "ssh cynic test -w /etc/nixos" ? 1 : 0),
-    });
-    assert.equal(log[1], `ssh -t cynic sudo install -d -o "$(id -un)" -g root -m 0755 /etc/nixos`);
+    assert.equal(
+      log[10],
+      `ssh -t root@z rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/server-ansible/nixos#cynic" --override-input site "path:$HOME/site-tree"`,
+    );
+    assert.equal(log[log.length - 1], "ssh ctl alchemy/scripts/ops-on-host.sh 'place-queued'");
   });
 
   it("rebuilds every host the flake declares, one at a time", async () => {
     const { log } = await execute(rebuild(Option.none(), Option.none()));
     const switches = log.filter((line) => line.includes("nixos-rebuild switch"));
-    assert.deepEqual(
+    assert.equal(
       switches.length,
       flakeHosts(readFileSync(`${nixosFolder}/flake.nix`, "utf8")).length,
     );
@@ -154,28 +177,38 @@ describe("rebuild", () => {
 
   it("stops at the first failure", async () => {
     const { log, error } = await execute(rebuild(Option.none(), Option.none()), {
-      reply: (line) => (line.includes("nixos-before-rebuild") ? 1 : 0),
+      reply: (line) => (line.includes("nixos-rebuild switch") ? 1 : 0),
+    });
+    assert.ok(error instanceof OpsError);
+    assert.equal(log.filter((line) => line.includes("nixos-rebuild switch")).length, 1);
+  });
+
+  it("pushes nothing to a host whose push is refused", async () => {
+    const { log, error } = await execute(rebuild(Option.some("cynic"), Option.none()), {
+      reply: (line) => (line.includes(" push ") ? 1 : 0),
     });
     assert.ok(error instanceof OpsError);
     assert.equal(log.filter((line) => line.includes("nixos-rebuild switch")).length, 0);
-    assert.equal(log.filter((line) => line.includes("nixos-before-rebuild")).length, 1);
   });
 });
 
 describe("install", () => {
   const options = { host: "cynic", target: "root@z", yes: true, anywhere: ["--debug"] };
 
-  it("builds in the container from a copy with the site folder", async () => {
+  it("builds in the container from the committed trees and the site folder", async () => {
     const { log, site, home } = await execute(install(options));
-    const [volume, copyNixos, copySite, docker] = log;
-    assert.equal(volume, "docker volume inspect server-ansible-nix");
+    assert.equal(log[0], "docker volume inspect server-ansible-nix");
+    const archives = log.filter((line) => line.includes(" archive "));
     assert.match(
-      copyNixos,
-      new RegExp(`^rsync -a --delete --exclude result --exclude /site ${nixosFolder}/ `),
+      archives[0],
+      new RegExp(`^git -C ${Git.repository} archive --format=tar -o \\S+ HEAD:nixos$`),
     );
-    assert.match(copySite, new RegExp(`^rsync -a --delete --exclude \\.git ${site}/ `));
-    const tree = / (\S+)\/$/.exec(copyNixos)?.[1];
+    assert.match(archives[1], new RegExp(`^git -C ${site} archive --format=tar -o \\S+ HEAD$`));
+    const extractions = log.filter((line) => line.startsWith("tar -xf "));
+    const tree = / -C (\S+)$/.exec(extractions[0])?.[1];
     assert.ok(tree !== undefined);
+    assert.ok(extractions[1].endsWith(` -C ${tree}/site`));
+    const docker = log[log.length - 1];
     assert.ok(docker.startsWith("docker run --rm --network host --volume server-ansible-nix:/nix"));
     assert.ok(docker.includes(`--volume ${tree}:/src:ro`));
     assert.ok(docker.includes(`--volume ${home}/.ssh/id_ed25519:/key:ro`));
@@ -212,7 +245,14 @@ describe("install", () => {
   });
 });
 
-const syncAlchemy = `rsync -a --delete --exclude node_modules --exclude .alchemy --exclude logs ${alchemyContents} ctl:alchemy/`;
+/** The commands that make `remote` on `target` a checkout of `dir`'s HEAD. */
+const sent = (target: string, dir: string, remote: string) => [
+  `git -C ${dir} rev-parse --show-prefix`,
+  `git -C ${dir} rev-parse --short HEAD`,
+  `git -C ${dir} status --porcelain`,
+  `ssh ${target} git init -q -b deploy '${remote}' && git -C '${remote}' config receive.denyCurrentBranch updateInstead`,
+  `git -C ${dir} push --quiet --force ${target}:${remote} HEAD:refs/heads/deploy`,
+];
 
 /**
  * Run a program with a spawner that records each command line and exits with `reply`'s
@@ -227,6 +267,8 @@ const execute = <A, E>(
   >,
   options: {
     readonly reply?: (line: string) => number;
+    /** What a program prints; nothing by default. */
+    readonly output?: (line: string) => string;
     readonly terminal?: boolean;
     readonly env?: Record<string, string>;
     readonly extraFiles?: string;
@@ -253,7 +295,7 @@ const execute = <A, E>(
           ? [command.command, ...command.args].join(" ")
           : "(piped command)";
         log.push(line);
-        return Effect.succeed(handle(options.reply?.(line) ?? 0));
+        return Effect.succeed(handle(options.reply?.(line) ?? 0, options.output?.(line) ?? ""));
       }),
     );
     const environment = Layer.mergeAll(
@@ -270,17 +312,23 @@ const execute = <A, E>(
         Remote.layer.pipe(Layer.provideMerge(Site.layer), Layer.provideMerge(environment)),
       ),
     );
-    return { log, site, home, error: Option.getOrUndefined(error) };
-  }).pipe(Effect.scoped, Effect.provide(BunServices.layer), Effect.runPromise);
+    const messages = (yield* TestConsole.errorLines).map(String);
+    return { log, messages, site, home, error: Option.getOrUndefined(error) };
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(TestConsole.layer),
+    Effect.provide(BunServices.layer),
+    Effect.runPromise,
+  );
 
-const handle = (code: number) =>
+const handle = (code: number, stdout: string) =>
   Spawner.makeHandle({
     pid: Spawner.ProcessId(1),
     exitCode: Effect.succeed(Spawner.ExitCode(code)),
     isRunning: Effect.succeed(false),
     kill: () => Effect.void,
     stdin: Sink.drain,
-    stdout: Stream.empty,
+    stdout: Stream.make(new TextEncoder().encode(stdout)),
     stderr: Stream.empty,
     all: Stream.empty,
     getInputFd: () => Sink.drain,

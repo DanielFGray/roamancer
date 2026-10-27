@@ -5,8 +5,9 @@
   inputs.disko.url = "github:nix-community/disko/v1.12.0";
   inputs.disko.inputs.nixpkgs.follows = "nixpkgs";
   # The installation's own facts, as a folder that holds site.toml. The folder shipped here
-  # holds placeholder values; `ops rebuild` and `ops install` build from a copy of this
-  # flake whose site folder is replaced by yours.
+  # holds placeholder values; `ops rebuild` overrides this input with your site folder
+  # (--override-input site), and `ops install` builds from a copy of this flake whose
+  # site folder is replaced by yours.
   inputs.site = { url = "path:./site"; flake = false; };
 
   # One flake for every host, so their shared modules (modules/) are inside its source: a

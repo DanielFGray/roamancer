@@ -38,7 +38,7 @@ and orders the jobs by their dependencies.
 - Two or more x86_64 machines that run NixOS. The shared host modules assume Proxmox-style virtual
   machines (SeaBIOS, virtio disks and network); change `nixos/modules/proxmox-vm.nix` and
   `disk-config.nix` for other hardware.
-- A workstation with `bun`, `docker`, `ssh`, and `rsync`. Docker runs the Nix builds, so the
+- A workstation with `bun`, `docker`, `git`, and `ssh`. Docker runs the Nix builds, so the
   workstation needs no Nix.
 - SSH access to each machine, with host names set in `~/.ssh/config`.
 
@@ -49,17 +49,26 @@ the operator account and its SSH keys, the ingress machine's public address and 
 the Traefik routes for static sites. `nixos/site` holds placeholder values. Host folder names and
 `testground/` still hold some installation-specific names (see [Status](#status)).
 
-1. Copy `nixos/site` to a private repository. Edit `site.toml` and the files under `routes/`.
+1. Copy `nixos/site` to a private git repository and commit it. Edit `site.toml` and the files under `routes/`.
    Do not put secrets there, because the Nix store is readable by every user on a host.
 2. Set `OPS_SITE` to that folder in your shell.
 
-The flakes read `site.toml` when Nix builds a host, so a running host never reads it. `ops rebuild`
-and `ops install` build from a copy of `nixos/` whose `site` folder is yours. For a direct
-build of the root flake, pass it yourself:
+The flakes read `site.toml` when Nix builds a host, so a running host never reads it. `ops` sends
+only commits: `ops rebuild` and every host command push the commit at `HEAD` of this repository
+(and, for `rebuild`, of the site folder) to the host, and `ops install` builds from those two
+commits. Uncommitted changes stay on your machine, so you can keep a dirty working tree and deploy
+what you committed. For a direct build of the root flake, pass the site folder yourself:
 
 ```sh
 nix build .#nixosConfigurations.cynic.config.system.build.toplevel --override-input site path:$OPS_SITE
 ```
+
+Each host keeps its checkouts in the operator's home folder: `~/server-ansible` and, on a host
+you rebuild, `~/site`. Git pushes to them with `receive.denyCurrentBranch=updateInstead`, which
+refuses a push when someone has edited a tracked file on the host. On the control host, `~/alchemy`
+is a link to `~/server-ansible/tools/alchemy`, so Alchemy's state stays at `~/alchemy/.alchemy`.
+A control host from the earlier layout has `~/alchemy` as a real folder: move its `.alchemy` and
+`node_modules` into `~/server-ansible/tools/alchemy` and remove it. The next command then links it.
 
 `ops` reaches each machine by its host name, the same name as its `nixosConfigurations` entry
 (`ssh cynic`). Put the address, port, and user in

@@ -1,12 +1,14 @@
 /**
- * Host configuration, not apps. `rebuild` copies the repository's nixos folder to a running
- * host and switches it there, so the host's own Nix builds it. `install` erases a machine's
- * disk and installs a host's configuration. Both give the build this installation's site
- * folder in place of the placeholder values shipped in nixos/site.
+ * Host configuration, not apps. `rebuild` pushes the committed repository and site folder to a
+ * running host and switches it there, so the host's own Nix builds them. `install` erases a
+ * machine's disk and installs a host's configuration, built from the same two commits. The
+ * site folder replaces the placeholder values shipped in nixos/site, so it must be a git
+ * repository too. Uncommitted changes in either stay on this machine.
  */
 import { Config, Console, Effect, FileSystem, Option, Path, Schema as S, Stdio } from "effect";
 import { Prompt } from "effect/cli";
 import * as Exec from "./Exec.ts";
+import * as Git from "./Git.ts";
 import { Remote } from "./Remote.ts";
 import { Site } from "./Site.ts";
 
@@ -20,10 +22,11 @@ export const flakeHosts = (flake: string) =>
   );
 
 /**
- * Sync nixos/ to each host's /etc/nixos and switch it to that configuration; every host the
- * flake declares when none is named. sudo asks for the password on the terminal, so hosts go
- * one at a time and the first failure stops the run. The ssh target defaults to the host
- * name, so ~/.ssh/config supplies the address and user.
+ * Switch each host to its configuration in the pushed commit; every host the flake declares
+ * when none is named. sudo asks for the password on the terminal, so hosts go one at a time
+ * and the first failure stops the run. The ssh target defaults to the host name, so
+ * ~/.ssh/config supplies the address and user. The host builds from its checkouts; the
+ * switch records the build as a system generation, which is how to roll back.
  */
 export const rebuild = Effect.fn("Nixos.rebuild")(function* (
   named: Option.Option<string>,
@@ -31,6 +34,7 @@ export const rebuild = Effect.fn("Nixos.rebuild")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const remote = yield* Remote;
+  const site = yield* (yield* Site).folder;
   const hosts = Option.isSome(named)
     ? [named.value]
     : flakeHosts(yield* fs.readFileString(`${nixosFolder}/flake.nix`));
@@ -38,21 +42,15 @@ export const rebuild = Effect.fn("Nixos.rebuild")(function* (
     Effect.gen(function* () {
       const to = Option.getOrElse(target, () => host);
       yield* Console.error(`== ${host} (${to})`);
-      // A freshly installed host has no /etc/nixos until its first rebuild declares one. The
-      // test fails for any reason; the install then reports a connection problem itself.
-      yield* Exec.run("ssh", [to, "test", "-w", "/etc/nixos"]).pipe(
-        Effect.catchTag("OpsError", () =>
-          Exec.run("ssh", ["-t", to, 'sudo install -d -o "$(id -un)" -g root -m 0755 /etc/nixos']),
-        ),
-      );
-      // The copy replaces /etc/nixos. A change made by hand on the host is lost by the
-      // switch, and a rollback needs the source it was built from, so keep what was there.
-      yield* Exec.run("ssh", [to, "rsync -a --delete /etc/nixos/ /var/tmp/nixos-before-rebuild/"]);
-      yield* copyNixos(`${to}:/etc/nixos`);
+      yield* Git.push(to, Git.repository, Git.checkout);
+      yield* Git.push(to, site, "site");
+      // $HOME expands in the operator's shell, before sudo. The site input is the committed
+      // tree exported without .git: a path input would copy .git into the world-readable
+      // store, and a git input fails because root does not own the checkout.
       yield* Exec.run("ssh", [
         "-t",
         to,
-        `sudo nixos-rebuild switch --flake ${Exec.quote(`path:/etc/nixos#${host}`)}`,
+        `rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/${Git.checkout}/nixos#${host}" --override-input site "path:$HOME/site-tree"`,
       ]);
     }),
   );
@@ -86,7 +84,7 @@ export const install = Effect.fn("Nixos.install")(function* (options: {
   const path = yield* Path.Path;
   const { host, target } = options;
   // Resolve the site folder before asking, so a missing OPS_SITE costs no answer.
-  yield* (yield* Site).folder;
+  const site = yield* (yield* Site).folder;
   if (!options.yes) yield* confirmErase(host, target);
 
   const home = yield* Config.String("HOME");
@@ -105,8 +103,11 @@ export const install = Effect.fn("Nixos.install")(function* (options: {
     ]);
   }
 
+  // The committed trees, with the site folder in place of the placeholder one.
   const tree = yield* fs.makeTempDirectoryScoped();
-  yield* copyNixos(tree);
+  yield* Git.exportTree(Git.repository, "HEAD:nixos", tree);
+  yield* fs.remove(`${tree}/site`, { recursive: true, force: true });
+  yield* Git.exportTree(site, "HEAD", `${tree}/site`);
   yield* Exec.run("docker", [
     ...["run", "--rm", "--network", "host"],
     ...["--volume", `${nixVolume}:/nix`],
@@ -149,22 +150,6 @@ host=$1 target=$2
 shift 2
 exec nix run "$0" -- --flake "path:/work#$host" --target-host "$target" "$@"
 `;
-
-/** Copy the nixos folder to `destination`, a path or host:path, with the site folder as its `site`. */
-const copyNixos = Effect.fn("Nixos.copy")(function* (destination: string) {
-  const folder = yield* (yield* Site).folder;
-  // nixos/site holds placeholder values; the build must see this installation's.
-  yield* Exec.run("rsync", [
-    ...["-a", "--delete", "--exclude", "result", "--exclude", "/site"],
-    `${nixosFolder}/`,
-    `${destination}/`,
-  ]);
-  yield* Exec.run("rsync", [
-    ...["-a", "--delete", "--exclude", ".git"],
-    `${folder}/`,
-    `${destination}/site/`,
-  ]);
-});
 
 /** Ask for the host name before a disk is erased; a script without a terminal passes --yes. */
 const confirmErase = Effect.fn("Nixos.confirmErase")(function* (host: string, target: string) {
