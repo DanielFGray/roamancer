@@ -23,7 +23,7 @@ ops secret set github_client_secret        # prompts for the value
 ops secret list platform/observability     # a platform cartridge, from tools/alchemy
 ops dash                                   # every job's health and why a queued one waits; each node's use and reservations
 ops status giglist                         # each service's newest allocations
-ops rebuild cynic                      # host config: copy nixos/ to the host and switch it; sudo asks for your password, and the old /etc/nixos is kept in /var/tmp
+ops rebuild                                # host config for every host in nixos/flake.nix, one at a time; `ops rebuild cynic` for one. sudo asks for your password on each, and the old /etc/nixos is kept in /var/tmp
 ```
 
 `plan`, `deploy`, `destroy`, `state` and `drift` are Alchemy's own commands. Before `plan` and `deploy` the runner runs the host's own `secret check <stage>` against the sent or recorded cartridge, which fails when a secret the cartridge references is unset (a task would otherwise wait on its template until the deploy times out) or the OpenBao token has expired. Before `destroy` and `drift` it checks the token only. The stage is a cartridge's `name`; `Cartridge.resolve` finds the cartridge (see [Where cartridges live](#where-cartridges-live)). The other commands are `src/cli.ts`, for what Alchemy has no place for. `ops logs` reads Nomad by job name, which is the resource's name, so it needs no stage and works for a job whose first deploy failed and left no Alchemy state. It prints stdout and stderr of each running task in the newest running allocation, with the time podman recorded for each line (`src/TaskLog.ts`, which also serves `alchemy logs`).
