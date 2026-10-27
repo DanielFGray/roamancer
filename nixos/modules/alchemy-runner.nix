@@ -1,7 +1,6 @@
 # Alchemy runner on the control host: system user, state directory, submit socket,
-# and per-job units. The queue behind the socket is not built yet; the socket service
-# only records that fact. Enabled when this host is site.cluster.server, or when
-# enable is set (the disposable testground VM).
+# queue front end, and per-job units. Enabled when this host is site.cluster.server,
+# or when enable is set (the disposable testground VM).
 { config, lib, pkgs, site, ... }:
 let
   cfg = config.services.alchemyRunner;
@@ -41,11 +40,25 @@ in
 
     environment.systemPackages = [ cfg.package ];
 
+    # alchemy may start only alchemy-job@*.service (the queue front end serialises work).
+    security.polkit.extraConfig = ''
+      polkit.addRule(function(action, subject) {
+        if (subject.user !== "alchemy") return;
+        if (action.id !== "org.freedesktop.systemd1.manage-units") return;
+        var unit = action.lookup("unit");
+        var verb = action.lookup("verb");
+        if (unit && verb === "start" && /^alchemy-job@.+\.service$/.test(unit)) {
+          return polkit.Result.YES;
+        }
+      });
+    '';
+
     systemd.sockets.alchemy-submit = {
       description = "Alchemy job submission socket";
       wantedBy = [ "sockets.target" ];
       socketConfig = {
         ListenStream = "/run/alchemy/submit.sock";
+        SocketUser = "alchemy";
         SocketGroup = "alchemy-submit";
         SocketMode = "0660";
         DirectoryMode = "0755";
@@ -54,14 +67,17 @@ in
     };
 
     systemd.services.alchemy-submit = {
-      description = "Alchemy job submission (queue not built yet)";
+      description = "Alchemy job queue front end";
       requires = [ "alchemy-submit.socket" ];
+      after = [ "alchemy-submit.socket" ];
       serviceConfig = {
-        Type = "oneshot";
-        ExecStart = pkgs.writeShellScript "alchemy-submit-stub" ''
-          ${pkgs.util-linux}/bin/logger -t alchemy-submit "Alchemy queue is not built yet"
-          exit 1
-        '';
+        Type = "simple";
+        User = "alchemy";
+        Group = "alchemy";
+        ExecStart = "${cfg.package}/bin/alchemy-runner queue serve";
+        WorkingDirectory = "/var/lib/alchemy";
+        StateDirectory = "alchemy";
+        StateDirectoryMode = "0700";
       };
     };
 
@@ -71,7 +87,9 @@ in
         Type = "oneshot";
         User = "alchemy";
         Group = "alchemy";
-        ExecStart = "${cfg.package}/bin/alchemy-runner job %i";
+        ExecStart = "${cfg.package}/bin/alchemy-runner job run %i";
+        # On every exit: finalise a stuck queued/running row, then ask the front end for next.
+        ExecStopPost = "${cfg.package}/bin/alchemy-runner job finished %i";
         WorkingDirectory = "/var/lib/alchemy";
         StateDirectory = "alchemy";
         StateDirectoryMode = "0700";

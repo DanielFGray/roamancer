@@ -7,10 +7,12 @@ import { ChildProcess } from "effect/process";
 import * as Spawner from "effect/process/ChildProcessSpawner";
 import {
   AlchemyFailed,
+  alchemyArgv,
   loadHostEnvironment,
   parseEnvFile,
   planOrDeploy,
   stageFlag,
+  submitToHostOp,
 } from "./cli.ts";
 import * as Deployments from "./Deployments.ts";
 import { OpenBao, OpenBaoError } from "./OpenBao.ts";
@@ -63,6 +65,15 @@ describe("cli --help", () => {
     assert.doesNotMatch(result.stderr, /cannot read/);
     assert.doesNotMatch(result.stderr, /XDG_RUNTIME_DIR/);
   });
+
+  it("parses deploy --stage and --yes before it reads host files", () => {
+    const result = spawnSync(
+      process.execPath,
+      [new URL("./cli.ts", import.meta.url).pathname, "deploy", "--stage", "giglist", "--yes"],
+      { env: { ...process.env, XDG_RUNTIME_DIR: "/nonexistent" }, encoding: "utf8" },
+    );
+    assert.doesNotMatch(result.stderr, /Missing required flag/);
+  });
 });
 
 describe("stageFlag", () => {
@@ -70,6 +81,52 @@ describe("stageFlag", () => {
     assert.deepEqual(stageFlag(["--stage", "giglist"]), Option.some("giglist"));
     assert.deepEqual(stageFlag(["--yes", "--stage=giglist"]), Option.some("giglist"));
     assert.deepEqual(stageFlag(["--yes"]), Option.none());
+  });
+});
+
+describe("alchemyArgv approve", () => {
+  const env = {};
+
+  it("queued deploy's Alchemy argv contains --yes", () => {
+    const op = submitToHostOp(
+      {
+        command: "deploy",
+        stage: "shop",
+        cartridge: null,
+        origin: "",
+        revision: "",
+      },
+      env,
+    );
+    assert.deepEqual(alchemyArgv(op), ["deploy", "--stage", "shop", "--yes"]);
+  });
+
+  it("interactive deploy without --yes does not pass --yes", () => {
+    assert.deepEqual(alchemyArgv({ command: "deploy", stage: "shop", approve: false, env }), [
+      "deploy",
+      "--stage",
+      "shop",
+    ]);
+  });
+
+  it("queued destroy includes --yes; interactive without approve does not", () => {
+    assert.ok(
+      alchemyArgv(
+        submitToHostOp(
+          {
+            command: "destroy",
+            stage: "shop",
+            cartridge: null,
+            origin: "",
+            revision: "",
+          },
+          env,
+        ),
+      ).includes("--yes"),
+    );
+    assert.ok(
+      !alchemyArgv({ command: "destroy", stage: "shop", approve: false, env }).includes("--yes"),
+    );
   });
 });
 

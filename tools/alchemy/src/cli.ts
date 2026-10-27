@@ -36,6 +36,14 @@ import * as TaskLog from "./TaskLog.ts";
 import * as Deployments from "./Deployments.ts";
 import * as FleetStatus from "./FleetStatus.ts";
 import * as StagedCartridge from "./StagedCartridge.ts";
+import { LoginRequired } from "./queue/Errors.ts";
+import * as QueueFinished from "./queue/Finished.ts";
+import * as QueuePaths from "./queue/Paths.ts";
+import * as QueueRun from "./queue/Run.ts";
+import * as QueueServe from "./queue/Serve.ts";
+import type { Job as QueuedJob, JobSubmit } from "./queue/Schema.ts";
+import { layer as queueStoreLayer } from "./queue/Store.ts";
+import * as QueueUnits from "./queue/Units.ts";
 
 /** A failure the operator can act on: printed as its message alone, without a stack trace. */
 export class CliError extends S.TaggedError<CliError>()("CliError", { message: S.String }) {
@@ -56,8 +64,8 @@ const root = ".";
 const controllerEnvPath = "/var/lib/nomad-acl/controller.env";
 const name = Argument.String("name").pipe(Argument.withDescription("The cartridge's name"));
 
-/** Alchemy commands whose flags, such as `--stage`, pass through unread. */
-const alchemyCommands = ["plan", "deploy", "destroy", "drift", "state"] as const;
+/** Commands whose arguments pass to Alchemy unread; the others parse their own flags. */
+const alchemyCommands = ["state"] as const;
 
 /**
  * KEY=VALUE lines, as `nomad-acl-issue-controller` writes them.
@@ -86,11 +94,10 @@ export const stageFlag = (args: ReadonlyArray<string>): Option.Option<string> =>
 };
 
 /**
- * Read `controllerEnv` (KEY=VALUE) and the OpenBao token under XDG_RUNTIME_DIR. Defaults
- * NOMAD_ADDR and OPENBAO_ADDR to the loopback listeners. Fails when the env file is
- * unreadable or XDG_RUNTIME_DIR is unset.
+ * Read `controllerEnv` (KEY=VALUE) and default NOMAD_ADDR / OPENBAO_ADDR to the loopback
+ * listeners. Fails when the env file is unreadable.
  */
-export const loadHostEnvironment = Effect.fn("loadHostEnvironment")(function* (
+export const loadControllerEnvironment = Effect.fn("loadControllerEnvironment")(function* (
   controllerEnv: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -108,30 +115,37 @@ export const loadHostEnvironment = Effect.fn("loadHostEnvironment")(function* (
     });
   }
   const controller = parseEnvFile(yield* fs.readFileString(controllerEnv));
+  const values: Record<string, string> = {
+    ...controller,
+    NOMAD_ADDR: "http://127.0.0.1:4646",
+    OPENBAO_ADDR: "http://127.0.0.1:8200",
+  };
+  return values;
+});
+
+/**
+ * Read `controllerEnv` (KEY=VALUE) and the OpenBao token under XDG_RUNTIME_DIR. Defaults
+ * NOMAD_ADDR and OPENBAO_ADDR to the loopback listeners. Fails when the env file is
+ * unreadable or XDG_RUNTIME_DIR is unset.
+ */
+export const loadHostEnvironment = Effect.fn("loadHostEnvironment")(function* (
+  controllerEnv: string,
+) {
+  const controller = yield* loadControllerEnvironment(controllerEnv);
   const runtimeDir = yield* Config.option(Config.String("XDG_RUNTIME_DIR"));
   if (Option.isNone(runtimeDir)) {
     return yield* new CliError({ message: "XDG_RUNTIME_DIR is not set." });
   }
   const tokenFile = `${runtimeDir.value}/openbao.token`;
+  const fs = yield* FileSystem.FileSystem;
   const token = yield* fs.readFileString(tokenFile).pipe(
     Effect.map((text) => text.trim()),
     Effect.option,
   );
   const values: Record<string, string> =
     Option.isSome(token) && token.value !== ""
-      ? {
-          ...controller,
-          NOMAD_ADDR: "http://127.0.0.1:4646",
-          OPENBAO_ADDR: "http://127.0.0.1:8200",
-          OPENBAO_TOKEN_FILE: tokenFile,
-          OPENBAO_TOKEN: token.value,
-        }
-      : {
-          ...controller,
-          NOMAD_ADDR: "http://127.0.0.1:4646",
-          OPENBAO_ADDR: "http://127.0.0.1:8200",
-          OPENBAO_TOKEN_FILE: tokenFile,
-        };
+      ? { ...controller, OPENBAO_TOKEN_FILE: tokenFile, OPENBAO_TOKEN: token.value }
+      : { ...controller, OPENBAO_TOKEN_FILE: tokenFile };
   return values;
 });
 
@@ -268,13 +282,105 @@ const releaseEnv = (hostEnv: Record<string, string>) =>
     const cartridgeFile = yield* Config.option(Config.String("CARTRIDGE_FILE"));
     const origin = yield* Config.option(Config.String("ORIGIN"));
     const revision = yield* Config.option(Config.String("REVISION"));
-    return {
-      ...hostEnv,
-      ...(Option.isSome(cartridgeFile) ? { CARTRIDGE_FILE: cartridgeFile.value } : {}),
-      ...(Option.isSome(origin) ? { ORIGIN: origin.value } : {}),
-      ...(Option.isSome(revision) ? { REVISION: revision.value } : {}),
-    };
+    const env: Record<string, string> = { ...hostEnv };
+    if (Option.isSome(cartridgeFile)) env.CARTRIDGE_FILE = cartridgeFile.value;
+    if (Option.isSome(origin)) env.ORIGIN = origin.value;
+    if (Option.isSome(revision)) env.REVISION = revision.value;
+    return env;
   });
+
+/**
+ * One host-owned Alchemy dispatch for interactive and queued paths. Argv is built here from
+ * structured fields only — no free caller options reach the child process.
+ * Deploy/destroy carry `approve`: when true, Alchemy gets `--yes` (required without a TTY).
+ */
+export type HostOp =
+  | {
+      readonly command: "plan";
+      readonly stage: string;
+      readonly env: Record<string, string>;
+    }
+  | {
+      readonly command: "deploy";
+      readonly stage: string;
+      readonly approve: boolean;
+      readonly env: Record<string, string>;
+    }
+  | {
+      readonly command: "destroy";
+      readonly stage: string;
+      readonly approve: boolean;
+      readonly env: Record<string, string>;
+    }
+  | {
+      readonly command: "drift";
+      readonly stage: string;
+      readonly env: Record<string, string>;
+    }
+  | {
+      readonly command: "rollback";
+      readonly name: string;
+      readonly deploymentId: number;
+      readonly approve: boolean;
+      readonly env: Record<string, string>;
+    };
+
+/** Stage flags Alchemy sees; `--yes` only when the op is approved. */
+const stageAlchemyArgs = (stage: string, approve: boolean): ReadonlyArray<string> =>
+  approve ? ["--stage", stage, "--yes"] : ["--stage", stage];
+
+/**
+ * Alchemy argv for a HostOp (including the subcommand). Used by runHostOp and tests.
+ * Rollback reports the deploy argv it will run after restoring the cartridge.
+ */
+export const alchemyArgv = (op: HostOp): ReadonlyArray<string> => {
+  switch (op.command) {
+    case "plan":
+      return ["plan", "--stage", op.stage];
+    case "deploy":
+      return ["deploy", ...stageAlchemyArgs(op.stage, op.approve)];
+    case "destroy":
+      return ["destroy", ...stageAlchemyArgs(op.stage, op.approve), "-c", "state.run.ts"];
+    case "drift":
+      return ["drift", "--stage", op.stage];
+    case "rollback":
+      return ["deploy", ...stageAlchemyArgs(op.name, op.approve)];
+  }
+};
+
+export const runHostOp = Effect.fn("runHostOp")(function* (op: HostOp) {
+  switch (op.command) {
+    case "plan":
+      yield* planOrDeploy("plan", ["--stage", op.stage], op.env);
+      return;
+    case "deploy":
+      yield* planOrDeploy("deploy", stageAlchemyArgs(op.stage, op.approve), op.env);
+      return;
+    case "destroy":
+      yield* runAlchemy(alchemyArgv(op), op.env);
+      return;
+    case "drift":
+      yield* runAlchemy(alchemyArgv(op), op.env);
+      return;
+    case "rollback": {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(".alchemy/input", { recursive: true });
+      const cartridgeFile = `.alchemy/input/rollback-${op.name}-${op.deploymentId}.json`;
+      const { origin, revision } = yield* restoreDeployment(
+        op.name,
+        op.deploymentId,
+        cartridgeFile,
+      );
+      yield* planOrDeploy("deploy", stageAlchemyArgs(op.name, op.approve), {
+        ...op.env,
+        CARTRIDGE_FILE: cartridgeFile,
+        ORIGIN: origin,
+        REVISION: revision,
+      });
+      return;
+    }
+  }
+});
 
 /**
  * Controller.env and the OpenBao token file as one record. Loaded only when a
@@ -302,43 +408,54 @@ const hostLayer = Layer.unwrap(
   }),
 );
 
+const stageOption = Flag.String("stage").pipe(Flag.withDescription("The stage name"));
+const yesOption = Flag.Boolean("yes").pipe(
+  Flag.withDefault(false),
+  Flag.withDescription("Approve without a terminal (pass --yes to Alchemy)"),
+);
+
 /** Command tree for this host process. Host files load only inside each command handler. */
 const makeCli = () => {
   const plan = Command.make(
     "plan",
-    forwarded,
-    Effect.fn(function* ({ args }) {
+    { stage: stageOption },
+    Effect.fn(function* ({ stage }) {
       const hostEnv = yield* HostEnvironment;
-      yield* planOrDeploy("plan", args, yield* releaseEnv(hostEnv));
+      yield* runHostOp({ command: "plan", stage, env: yield* releaseEnv(hostEnv) });
     }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Preview an Alchemy deploy of a stage"));
 
   const deploy = Command.make(
     "deploy",
-    forwarded,
-    Effect.fn(function* ({ args }) {
+    { stage: stageOption, yes: yesOption },
+    Effect.fn(function* ({ stage, yes }) {
       const hostEnv = yield* HostEnvironment;
-      yield* planOrDeploy("deploy", args, yield* releaseEnv(hostEnv));
+      yield* runHostOp({
+        command: "deploy",
+        stage,
+        approve: yes,
+        env: yield* releaseEnv(hostEnv),
+      });
     }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Run Alchemy's deploy of a stage"));
 
   const destroy = Command.make(
     "destroy",
-    forwarded,
-    Effect.fn(function* ({ args }) {
+    { stage: stageOption, yes: yesOption },
+    Effect.fn(function* ({ stage, yes }) {
       const hostEnv = yield* HostEnvironment;
       yield* requireLogin;
-      yield* runAlchemy(["destroy", ...args, "-c", "state.run.ts"], hostEnv);
+      yield* runHostOp({ command: "destroy", stage, approve: yes, env: hostEnv });
     }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Destroy a stage's resources from Alchemy state only"));
 
   const drift = Command.make(
     "drift",
-    forwarded,
-    Effect.fn(function* ({ args }) {
+    { stage: stageOption },
+    Effect.fn(function* ({ stage }) {
       const hostEnv = yield* HostEnvironment;
       yield* requireLogin;
-      yield* runAlchemy(["drift", ...args], hostEnv);
+      yield* runHostOp({ command: "drift", stage, env: hostEnv });
     }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Report drift between the state and the running resources"));
 
@@ -356,18 +473,16 @@ const makeCli = () => {
     {
       name,
       id: Argument.Int("id").pipe(Argument.withDescription("The deployment to restore")),
+      yes: yesOption,
     },
-    Effect.fn(function* ({ name, id }) {
+    Effect.fn(function* ({ name, id, yes }) {
       const hostEnv = yield* HostEnvironment;
-      const fs = yield* FileSystem.FileSystem;
-      yield* fs.makeDirectory(".alchemy/input", { recursive: true });
-      const cartridgeFile = `.alchemy/input/rollback-${name}-${id}.json`;
-      const { origin, revision } = yield* restoreDeployment(name, id, cartridgeFile);
-      yield* planOrDeploy("deploy", ["--stage", name], {
-        ...hostEnv,
-        CARTRIDGE_FILE: cartridgeFile,
-        ORIGIN: origin,
-        REVISION: revision,
+      yield* runHostOp({
+        command: "rollback",
+        name,
+        deploymentId: id,
+        approve: yes,
+        env: hostEnv,
       });
     }, Effect.provide(hostLayer)),
   ).pipe(Command.withDescription("Deploy a recorded deployment again: <name> <id>"));
@@ -383,6 +498,8 @@ const makeCli = () => {
       drift,
       state,
       rollback,
+      queue,
+      job,
       login,
       checkLogin,
       secret,
@@ -395,6 +512,154 @@ const makeCli = () => {
     ]),
   );
 };
+
+const queueLayer = (paths: typeof QueuePaths.production) =>
+  Layer.mergeAll(
+    queueStoreLayer(paths.database),
+    QueueUnits.layer,
+    QueueServe.layerServer(paths),
+  ).pipe(Layer.provideMerge(BunServices.layer));
+
+const queueServe = Command.make(
+  "serve",
+  {},
+  Effect.fn(function* () {
+    yield* QueueServe.serve(QueuePaths.production).pipe(
+      Effect.mapError((error) => {
+        const message =
+          typeof error === "object" &&
+          error !== null &&
+          "message" in error &&
+          typeof (error as { message: unknown }).message === "string"
+            ? (error as { message: string }).message
+            : String(error);
+        return new CliError({ message });
+      }),
+      Effect.provide(queueLayer(QueuePaths.production)),
+    );
+  }),
+).pipe(Command.withDescription("Accept job submissions on the Alchemy submit socket"));
+
+const queue = Command.make("queue").pipe(
+  Command.withDescription("The durable job queue front end"),
+  Command.withSubcommands([queueServe]),
+);
+
+const jobRun = Command.make(
+  "run",
+  {
+    id: Argument.Int("id").pipe(Argument.withDescription("The queued job to run")),
+  },
+  Effect.fn(function* ({ id }) {
+    const execute: QueueRun.Execute = (queued, env) => executeQueuedJob(queued, env);
+    yield* QueueRun.runJob(id, QueuePaths.production, execute).pipe(
+      Effect.catchTag("LoginRequired", () => new CliError({ message: "run ops login" })),
+      Effect.catchTag("JobExit", (error) => new AlchemyFailed({ code: error.code })),
+      Effect.catchTag("JobCommandError", (error) => new CliError({ message: error.message })),
+      Effect.catchTag("JobNotFound", (error) => new CliError({ message: error.message })),
+      Effect.catchTag("JobNotStarting", (error) => new CliError({ message: error.message })),
+      Effect.provide(queueStoreLayer(QueuePaths.production.database)),
+      Effect.provide(BunServices.layer),
+    );
+  }),
+).pipe(Command.withDescription("Run one queued job body"));
+
+const jobFinished = Command.make(
+  "finished",
+  {
+    id: Argument.Int("id").pipe(Argument.withDescription("The job whose unit stopped")),
+  },
+  Effect.fn(function* ({ id }) {
+    yield* QueueFinished.finished(id, QueuePaths.production).pipe(
+      Effect.mapError((error) => {
+        const message =
+          typeof error === "object" &&
+          error !== null &&
+          "message" in error &&
+          typeof (error as { message: unknown }).message === "string"
+            ? (error as { message: string }).message
+            : String(error);
+        return new CliError({ message });
+      }),
+      Effect.provide(queueStoreLayer(QueuePaths.production.database)),
+      Effect.provide(BunServices.layer),
+    );
+  }),
+).pipe(Command.withDescription("Finalise a stopped job unit and start the next"));
+
+const job = Command.make("job").pipe(
+  Command.withDescription("Run or finalise an alchemy-job@ unit"),
+  Command.withSubcommands([jobRun, jobFinished]),
+);
+
+/**
+ * Queued jobs always run approved: the socket submit is the approval (the workstation
+ * shows the plan and asks before it submits).
+ */
+export const submitToHostOp = (submit: JobSubmit, env: Record<string, string>): HostOp => {
+  switch (submit.command) {
+    case "plan":
+      return { command: "plan", stage: submit.stage, env };
+    case "drift":
+      return { command: "drift", stage: submit.stage, env };
+    case "deploy":
+      return { command: "deploy", stage: submit.stage, approve: true, env };
+    case "destroy":
+      return { command: "destroy", stage: submit.stage, approve: true, env };
+    case "rollback":
+      return {
+        command: "rollback",
+        name: submit.name,
+        deploymentId: submit.deploymentId,
+        approve: true,
+        env,
+      };
+  }
+};
+
+/**
+ * Run a queued job's command with the same plan/deploy/destroy/drift/rollback path the
+ * interactive host commands use. Token and cartridge paths come from `env`.
+ */
+export const executeQueuedJob = (job: QueuedJob, env: Record<string, string>) =>
+  Effect.gen(function* () {
+    const controller = yield* loadControllerEnvironment(controllerEnvPath).pipe(
+      Effect.mapError((error) => new QueueRun.JobCommandError({ message: error.message })),
+    );
+    const hostEnv = { ...controller, ...env };
+    const host = Layer.mergeAll(OpenBao.layer, NomadLive.layer(), Deployments.layer()).pipe(
+      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(
+        ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(hostEnv), { asPrimary: true }),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const bao = yield* OpenBao;
+      yield* bao.checkToken().pipe(Effect.catchTag("OpenBaoError", () => new LoginRequired()));
+      yield* runHostOp(submitToHostOp(job.submit, hostEnv));
+    }).pipe(Effect.provide(host), mapQueuedFailure);
+  });
+
+const mapQueuedFailure = <
+  A,
+  E extends { readonly _tag: string; readonly message?: string; readonly code?: number },
+  R,
+>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, QueueRun.JobExit | QueueRun.JobCommandError | LoginRequired, R> =>
+  effect.pipe(
+    Effect.mapError((error): QueueRun.JobExit | QueueRun.JobCommandError | LoginRequired => {
+      if (error._tag === "AlchemyFailed" && typeof error.code === "number") {
+        return new QueueRun.JobExit({ code: error.code });
+      }
+      if (error._tag === "OpenBaoError" || error._tag === "LoginRequired") {
+        return new LoginRequired();
+      }
+      return new QueueRun.JobCommandError({
+        message: typeof error.message === "string" ? error.message : error._tag,
+      });
+    }),
+  );
 
 const login = Command.make(
   "login",
