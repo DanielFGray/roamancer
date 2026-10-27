@@ -4,7 +4,7 @@ This package deploys app cartridges and shared platform services through Alchemy
 
 ## Operator commands
 
-`scripts/ops` runs every operator command on the control host from your machine. The control host runs the Nomad server, OpenBao and the Alchemy state; it is `cluster.server` in the `site.toml` of the folder that `OPS_SITE` names (see the root README), unless `OPS_HOST` names another. `ops` syncs this folder to `~/alchemy` there with `--delete`, so a file removed here does not linger, then runs `scripts/ops-on-host.sh` over SSH. The sync leaves the host's Alchemy state and `node_modules` alone. Put `scripts` on your `PATH`, or alias it:
+`ops` is a program in `src/ops.ts`, which `scripts/ops` starts. `ops --help` lists its commands. The release, secret, `rebuild` and `install` commands run on your machine. Every other command runs on the control host, reached from your machine. The control host runs the Nomad server, OpenBao and the Alchemy state; it is `cluster.server` in the `site.toml` of the folder that `OPS_SITE` names (see the root README), unless `OPS_HOST` names another. `ops` syncs this folder to `~/alchemy` there with `--delete`, so a file removed here does not linger, then runs `scripts/ops-on-host.sh` over SSH. The sync leaves the host's Alchemy state and `node_modules` alone. Put `scripts` on your `PATH`, or alias it:
 
 ```sh
 ops login                                  # once every 2 hours: mints an OpenBao token from the root token
@@ -25,6 +25,7 @@ ops dash                                   # every job's health and why a queued
 ops place-queued                           # ask Nomad to place jobs with queued allocations again; `ops rebuild` runs it last
 ops status giglist                         # each service's newest allocations
 ops rebuild                                # host config (with your OPS_SITE folder) for every host in nixos/flake.nix, one at a time; `ops rebuild cynic` for one. sudo asks for your password on each, and the old /etc/nixos is kept in /var/tmp
+ops install cynic root@10.0.0.9         # erase that machine's disk and install the host; asks you to type the host name, or pass --yes. Arguments for nixos-anywhere follow --
 ```
 
 `plan`, `deploy`, `destroy`, `state` and `drift` are Alchemy's own commands. Before `plan` and `deploy` the runner runs the host's own `secret check <stage>` against the sent or recorded cartridge, which fails when a secret the cartridge references is unset (a task would otherwise wait on its template until the deploy times out) or the OpenBao token has expired. Before `destroy` and `drift` it checks the token only. The stage is a cartridge's `name`; `Cartridge.resolve` finds the cartridge (see [Where cartridges live](#where-cartridges-live)). The other commands are `src/cli.ts`, for what Alchemy has no place for. `ops logs` reads Nomad by job name, which is the resource's name, so it needs no stage and works for a job whose first deploy failed and left no Alchemy state. It prints stdout and stderr of each running task in the newest running allocation, with the time podman recorded for each line (`src/TaskLog.ts`, which also serves `alchemy logs`).

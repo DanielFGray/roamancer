@@ -4,17 +4,20 @@
  * to the control host (src/HostSecrets.ts).
  */
 import * as path from "node:path";
-import { Config, Console, Effect } from "effect";
+import { Console, Effect } from "effect";
 import { Argument, Command, Prompt } from "effect/cli";
 import * as Cartridge from "./Cartridge.ts";
 import * as HostSecrets from "./HostSecrets.ts";
+import { Site } from "./Site.ts";
 
 const root = new URL("..", import.meta.url).pathname;
 const folder = Argument.String("folder").pipe(
   Argument.withDescription("The folder that holds cartridge.json"),
   Argument.withDefault("."),
 );
-const host = Config.String("OPS_HOST");
+const host = Effect.gen(function* () {
+  return yield* (yield* Site).host;
+});
 
 const set = Command.make(
   "set",

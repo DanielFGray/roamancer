@@ -608,7 +608,9 @@ describe("cartridge v2", () => {
 
   describe("resolve", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
-    const giglistFile = fileURLToPath(new URL("../examples/apps/giglist/cartridge.json", import.meta.url));
+    const giglistFile = fileURLToPath(
+      new URL("../examples/apps/giglist/cartridge.json", import.meta.url),
+    );
     const scratch = () => mkdtempSync(join(tmpdir(), "resolve-"));
     const run = <A, E>(
       effect: Effect.Effect<A, E, Deployments.Deployments | FileSystem.FileSystem>,

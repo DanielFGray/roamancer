@@ -8,6 +8,7 @@ import { Effect, Redacted, Runtime, Stream } from "effect";
 import { Schema as S } from "effect";
 import { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
+import { quote } from "./Exec.ts";
 
 /** A failure the operator can act on, printed without a stack trace. */
 export class HostSecretsError extends S.TaggedError<HostSecretsError>()("HostSecretsError", {
@@ -126,6 +127,3 @@ const ssh = Effect.fn("HostSecrets.ssh")(function* (
   }
   return output;
 }, Effect.scoped);
-
-/** Quote one word for the remote shell that `ssh` hands its command line to. */
-const quote = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
