@@ -1,6 +1,6 @@
-{ ... }:
+{ site, ... }:
 let
-  cluster = import ../cluster.nix;
+  cluster = site.cluster;
 in
 {
   imports = [ ../modules/nomad-node.nix ];

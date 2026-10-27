@@ -1,9 +1,9 @@
 # atheist is a Nomad client of cynic's server. Jobs reach OpenBao through cynic's LAN
 # listener. Nomad RPC, OpenBao and the image registry all accept only clients with a
 # certificate from the cluster CA; atheist's one client certificate serves all three.
-{ ... }:
+{ site, ... }:
 let
-  cluster = import ../cluster.nix;
+  cluster = site.cluster;
   ca = "${cluster.tlsDir}/nomad-agent-ca.pem";
   cert = "${cluster.tlsDir}/client.pem";
   key = "${cluster.tlsDir}/client-key.pem";

@@ -1,0 +1,37 @@
+# The facts that belong to one installation, not to the platform. The flakes read this file
+# at build time and pass it to every module as `site`; no host reads it while running.
+# These are placeholder values. Copy this folder to a private repository, edit the copy,
+# and pass it with `--override-input site path:<folder>` (`ops rebuild` does this from
+# OPS_SITE).
+
+# Facts the cluster modules share. One machine is the only Nomad server; the others join as
+# Nomad clients over the LAN, with no tunnel.
+[cluster]
+lanInterface = "ens18"
+# From the router's DHCP, which keeps it stable. If the lease ever changes, the server
+# certificate, Raft's peer address and every client's `servers` entry break together.
+lanAddress = "192.168.50.10"
+lanPrefixLength = 24
+# The router: every machine's default route and DNS server.
+lanGateway = "192.168.50.1"
+# The operator's workstation address (a VPN address, for example). It may reach only the
+# listeners behind the cluster CA: images are pushed from it, and test VMs on it join
+# from it.
+workstation = "10.8.0.2"
+# Every machine reaches the image registry on the server by this name, which each one maps
+# to lanAddress in /etc/hosts, so a new lease changes no image reference.
+registryName = "registry.cluster"
+registryPort = 5000
+# The cluster CA and leaf certificates. Root-only; never in the Nix store.
+tlsDir = "/var/lib/cluster-tls"
+# The server's own client certificate for pulling from the registry, readable by the nomad
+# user, whose rootless Podman pulls every job's image.
+registryClientDir = "/var/lib/registry-client"
+
+# Machines that run Nomad clients, by Nomad node name. The firewall lets them reach every
+# TCP port on the server, so their jobs reach services such as Postgres's fixed 5432 and
+# Nomad's dynamic ports. The clients let the server reach every TCP port in turn, for
+# services Nomad places there. Every listener on the LAN has its own authentication; the
+# address list only narrows who can try, on a network where addresses can be forged.
+[cluster.nodes]
+atheist = "192.168.50.11"

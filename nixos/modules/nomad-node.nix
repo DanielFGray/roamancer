@@ -1,10 +1,10 @@
 # What every Nomad node shares: the agent, the rootless Podman it runs jobs in, and the
 # Podman task driver. Each host adds the rest of its agent configuration in
 # services.nomadNode.config: server or client, TLS, host volumes, OpenBao.
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, site, ... }:
 let
   nomad = pkgs.callPackage ./nomad-package.nix { };
-  cluster = import ../cluster.nix;
+  cluster = site.cluster;
 
   podmanDriver = pkgs.stdenvNoCC.mkDerivation {
     pname = "nomad-driver-podman";

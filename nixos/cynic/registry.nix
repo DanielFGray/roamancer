@@ -1,6 +1,6 @@
-{ ... }:
+{ site, ... }:
 let
-  cluster = import ../cluster.nix;
+  cluster = site.cluster;
   credentials = "/run/credentials/docker-registry.service";
 in
 {

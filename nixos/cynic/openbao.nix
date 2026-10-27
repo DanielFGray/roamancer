@@ -9,10 +9,10 @@
 # state cannot open it. The operator's password manager holds the only other copy; with
 # an auto seal the recovery keys cannot decrypt the data, so losing both copies loses
 # every secret. openbao-operations.md covers creating and restoring the key.
-{ pkgs, ... }:
+{ pkgs, site, ... }:
 let
   sealKeyCredential = "/var/lib/openbao-seal/seal-key.cred";
-  cluster = import ../cluster.nix;
+  cluster = site.cluster;
 in
 {
   services.openbao = {

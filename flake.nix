@@ -7,13 +7,20 @@
       url = "github:nix-community/bun2nix/0f2a1f0b6f42cebe3b149bf62d38754c5e0e9729";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    disko = {
+      url = "github:nix-community/disko/v1.12.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixos-generators = {
       url = "github:nix-community/nixos-generators";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # The installation's own facts, as a folder that holds site.toml. The default is the
+    # placeholder example; replace it with `--override-input site path:<your folder>`.
+    site = { url = "path:./nixos/site-example"; flake = false; };
   };
 
-  outputs = { self, nixpkgs, bun2nix, nixos-generators, ... }:
+  outputs = { self, nixpkgs, bun2nix, disko, nixos-generators, site, ... }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
@@ -47,7 +54,9 @@
 
       nixosConfigurations.cynic = nixpkgs.lib.nixosSystem {
         inherit system;
+        specialArgs.site = builtins.fromTOML (builtins.readFile "${site}/site.toml");
         modules = [
+          disko.nixosModules.disko
           ./nixos/cynic/configuration.nix
           ./nixos/modules/alchemy-staged.nix
           {

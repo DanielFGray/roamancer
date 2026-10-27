@@ -10,9 +10,9 @@
 #
 # The CA key exists only in tlsDir. Losing it means re-issuing every client's
 # certificate, so back it up in the password manager (cluster-tls-operations.md).
-{ pkgs, ... }:
+{ pkgs, site, ... }:
 let
-  cluster = import ../cluster.nix;
+  cluster = site.cluster;
   nomad = pkgs.callPackage ../modules/nomad-package.nix { };
   listeners = [ "nomad.service" "openbao.service" "docker-registry.service" ];
 in

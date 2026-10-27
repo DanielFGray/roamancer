@@ -4,13 +4,17 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/cd4ea8d57de16f4810bc5f14207bac45fbf19f67";
   inputs.disko.url = "github:nix-community/disko/v1.12.0";
   inputs.disko.inputs.nixpkgs.follows = "nixpkgs";
+  # The installation's own facts, as a folder that holds site.toml. The default is the
+  # placeholder example; replace it with `--override-input site path:<your folder>`.
+  inputs.site = { url = "path:./site-example"; flake = false; };
 
-  # One flake for every host, so their shared modules (modules/, cluster.nix) are inside
-  # its source: a host's own folder cannot import files outside itself.
-  outputs = { nixpkgs, disko, ... }:
+  # One flake for every host, so their shared modules (modules/) are inside its source: a
+  # host's own folder cannot import files outside itself.
+  outputs = { nixpkgs, disko, site, ... }:
     let
       host = configuration: nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
+        specialArgs.site = builtins.fromTOML (builtins.readFile "${site}/site.toml");
         modules = [ disko.nixosModules.disko configuration ];
       };
     in

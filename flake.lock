@@ -24,6 +24,27 @@
         "type": "github"
       }
     },
+    "disko": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1746728054,
+        "narHash": "sha256-eDoSOhxGEm2PykZFa/x9QG5eTH0MJdiJ9aR00VAofXE=",
+        "owner": "nix-community",
+        "repo": "disko",
+        "rev": "ff442f5d1425feb86344c028298548024f21256d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "ref": "v1.12.0",
+        "repo": "disko",
+        "type": "github"
+      }
+    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": [
@@ -100,9 +121,23 @@
     "root": {
       "inputs": {
         "bun2nix": "bun2nix",
+        "disko": "disko",
         "nixos-generators": "nixos-generators",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "site": "site"
       }
+    },
+    "site": {
+      "flake": false,
+      "locked": {
+        "path": "./nixos/site-example",
+        "type": "path"
+      },
+      "original": {
+        "path": "./nixos/site-example",
+        "type": "path"
+      },
+      "parent": []
     },
     "systems": {
       "locked": {

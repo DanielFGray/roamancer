@@ -3,9 +3,9 @@
 # public DNS names point at, with no gateway in the main table: replies from that
 # address go back out the public card through table 100, and everything else leaves
 # through the LAN.
-{ ... }:
+{ site, ... }:
 let
-  cluster = import ../cluster.nix;
+  cluster = site.cluster;
   publicAddress = "15.204.150.72";
   # OVH's gateway for the additional IP. It is outside the /32, so the route to it is
   # on-link.
@@ -35,9 +35,9 @@ in
       # A fixed address: cynic's firewall, Nomad's advertised address and every ssh config
       # name this one. fw leased it by MAC to Debian's dhclient, which sent no client ID;
       # any DHCP client that sends one gets a new lease, as the NixOS installer did (.84).
-      address = [ "10.13.37.83/24" ];
-      gateway = [ "10.13.37.1" ];
-      dns = [ "10.13.37.1" ];
+      address = [ "${cluster.nodes.atheist}/${toString cluster.lanPrefixLength}" ];
+      gateway = [ cluster.lanGateway ];
+      dns = [ cluster.lanGateway ];
       networkConfig.IPv6AcceptRA = true;
       linkConfig.RequiredForOnline = "routable";
     };
