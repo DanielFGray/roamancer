@@ -5,6 +5,7 @@
 # through the LAN.
 { ... }:
 let
+  cluster = import ../cluster.nix;
   publicAddress = "15.204.150.72";
   # OVH's gateway for the additional IP. It is outside the /32, so the route to it is
   # on-link.
@@ -82,5 +83,10 @@ in
     # A packet to the public address arrives on ens19, but the main table would route a
     # reply to its sender through the LAN; strict reverse-path filtering would drop it.
     checkReversePath = "loose";
+    # cynic reaches every TCP port, as atheist reaches every port on cynic: its jobs
+    # call services placed here, such as OpenObserve, on Nomad's dynamic ports.
+    extraCommands = ''
+      iptables -A nixos-fw -i ${cluster.lanInterface} -s ${cluster.lanAddress} -p tcp -j nixos-fw-accept
+    '';
   };
 }
