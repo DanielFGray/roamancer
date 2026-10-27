@@ -22,7 +22,7 @@
       "args": ["run", "start:prod"],
       "routes": [
         {
-          "host": "postgres.garden",
+          "host": "garden.example.test",
           "responseHeaders": [
             { "name": "Cross-Origin-Embedder-Policy", "value": "credentialless" },
             { "name": "Cross-Origin-Opener-Policy", "value": "same-origin" },
@@ -33,7 +33,7 @@
       "environment": [
         { "name": "NODE_ENV", "value": "production" },
         { "name": "PORT", "value": "3000" },
-        { "name": "VITE_ROOT_URL", "value": "https://postgres.garden" },
+        { "name": "VITE_ROOT_URL", "value": "https://garden.example.test" },
         { "name": "DATABASE_NAME", "value": "postgres_garden" },
         { "name": "DATABASE_OWNER", "database": "postgres_garden", "role": "owner" },
         { "name": "DATABASE_VISITOR", "database": "postgres_garden", "role": "visitor" }
@@ -67,9 +67,9 @@
       "args": ["run", "worker:prod"],
       "environment": [
         { "name": "NODE_ENV", "value": "production" },
-        { "name": "VITE_ROOT_URL", "value": "https://postgres.garden" },
+        { "name": "VITE_ROOT_URL", "value": "https://garden.example.test" },
         { "name": "MAIL_PROVIDER", "value": "cloudflare" },
-        { "name": "EMAIL_FROM", "value": "postgres.garden <noreply@postgres.garden>" }
+        { "name": "EMAIL_FROM", "value": "garden.example.test <noreply@garden.example.test>" }
       ],
       "connections": [],
       "secrets": [

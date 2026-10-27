@@ -51,7 +51,7 @@ describe("cartridge v2", () => {
   it("resolves a database role entry to that database's role name", async () => {
     const cartridge = await Effect.runPromise(
       decodeFile(
-        fileURLToPath(new URL("../apps/giglist/cartridge.json", import.meta.url)),
+        fileURLToPath(new URL("../examples/apps/giglist/cartridge.json", import.meta.url)),
         AppCartridge,
       ).pipe(Effect.provide(NodeFileSystem.layer)),
     );
@@ -591,9 +591,9 @@ describe("cartridge v2", () => {
     ["../platform/ingress/cartridge.json", Cartridge],
     ["../platform/data/cartridge.json", Cartridge],
     ["../examples/app-needs/cartridge.json", AppCartridge],
-    ["../apps/giglist/cartridge.json", AppCartridge],
-    ["../apps/noneuclid/cartridge.json", AppCartridge],
-    ["../apps/postgres-garden/cartridge.json", AppCartridge],
+    ["../examples/apps/giglist/cartridge.json", AppCartridge],
+    ["../examples/apps/noneuclid/cartridge.json", AppCartridge],
+    ["../examples/apps/postgres-garden/cartridge.json", AppCartridge],
   ] as const;
   for (const [rel, schema] of committed) {
     it(`loads ${rel}`, async () => {
@@ -608,7 +608,7 @@ describe("cartridge v2", () => {
 
   describe("resolve", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
-    const giglistFile = fileURLToPath(new URL("../apps/giglist/cartridge.json", import.meta.url));
+    const giglistFile = fileURLToPath(new URL("../examples/apps/giglist/cartridge.json", import.meta.url));
     const scratch = () => mkdtempSync(join(tmpdir(), "resolve-"));
     const run = <A, E>(
       effect: Effect.Effect<A, E, Deployments.Deployments | FileSystem.FileSystem>,

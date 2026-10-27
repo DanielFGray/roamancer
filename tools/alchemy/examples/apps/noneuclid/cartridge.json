@@ -14,7 +14,7 @@
       "command": "bun",
       "args": ["server.js"],
       "storage": { "volume": "noneuclid-data", "mountPath": "/data" },
-      "routes": [{ "host": "game.dfg.rocks" }],
+      "routes": [{ "host": "game.example.test" }],
       "environment": [
         { "name": "PORT", "value": "5181" },
         { "name": "PLAY_DIR", "value": "/app/public" },

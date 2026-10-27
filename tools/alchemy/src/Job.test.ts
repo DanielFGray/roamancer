@@ -93,7 +93,7 @@ describe("Nomad workload rendering", () => {
       connections: [],
       routes: [
         {
-          host: "giglist.dfg.rocks",
+          host: "giglist.example.test",
           pathPrefixes: ["/api"],
           responseHeaders: [{ name: "X-Frame-Options", value: "DENY" }],
         },
@@ -103,7 +103,7 @@ describe("Nomad workload rendering", () => {
       "traefik.enable=true",
       "traefik.http.services.giglist-api.loadbalancer.healthcheck.path=/api/health",
       "traefik.http.services.giglist-api.loadbalancer.healthcheck.interval=5s",
-      "traefik.http.routers.giglist-api-0.rule=Host(`giglist.dfg.rocks`) && (PathPrefix(`/api`))",
+      "traefik.http.routers.giglist-api-0.rule=Host(`giglist.example.test`) && (PathPrefix(`/api`))",
       "traefik.http.routers.giglist-api-0.entrypoints=web",
       "traefik.http.routers.giglist-api-0.service=giglist-api",
       "traefik.http.middlewares.giglist-api-0-headers.headers.customresponseheaders.X-Frame-Options=DENY",

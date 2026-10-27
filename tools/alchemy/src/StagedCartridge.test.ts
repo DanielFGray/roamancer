@@ -26,7 +26,7 @@ const serviceNames = (cartridge: Cartridge) => cartridge.services.map((service) 
 
 describe("staged cartridge", () => {
   it("suffixes giglist's names, database and credentials, and runs the candidate image", async () => {
-    const live = await load("../apps/giglist/cartridge.json");
+    const live = await load("../examples/apps/giglist/cartridge.json");
     const copy = await stage(live);
 
     assert.equal(copy.name, "giglist-staged");
@@ -58,7 +58,7 @@ describe("staged cartridge", () => {
   });
 
   it("maps each live route to a tailnet-only staged host", async () => {
-    const live = await load("../apps/giglist/cartridge.json");
+    const live = await load("../examples/apps/giglist/cartridge.json");
     assert.ok(live.services[0].routes.length > 0);
     const copy = await stage(live);
     assert.deepEqual(
@@ -68,14 +68,14 @@ describe("staged cartridge", () => {
   });
 
   it("rewrites live route root URLs to the staged service reference", async () => {
-    const live = await load("../apps/giglist/cartridge.json");
+    const live = await load("../examples/apps/giglist/cartridge.json");
     const withRoot: Cartridge = {
       ...live,
       services: live.services.map((service) => ({
         ...service,
         environment: [
           ...service.environment,
-          { name: "ROOT_URL", value: "https://giglist.dfg.rocks/" },
+          { name: "ROOT_URL", value: "https://giglist.example.test/" },
         ],
       })),
     };
@@ -90,7 +90,7 @@ describe("staged cartridge", () => {
   });
 
   it("retargets route entries for its own services and preserves external route names", async () => {
-    const live = await load("../apps/giglist/cartridge.json");
+    const live = await load("../examples/apps/giglist/cartridge.json");
     const withRoutes: Cartridge = {
       ...live,
       services: live.services.map((service) =>
@@ -127,7 +127,7 @@ describe("staged cartridge", () => {
   });
 
   it("expands the staged copy with expand unchanged", async () => {
-    const copy = await stage(await load("../apps/giglist/cartridge.json"));
+    const copy = await stage(await load("../examples/apps/giglist/cartridge.json"));
 
     const resources = expand(copy);
     const database = resources.find((resource) => resource._tag === "PostgresDatabase");
@@ -162,7 +162,7 @@ describe("staged cartridge", () => {
   });
 
   it("stages postgres-garden's database, names and image", async () => {
-    const live = await load("../apps/postgres-garden/cartridge.json");
+    const live = await load("../examples/apps/postgres-garden/cartridge.json");
     const copy = await stage(live);
 
     assert.equal(copy.name, "postgres-garden-staged");
@@ -192,7 +192,7 @@ describe("staged cartridge", () => {
   });
 
   it("renames a database role entry and replaces an environment value that names a database", async () => {
-    const live = await load("../apps/giglist/cartridge.json");
+    const live = await load("../examples/apps/giglist/cartridge.json");
     const copy = await stage(live);
 
     // The live file names its roles through the database they belong to; only a literal value
@@ -309,7 +309,7 @@ describe("staged cartridge", () => {
   it("keeps a connection to a service of another cartridge", async () => {
     // The cartridge schema rejects a connection to an undeclared service, so this value is
     // built rather than decoded: the transform still has to leave such a name alone.
-    const live = await load("../apps/giglist/cartridge.json");
+    const live = await load("../examples/apps/giglist/cartridge.json");
     const withPlatformConnection: Cartridge = {
       ...live,
       services: live.services.map((service) =>
@@ -331,7 +331,7 @@ describe("staged cartridge", () => {
   });
 
   it("refuses a cartridge whose services name more than one image", async () => {
-    const live = await load("../apps/giglist/cartridge.json");
+    const live = await load("../examples/apps/giglist/cartridge.json");
     const twoImages: Cartridge = {
       ...live,
       services: live.services.map((service, index) => ({ ...service, image: `img-${index}` })),
@@ -345,7 +345,7 @@ describe("staged cartridge", () => {
   });
 
   it("refuses a service that writes a host volume", async () => {
-    const error = await refusal(await load("../apps/noneuclid/cartridge.json"));
+    const error = await refusal(await load("../examples/apps/noneuclid/cartridge.json"));
 
     assert.ok(error instanceof WritableStorage);
     assert.equal(error.cartridge, "noneuclid");
