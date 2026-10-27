@@ -62,7 +62,7 @@
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
-  # nixos/rebuild-host.sh copies the repo's nixos folder here as dan, then root builds
+  # `ops rebuild` copies the repo's nixos folder here as dan, then root builds
   # from it. dan can write here, so the copy and the build run back to back in one
   # command: whatever was here before the copy is replaced, never built.
   systemd.tmpfiles.rules = [ "d /etc/nixos 0755 dan root -" ];

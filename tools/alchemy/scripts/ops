@@ -12,6 +12,7 @@
 #   ops secret set github_client_secret   store a key the cartridge in the current directory reads
 #   ops secret list                       which referenced keys are set; never prints values
 #   ops status giglist
+#   ops rebuild [host]            sync nixos/ to a host and switch it to that config (default cynic)
 #   ops --help
 # An app's cartridge lives in its own repository (folder defaults to the current
 # directory); release sends it to the control host with its images pinned, and the host
@@ -40,6 +41,7 @@ case "${1:-}" in
       '  deploy|plan|destroy ...   run Alchemy on the control host' \
       '  secret set|list|check     the OpenBao secrets that ./cartridge.json reads' \
       '  status|logs ...           inspect Nomad' \
+      '  rebuild [host]            sync nixos/ to the host and switch it (default cynic)' \
       'Set OPS_HOST to select the control host, CARTRIDGE to send a cartridge file.'
     exit 0
     ;;
@@ -47,6 +49,27 @@ case "${1:-}" in
     command=$1
     shift
     exec bun "$here/src/release.ts" "$command" "$@"
+    ;;
+  rebuild)
+    # Host config, not apps: copy the repo's nixos folder to the host's /etc/nixos, then
+    # build and activate it there, so the host's own Nix builds it. sudo asks for the
+    # password on the terminal. The flake host is a nixos/flake.nix output name.
+    flake_host=${2:-cynic}
+    case $flake_host in
+      *[!a-z0-9-]* | "")
+        echo "ops rebuild: '$flake_host' is not a flake host name" >&2
+        exit 2
+        ;;
+    esac
+    target=${3:-$flake_host.dlab}
+    nixos=$(cd "$here/../../nixos" && pwd)
+    # A freshly installed host has no /etc/nixos until its first rebuild declares one.
+    ssh "$target" test -w /etc/nixos || ssh -t "$target" sudo install -d -o dan -g root -m 0755 /etc/nixos
+    # The copy replaces /etc/nixos. A change made by hand on the host is lost by the switch,
+    # and a rollback needs the source it was built from, so keep what was there.
+    ssh "$target" "rsync -a --delete /etc/nixos/ /var/tmp/nixos-before-rebuild/"
+    rsync -a --delete --exclude result "$nixos/" "$target:/etc/nixos/"
+    exec ssh -t "$target" "sudo nixos-rebuild switch --flake 'path:/etc/nixos#$flake_host'"
     ;;
 esac
 host=${OPS_HOST:-cynic.dlab}

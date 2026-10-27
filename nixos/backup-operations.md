@@ -38,7 +38,7 @@ The Postgres dump runs as `nomad`, the only user that can reach Postgres's rootl
 
    Keep `RESTIC_PASSWORD` in the password store as well. Losing it makes every backup unrecoverable.
 
-2. Rebuild the host (`nixos/rebuild-host.sh <host>`), then run a backup now and read its result:
+2. Rebuild the host (`ops rebuild <host>`), then run a backup now and read its result:
 
    ```sh
    sudo systemctl start restic-backups-<name>
