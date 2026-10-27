@@ -47,11 +47,11 @@
     "site": {
       "flake": false,
       "locked": {
-        "path": "./site-example",
+        "path": "./site",
         "type": "path"
       },
       "original": {
-        "path": "./site-example",
+        "path": "./site",
         "type": "path"
       },
       "parent": []

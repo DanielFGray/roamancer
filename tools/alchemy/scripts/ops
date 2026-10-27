@@ -20,13 +20,29 @@
 # records it. Set CARTRIDGE to a cartridge file to send one with any host command.
 # The workstation commands (release, stage, promote, discard, secret) run here and reach the
 # host only for what they need there.
-# The control host runs the Nomad server, OpenBao and the Alchemy state; set
-# OPS_HOST to reach a different one. Each host command first syncs tools/alchemy to
+# The control host runs the Nomad server, OpenBao and the Alchemy state. It is
+# `cluster.server` in the site.toml that OPS_SITE names (the folder that holds your
+# installation's facts; nixos/site is the placeholder one). Set OPS_HOST to reach a
+# different one. Each host command first syncs tools/alchemy to
 # ~/alchemy there, so it runs the platform cartridges and code in this checkout.
 # The host's Alchemy state and node_modules stay.
 set -eu
 # The real folder, also when ops is run through a link on PATH.
 here=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
+# One string from the site.toml in OPS_SITE, by dotted key such as cluster.server.
+site_value() {
+  if [ -z "${OPS_SITE:-}" ]; then
+    echo "ops: set OPS_SITE to the folder that holds your site.toml" >&2
+    exit 2
+  fi
+  bun -e 'let v = (await import(process.argv[1])).default
+for (const key of process.argv[2].split(".")) v = v?.[key]
+if (typeof v !== "string") {
+  console.error(`${process.argv[2]} is not set in ${process.argv[1]}`)
+  process.exit(1)
+}
+console.log(v)' "$OPS_SITE/site.toml" "$1"
+}
 # Building and pushing need the workstation's Docker and registry certificate, and the
 # secret commands read the cartridge from the workstation's folder.
 case "${1:-}" in
@@ -49,6 +65,8 @@ case "${1:-}" in
     exit 0
     ;;
   release | stage | promote | discard | secret)
+    OPS_HOST=${OPS_HOST:-$(site_value cluster.server)}
+    export OPS_HOST
     command=$1
     shift
     exec bun "$here/src/release.ts" "$command" "$@"
@@ -58,7 +76,9 @@ case "${1:-}" in
     # build and activate it there, so the host's own Nix builds it. sudo asks for the
     # password on the terminal, so hosts go one at a time; the first failure stops the run.
     # A host is a nixosConfigurations name in nixos/flake.nix; without one, every host.
+    # The ssh target is that name, so ~/.ssh/config supplies the address and user.
     nixos=$(cd "$here/../../nixos" && pwd)
+    site=$(cd "${OPS_SITE:?ops rebuild: set OPS_SITE to the folder that holds your site.toml}" && pwd)
     if [ $# -ge 2 ]; then
       hosts=$2
     else
@@ -71,14 +91,16 @@ case "${1:-}" in
           exit 2
           ;;
       esac
-      target=${3:-$flake_host.dlab}
+      target=${3:-$flake_host}
       echo "== $flake_host ($target)" >&2
       # A freshly installed host has no /etc/nixos until its first rebuild declares one.
-      ssh "$target" test -w /etc/nixos || ssh -t "$target" sudo install -d -o dan -g root -m 0755 /etc/nixos
+      ssh "$target" test -w /etc/nixos || ssh -t "$target" 'sudo install -d -o "$(id -un)" -g root -m 0755 /etc/nixos'
       # The copy replaces /etc/nixos. A change made by hand on the host is lost by the
       # switch, and a rollback needs the source it was built from, so keep what was there.
       ssh "$target" "rsync -a --delete /etc/nixos/ /var/tmp/nixos-before-rebuild/"
-      rsync -a --delete --exclude result "$nixos/" "$target:/etc/nixos/"
+      # nixos/site holds placeholder values; the host builds with your site folder instead.
+      rsync -a --delete --exclude result --exclude /site "$nixos/" "$target:/etc/nixos/"
+      rsync -a --delete --exclude .git "$site/" "$target:/etc/nixos/site/"
       ssh -t "$target" "sudo nixos-rebuild switch --flake 'path:/etc/nixos#$flake_host'"
     done
     # A switch can add the host volume or memory a queued job waits for; Nomad does not
@@ -86,7 +108,7 @@ case "${1:-}" in
     exec "$0" place-queued
     ;;
 esac
-host=${OPS_HOST:-cynic.dlab}
+host=${OPS_HOST:-$(site_value cluster.server)}
 # --delete, so a file removed here cannot linger on the host; the excluded folders hold
 # the host's own state and are kept.
 rsync -a --delete --exclude node_modules --exclude .alchemy --exclude logs "$here/" "$host:alchemy/"

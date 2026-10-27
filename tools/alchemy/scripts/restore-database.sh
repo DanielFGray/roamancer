@@ -28,7 +28,7 @@ set -euo pipefail
 #
 # Usage: restore-database.sh <ssh host> <database> <dump file>
 
-host="${1:?ssh host, such as cynic.dlab}"
+host="${1:?ssh host, such as the control host}"
 database="${2:?database name}"
 dump="${3:?pg_dump -Fc file}"
 

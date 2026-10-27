@@ -4,9 +4,10 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/cd4ea8d57de16f4810bc5f14207bac45fbf19f67";
   inputs.disko.url = "github:nix-community/disko/v1.12.0";
   inputs.disko.inputs.nixpkgs.follows = "nixpkgs";
-  # The installation's own facts, as a folder that holds site.toml. The default is the
-  # placeholder example; replace it with `--override-input site path:<your folder>`.
-  inputs.site = { url = "path:./site-example"; flake = false; };
+  # The installation's own facts, as a folder that holds site.toml. The folder shipped here
+  # holds placeholder values; `ops rebuild` and `install-host.sh` build from a copy of this
+  # flake whose site folder is replaced by yours.
+  inputs.site = { url = "path:./site"; flake = false; };
 
   # One flake for every host, so their shared modules (modules/) are inside its source: a
   # host's own folder cannot import files outside itself.

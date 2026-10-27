@@ -130,11 +130,11 @@
     "site": {
       "flake": false,
       "locked": {
-        "path": "./nixos/site-example",
+        "path": "./nixos/site",
         "type": "path"
       },
       "original": {
-        "path": "./nixos/site-example",
+        "path": "./nixos/site",
         "type": "path"
       },
       "parent": []

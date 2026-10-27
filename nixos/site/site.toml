@@ -1,12 +1,16 @@
 # The facts that belong to one installation, not to the platform. The flakes read this file
 # at build time and pass it to every module as `site`; no host reads it while running.
-# These are placeholder values. Copy this folder to a private repository, edit the copy,
-# and pass it with `--override-input site path:<folder>` (`ops rebuild` does this from
-# OPS_SITE).
+# These are placeholder values. Keep your own copy of this folder in a private repository
+# and set OPS_SITE to it: `ops rebuild` and `install-host.sh` build from a copy of nixos/
+# whose `site` folder is replaced by yours.
 
 # Facts the cluster modules share. One machine is the only Nomad server; the others join as
 # Nomad clients over the LAN, with no tunnel.
 [cluster]
+# The Nomad server's host name: its nixosConfigurations name and the name `ops` passes to
+# ssh, so ~/.ssh/config supplies the address and user. It also runs OpenBao and the Alchemy
+# state, which makes it the control host.
+server = "cynic"
 lanInterface = "ens18"
 # From the router's DHCP, which keeps it stable. If the lease ever changes, the server
 # certificate, Raft's peer address and every client's `servers` entry break together.

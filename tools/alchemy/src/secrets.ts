@@ -14,7 +14,7 @@ const folder = Argument.String("folder").pipe(
   Argument.withDescription("The folder that holds cartridge.json"),
   Argument.withDefault("."),
 );
-const host = Config.String("OPS_HOST").pipe(Config.withDefault("cynic.dlab"));
+const host = Config.String("OPS_HOST");
 
 const set = Command.make(
   "set",

@@ -15,9 +15,9 @@
       url = "github:nix-community/nixos-generators";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # The installation's own facts, as a folder that holds site.toml. The default is the
-    # placeholder example; replace it with `--override-input site path:<your folder>`.
-    site = { url = "path:./nixos/site-example"; flake = false; };
+    # The installation's own facts, as a folder that holds site.toml. The folder shipped
+    # here holds placeholder values; pass yours with `--override-input site path:<folder>`.
+    site = { url = "path:./nixos/site"; flake = false; };
   };
 
   outputs = { self, nixpkgs, bun2nix, disko, nixos-generators, site, ... }:
