@@ -7,6 +7,7 @@ in
   imports = [
     ./proxmox-vm.nix
     ./disk-config.nix
+    ./deploy-repos.nix
   ];
 
   # disko sets the GRUB device from disk-config.nix.
