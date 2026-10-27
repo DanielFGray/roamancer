@@ -1,0 +1,28 @@
+# Traefik routes for the static sites that atheist serves from /srv/www. Every file in this
+# folder is linked into Traefik's route folder, so add a file per concern if one grows long.
+# Each X-Site-Release names a folder under /srv/www that is never changed; a new release adds
+# a folder and edits its route here (nixos/atheist/static-sites-operations.md).
+
+[http.routers.example-com]
+entryPoints = ["web"]
+rule = "Host(`example.com`)"
+service = "static-sites@file"
+middlewares = ["example-com-release"]
+
+[http.middlewares.example-com-release.headers.customRequestHeaders]
+X-Site-Release = "example.com/2026-01-01"
+# A single-page app names the page the file server answers with for paths it has no file
+# for. An empty value turns the fallback off.
+X-Site-Fallback = ""
+
+# A permanent redirect needs no file server: the route answers itself.
+[http.routers.www-example-com]
+entryPoints = ["web"]
+rule = "Host(`www.example.com`)"
+service = "noop@internal"
+middlewares = ["to-example-com"]
+
+[http.middlewares.to-example-com.redirectRegex]
+regex = "^https?://[^/]+(.*)"
+replacement = "https://example.com${1}"
+permanent = true

@@ -40,7 +40,7 @@
         testground-vm = nixos-generators.nixosGenerate {
           inherit system;
           format = "qcow";
-          specialArgs.site = siteConfig;
+          specialArgs = { site = siteConfig; siteDir = site; };
           modules = [
             ./nixos/testground/configuration.nix
             ./nixos/modules/alchemy-staged.nix
@@ -56,7 +56,7 @@
 
       nixosConfigurations.cynic = nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs.site = siteConfig;
+        specialArgs = { site = siteConfig; siteDir = site; };
         modules = [
           disko.nixosModules.disko
           ./nixos/cynic/configuration.nix

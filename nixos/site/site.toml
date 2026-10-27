@@ -1,5 +1,6 @@
 # The facts that belong to one installation, not to the platform. The flakes read this file
-# at build time and pass it to every module as `site`; no host reads it while running.
+# at build time and pass it to every module as `site`; no host reads it while running. Nothing
+# here may be secret: the Nix store is readable by every user on a host.
 # These are placeholder values. Keep your own copy of this folder in a private repository
 # and set OPS_SITE to it: `ops rebuild` and `install-host.sh` build from a copy of nixos/
 # whose `site` folder is replaced by yours.

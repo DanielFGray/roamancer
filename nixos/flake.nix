@@ -15,7 +15,10 @@
     let
       host = configuration: nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
-        specialArgs.site = builtins.fromTOML (builtins.readFile "${site}/site.toml");
+        specialArgs = {
+          site = builtins.fromTOML (builtins.readFile "${site}/site.toml");
+          siteDir = site;
+        };
         modules = [ disko.nixosModules.disko configuration ];
       };
     in
