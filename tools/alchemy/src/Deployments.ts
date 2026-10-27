@@ -48,6 +48,8 @@ export class Deployments extends Context.Service<
     /** Newest first. */
     readonly list: (name: string) => Effect.Effect<ReadonlyArray<Deployment>, DeploymentsError>;
     readonly latest: (name: string) => Effect.Effect<Option.Option<Deployment>, DeploymentsError>;
+    /** The newest deployment of every recorded app. */
+    readonly newest: () => Effect.Effect<ReadonlyArray<Deployment>, DeploymentsError>;
     readonly get: (
       name: string,
       id: number,
@@ -94,6 +96,7 @@ const make = Effect.gen(function* () {
   return Deployments.of({
     list,
     latest,
+    newest: () => select(sql.and([sql`id IN (SELECT MAX(id) FROM deployments GROUP BY name)`])),
     get: (name, id) =>
       select(sql.and([sql`name = ${name}`, sql`id = ${id}`])).pipe(
         Effect.map((found) => Option.fromNullishOr(found[0])),

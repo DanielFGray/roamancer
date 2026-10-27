@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as S from "effect/Schema";
+import { type Deployment, Deployments } from "./Deployments.ts";
 import { Nomad, type NomadError } from "./Nomad.ts";
 import type { Evaluation, JobListItem, Node, NodeStats, PlacedAllocation } from "./Nomad.ts";
 
@@ -53,10 +54,22 @@ const section = <A, I>(item: S.Codec<A, I>) =>
     S.TaggedStruct("Unavailable", { reason: S.String }),
   ]);
 
+export const AppRelease = S.Struct({
+  name: S.String,
+  deployment: S.Number,
+  revision: S.String,
+  deployedAt: S.String,
+  // The Nomad jobs the release runs: its cartridge's service names.
+  jobs: S.Array(S.String),
+});
+export type AppRelease = typeof AppRelease.Type;
+
 export const Snapshot = S.Struct({
   takenAt: S.String,
   jobs: section(JobStatus),
   nodes: section(NodeStatus),
+  // The newest recorded release of each app that `ops release` deployed.
+  apps: section(AppRelease),
 });
 export type Snapshot = typeof Snapshot.Type;
 
@@ -64,11 +77,16 @@ export const snapshot = Effect.fn("FleetStatus.snapshot")(function* () {
   const nomad = yield* Nomad;
   // Both sections place allocations: on a job, and on a node.
   const allocations = yield* Effect.cached(nomad.placedAllocations());
-  const [jobs, nodes] = yield* Effect.all(
-    [available(readJobs(nomad, allocations)), available(readNodes(nomad, allocations))],
+  const deployments = yield* Deployments;
+  const [jobs, nodes, apps] = yield* Effect.all(
+    [
+      available(readJobs(nomad, allocations)),
+      available(readNodes(nomad, allocations)),
+      available(deployments.newest().pipe(Effect.flatMap(Effect.forEach(appRelease)))),
+    ],
     { concurrency: "unbounded" },
   );
-  return { takenAt: new Date().toISOString(), jobs, nodes } satisfies Snapshot;
+  return { takenAt: new Date().toISOString(), jobs, nodes, apps } satisfies Snapshot;
 });
 
 /**
@@ -140,6 +158,22 @@ export const nodeStatus = (
     })),
   };
 };
+
+// Only the service names; the record holds the whole cartridge as JSON.
+const RecordedServices = S.fromJsonString(
+  S.Struct({ services: S.Array(S.Struct({ name: S.String })) }),
+);
+
+const appRelease = (deployment: Deployment) =>
+  S.decodeUnknownEffect(RecordedServices)(deployment.cartridge).pipe(
+    Effect.map((cartridge): AppRelease => ({
+      name: deployment.name,
+      deployment: deployment.id,
+      revision: deployment.revision,
+      deployedAt: deployment.deployedAt,
+      jobs: cartridge.services.map((service) => service.name),
+    })),
+  );
 
 const available = <A, E>(read: Effect.Effect<ReadonlyArray<A>, E>) =>
   read.pipe(
@@ -251,6 +285,11 @@ export const render = (snapshot: Snapshot): string =>
         ...failing.map((check) => `           check ${check.service}: ${check.status}`),
       ];
     }),
+    ``,
+    `apps`,
+    ...renderSection(snapshot.apps, (app) => [
+      `  ${app.name.padEnd(24)} #${app.deployment} ${app.revision.slice(0, 8)} ${app.deployedAt.slice(0, 16).replace("T", " ")}  ${app.jobs.join(", ")}`,
+    ]),
     ``,
     `nodes`,
     ...renderSection(snapshot.nodes, (node) => [

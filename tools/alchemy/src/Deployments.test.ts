@@ -44,6 +44,22 @@ describe("Deployments", () => {
     assert.equal(error._tag, "OriginMismatch");
   });
 
+  it("lists the newest record of each name", async () => {
+    const newest = await run(
+      Effect.gen(function* () {
+        const deployments = yield* Deployments;
+        yield* deployments.record(shop);
+        yield* deployments.record({ ...shop, revision: "c2" });
+        yield* deployments.record({ ...shop, name: "blog", origin: "root-b" });
+        return yield* deployments.newest();
+      }),
+    );
+    assert.deepEqual(
+      newest.map((d) => `${d.name} ${d.revision}`),
+      ["blog c1", "shop c2"],
+    );
+  });
+
   it("keeps each name's records apart", async () => {
     const other = await run(
       Effect.gen(function* () {
