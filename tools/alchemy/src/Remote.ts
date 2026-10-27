@@ -36,7 +36,10 @@ export const hostCommands = [
   { name: "logs", description: "A job's logs, or why it is not running" },
   { name: "place-queued", description: "Ask Nomad to place queued jobs again" },
   { name: "stage-image", description: "The image a staged deploy runs" },
-  { name: "login", description: "Mint a 2-hour OpenBao token from the root token" },
+  {
+    name: "login",
+    description: "Mint a 2-hour OpenBao token from the root token, typed or piped on stdin",
+  },
   { name: "check-login", description: "Fail unless the OpenBao token is valid" },
 ] as const;
 
@@ -70,7 +73,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
     // The folder under .alchemy, which a push leaves alone; named per run.
     const sendCartridge = Effect.fn("Remote.sendCartridge")(function* (host: string, file: string) {
       const name = `.alchemy/input/cartridge-${yield* Clock.currentTimeMillis}-${yield* Random.nextIntBetween(0, 1_000_000_000)}.json`;
-      yield* Exec.run("ssh", [host, "mkdir -p alchemy/.alchemy/input"]);
+      yield* Exec.run("ssh", ["-n", host, "mkdir -p alchemy/.alchemy/input"]);
       yield* Exec.run("scp", ["-q", file, `${host}:alchemy/${name}`]);
       return name;
     });
@@ -99,7 +102,8 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
     const run = Effect.fn("Remote.run")(function* (args: ReadonlyArray<string>, sent: Sent = {}) {
       const { host, command } = yield* prepare(args, sent);
       // The remote shell starts in the home folder. A terminal is requested only when this
-      // one has one: prompts such as `ops login` need it, and piped output does not.
+      // one has one. Piped input is not a terminal: it reaches the host command over ssh's
+      // stdin, which the setup calls above never read (see `-n` in Git.push).
       const terminal = yield* stdio.stdinIsTerminal;
       yield* Exec.run("ssh", (terminal ? ["-t"] : []).concat(host, command));
     });

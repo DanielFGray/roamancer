@@ -18,6 +18,7 @@ import {
   Option,
   Redacted,
   Runtime,
+  Stdio,
   Stream,
 } from "effect";
 import { Schema as S } from "effect";
@@ -45,7 +46,7 @@ const login = Command.make(
   {},
   Effect.fn(function* () {
     const tokenFile = yield* Config.String("OPENBAO_TOKEN_FILE");
-    const rootToken = yield* Prompt.run(Prompt.Password({ message: "OpenBao root token" }));
+    const rootToken = yield* readRootToken;
     const token = yield* Effect.gen(function* () {
       const bao = yield* OpenBao;
       return yield* bao.createToken("2h");
@@ -67,7 +68,32 @@ const login = Command.make(
     yield* fs.writeFileString(tokenFile, Redacted.value(token), { mode: 0o600 });
     yield* Console.log(`OpenBao token for 2 hours written to ${tokenFile}.`);
   }),
-).pipe(Command.withDescription("Mint a 2-hour OpenBao token from the root token"));
+).pipe(
+  Command.withDescription(
+    "Mint a 2-hour OpenBao token from the root token, typed or piped on stdin",
+  ),
+);
+
+/**
+ * The root token from the terminal's prompt, or from a piped stdin, such as
+ * `pass show infra/openbao-token | ops login`. Only the first line counts: `pass` puts the
+ * secret there and metadata below it.
+ */
+const readRootToken = Effect.gen(function* () {
+  const stdio = yield* Stdio.Stdio;
+  if (yield* stdio.stdinIsTerminal) {
+    return yield* Prompt.run(Prompt.Password({ message: "OpenBao root token" }));
+  }
+  const text = yield* Stream.mkString(Stream.decodeText(stdio.stdin));
+  const line = (text.split("\n")[0] ?? "").trim();
+  if (line === "") {
+    return yield* new CliError({
+      message:
+        "No OpenBao root token on stdin. Pipe the token in, or run `ops login` in a terminal.",
+    });
+  }
+  return Redacted.make(line);
+});
 
 const checkLogin = Command.make("check-login", {}, () => requireLogin).pipe(
   Command.withDescription("Fail unless the OpenBao token from `login` is still valid"),

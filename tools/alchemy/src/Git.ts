@@ -39,7 +39,9 @@ export const push = Effect.fn("Git.push")(function* (
     });
   }
   yield* announce(dir, `to ${target}:${remote}`);
+  // -n: this ssh must not read stdin, which a piped command input (`ops login`) is on.
   yield* Exec.run("ssh", [
+    "-n",
     target,
     `git init -q -b deploy ${Exec.quote(remote)} && git -C ${Exec.quote(remote)} config receive.denyCurrentBranch updateInstead${
       setup === ""

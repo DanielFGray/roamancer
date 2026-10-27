@@ -78,7 +78,7 @@ describe("Remote", () => {
   it("pushes HEAD to the host and runs the host command", async () => {
     const { log } = await execute(Effect.flatMap(Remote, (remote) => remote.run(["dash"])));
     assert.equal(log.length, 6);
-    assert.match(log[3], /^ssh ctl git init .*\nif \[ -d alchemy \] && \[ ! -L alchemy \]/s);
+    assert.match(log[3], /^ssh -n ctl git init .*\nif \[ -d alchemy \] && \[ ! -L alchemy \]/s);
     assert.match(log[3], /ln -sfn server-ansible\/tools\/alchemy alchemy$/);
     assert.deepEqual(log.slice(5), ["ssh ctl alchemy/scripts/ops-on-host.sh 'dash'"]);
   });
@@ -91,6 +91,14 @@ describe("Remote", () => {
     assert.equal(log[log.length - 1], "ssh -t ctl alchemy/scripts/ops-on-host.sh 'login'");
   });
 
+  it("leaves stdin to the host command alone: setup ssh calls never read it", async () => {
+    const { log } = await execute(Effect.flatMap(Remote, (remote) => remote.run(["login"])));
+    const setup = log.filter((line) => line.startsWith("ssh ") && !line.includes("ops-on-host"));
+    assert.ok(setup.length > 0);
+    assert.ok(setup.every((line) => line.startsWith("ssh -n ")));
+    assert.equal(log[log.length - 1], "ssh ctl alchemy/scripts/ops-on-host.sh 'login'");
+  });
+
   it("sends a cartridge and what the release records", async () => {
     const { log } = await execute(
       Effect.flatMap(Remote, (remote) =>
@@ -101,7 +109,7 @@ describe("Remote", () => {
         }),
       ),
     );
-    assert.equal(log[5], "ssh ctl mkdir -p alchemy/.alchemy/input");
+    assert.equal(log[5], "ssh -n ctl mkdir -p alchemy/.alchemy/input");
     assert.match(
       log[6],
       /^scp -q \/tmp\/c\.json ctl:alchemy\/\.alchemy\/input\/cartridge-\d+-\d+\.json$/,
@@ -118,9 +126,9 @@ describe("Remote", () => {
       { env: { OPS_HOST: "other" } },
     );
     assert.deepEqual(
-      log.slice(0, 5).filter((line) => !line.startsWith("ssh other git init")),
+      log.slice(0, 5).filter((line) => !line.startsWith("ssh -n other git init")),
       sent("other", Git.repository, Git.checkout).filter(
-        (line) => !line.startsWith("ssh other git init"),
+        (line) => !line.startsWith("ssh -n other git init"),
       ),
     );
     assert.equal(log[log.length - 1], "ssh other alchemy/scripts/ops-on-host.sh 'dash'");
@@ -250,7 +258,7 @@ const sent = (target: string, dir: string, remote: string) => [
   `git -C ${dir} rev-parse --show-prefix`,
   `git -C ${dir} rev-parse --short HEAD`,
   `git -C ${dir} status --porcelain`,
-  `ssh ${target} git init -q -b deploy '${remote}' && git -C '${remote}' config receive.denyCurrentBranch updateInstead`,
+  `ssh -n ${target} git init -q -b deploy '${remote}' && git -C '${remote}' config receive.denyCurrentBranch updateInstead`,
   `git -C ${dir} push --quiet --force ${target}:${remote} HEAD:refs/heads/deploy`,
 ];
 
