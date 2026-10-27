@@ -31,6 +31,8 @@ const props = S.decodeUnknownSync(ReleaseSetProps)(input);
 const ownedJob = (release: string) =>
   S.decodeUnknownSync(JobListItemSchema)({
     ID: `probe-${release}`,
+    Type: "service",
+    Status: "running",
     JobModifyIndex: 1,
     Meta: {
       "alchemy.owner": "StagedReleases/probe",
@@ -92,7 +94,12 @@ describe("ReleaseSet recovery and diff decisions", () => {
         ownedJob("v2"),
         ownedJob("abandoned"),
         // Nomad omits Meta for a job without metadata, such as one run by hand.
-        S.decodeUnknownSync(JobListItemSchema)({ ID: "hand-run", JobModifyIndex: 3 }),
+        S.decodeUnknownSync(JobListItemSchema)({
+          ID: "hand-run",
+          Type: "service",
+          Status: "running",
+          JobModifyIndex: 3,
+        }),
       ]),
     );
   });

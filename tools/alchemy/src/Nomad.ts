@@ -7,7 +7,11 @@ import * as NomadConfig from "./NomadConfig.ts";
 export class NomadError extends S.TaggedError<NomadError>()("NomadError", {
   op: S.String,
   cause: S.Defect(),
-}) {}
+}) {
+  override get message() {
+    return `Nomad ${this.op} failed: ${this.cause instanceof Error ? this.cause.message : String(this.cause)}`;
+  }
+}
 
 export type PlanType = "None" | "Added" | "Edited" | "Deleted";
 
@@ -37,6 +41,15 @@ export type JobSnapshot = typeof JobSnapshot.Type;
 
 export const JobListItemSchema = S.Struct({
   ID: S.String,
+  // "service", "system" or "batch".
+  Type: S.String,
+  // "pending", "running" or "dead". "running" only means the job is registered and not
+  // stopped: a job whose allocations cannot be placed is "running" with none running.
+  Status: S.String,
+  // Allocation counts per task group: Running, Queued, Failed, Starting and others.
+  JobSummary: S.optionalKey(
+    S.NullOr(S.Struct({ Summary: S.Record(S.String, S.Record(S.String, S.Number)) })),
+  ),
   JobModifyIndex: S.Number,
   // `/v1/jobs?meta=true` omits the key for a job that has no metadata, such
   // as one an operator ran by hand.
@@ -115,6 +128,68 @@ export const AllocationSummarySchema = S.Struct({
 });
 export type AllocationSummary = typeof AllocationSummarySchema.Type;
 
+// The scheduler's record of resources: a task group's reservation, a node's capacity.
+const Reservation = S.Struct({
+  Cpu: S.Struct({ CpuShares: S.Number }),
+  Memory: S.Struct({ MemoryMB: S.Number }),
+});
+
+export const PlacedAllocationSchema = S.Struct({
+  ID: S.String,
+  JobID: S.String,
+  NodeName: S.String,
+  ClientStatus: S.String,
+  AllocatedResources: S.NullOr(
+    S.Struct({
+      Tasks: S.Record(
+        S.String,
+        S.Struct({
+          Cpu: S.Struct({ CpuShares: S.Number }),
+          Memory: S.Struct({ MemoryMB: S.Number }),
+        }),
+      ),
+    }),
+  ),
+});
+export type PlacedAllocation = typeof PlacedAllocationSchema.Type;
+
+// One task group the scheduler could not place, with the count of nodes each reason
+// excluded: { "missing compatible host volumes": 1 }, { memory: 1 }.
+const FailedPlacement = S.Struct({
+  ConstraintFiltered: S.NullOr(S.Record(S.String, S.Number)),
+  DimensionExhausted: S.NullOr(S.Record(S.String, S.Number)),
+});
+
+export const EvaluationSchema = S.Struct({
+  Status: S.String,
+  FailedTGAllocs: S.NullOr(S.Record(S.String, FailedPlacement)),
+});
+export type Evaluation = typeof EvaluationSchema.Type;
+
+export const NodeSchema = S.Struct({
+  ID: S.String,
+  Name: S.String,
+  // "ready", "down" or "initializing".
+  Status: S.String,
+  // "eligible" or "ineligible": a drained node takes no new allocations.
+  SchedulingEligibility: S.String,
+  NodeResources: Reservation,
+  // What the node keeps back from the scheduler for itself.
+  ReservedResources: Reservation,
+});
+export type Node = typeof NodeSchema.Type;
+
+// Measured use, as the node's client reports it; not the scheduler's reservations.
+export const NodeStatsSchema = S.Struct({
+  Uptime: S.Number,
+  CPU: S.Array(S.Struct({ Idle: S.Number })),
+  Memory: S.Struct({ Total: S.Number, Used: S.Number, Available: S.Number }),
+  DiskStats: S.Array(
+    S.Struct({ Mountpoint: S.String, Size: S.Number, Used: S.Number, Available: S.Number }),
+  ),
+});
+export type NodeStats = typeof NodeStatsSchema.Type;
+
 export type LogStream = "stdout" | "stderr";
 
 type JobRequest = {
@@ -156,6 +231,12 @@ export class Nomad extends Context.Service<
     readonly allocations: (
       job: string,
     ) => Effect.Effect<ReadonlyArray<AllocationSummary>, NomadError>;
+    /** Every allocation in the cluster, with the resources the scheduler reserved for it. */
+    readonly placedAllocations: () => Effect.Effect<ReadonlyArray<PlacedAllocation>, NomadError>;
+    /** A job's evaluations, newest first. A blocked one says why allocations wait. */
+    readonly evaluations: (job: string) => Effect.Effect<ReadonlyArray<Evaluation>, NomadError>;
+    readonly nodes: () => Effect.Effect<ReadonlyArray<Node>, NomadError>;
+    readonly nodeStats: (id: string) => Effect.Effect<NodeStats, NomadError>;
     /** The last `bytes` bytes of one task's log. */
     readonly logs: (
       allocation: string,
@@ -238,6 +319,11 @@ export const layer = () =>
           ),
         );
 
+      const get = <A, I, R>(op: string, url: string, schema: S.Codec<A, I, R>) =>
+        requestJson(op, "GET", url).pipe(
+          Effect.flatMap((response) => decode(op, response, schema)),
+        );
+
       return Nomad.of({
         jobs: () =>
           requestJson("jobs", "GET", "/v1/jobs?meta=true").pipe(
@@ -299,6 +385,17 @@ export const layer = () =>
               decode("allocations", response, S.Array(AllocationSummarySchema)),
             ),
           ),
+        placedAllocations: () =>
+          get("allocations", "/v1/allocations?resources=true", S.Array(PlacedAllocationSchema)),
+        evaluations: (job) =>
+          get(
+            "evaluations",
+            `/v1/job/${encodeURIComponent(job)}/evaluations`,
+            S.Array(EvaluationSchema),
+          ),
+        nodes: () => get("nodes", "/v1/nodes?resources=true", S.Array(NodeSchema)),
+        nodeStats: (id) =>
+          get("node stats", `/v1/client/stats?node_id=${encodeURIComponent(id)}`, NodeStatsSchema),
         logs: (allocation, task, stream, bytes) => {
           const query = new URLSearchParams({
             task,

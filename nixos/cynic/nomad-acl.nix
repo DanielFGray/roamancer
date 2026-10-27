@@ -28,6 +28,11 @@ let
       ]
     }
 
+    # ops dash: the node list and each node's measured use.
+    node {
+      policy = "read"
+    }
+
     host_volume "noneuclid-data" {
       capabilities = ["mount-readwrite"]
     }

@@ -29,6 +29,7 @@ import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
 import * as TaskLog from "./TaskLog.ts";
 import * as Deployments from "./Deployments.ts";
+import * as FleetStatus from "./FleetStatus.ts";
 import * as StagedCartridge from "./StagedCartridge.ts";
 
 /** A failure the operator can act on: printed as its message alone, without a stack trace. */
@@ -190,6 +191,14 @@ const logs = Command.make(
     if (tail) yield* Stream.runForEach(TaskLog.follow(nomad, job), show);
   }),
 ).pipe(Command.withDescription("Print a Nomad job's recent output, or why it is not running"));
+
+const dash = Command.make(
+  "dash",
+  {},
+  Effect.fn(function* () {
+    yield* Console.log(FleetStatus.render(yield* FleetStatus.snapshot()));
+  }),
+).pipe(Command.withDescription("Print each job's health and each node's load, once"));
 
 /** OpenBao commands need the 2-hour token that `login` writes. */
 const requireLogin = Effect.gen(function* () {
@@ -356,8 +365,10 @@ const images = (cartridge: string): ReadonlyArray<string> => [
 ];
 
 const cli = Command.make("ops").pipe(
-  Command.withDescription("OpenBao login, secrets, Nomad status and logs, and deployment records"),
-  Command.withSubcommands([login, checkLogin, secret, status, logs, stageImage, deployment]),
+  Command.withDescription(
+    "OpenBao login, secrets, the fleet dashboard, Nomad status and logs, and deployment records",
+  ),
+  Command.withSubcommands([login, checkLogin, secret, dash, status, logs, stageImage, deployment]),
 );
 
 cli.pipe(

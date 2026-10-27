@@ -146,10 +146,14 @@ each one.
 | `DELETE /v1/job/:id?purge=true` | `submit-job` | `nomad/job_endpoint.go:798` |
 | `GET /v1/job/:id/allocations` | `read-job` | `nomad/job_endpoint.go:1514` |
 | `GET /v1/client/fs/logs/:alloc` | `read-logs` | `client/fs_endpoint.go:385` |
+| `GET /v1/allocations?resources=true` | `read-job` | not traced |
+| `GET /v1/job/:id/evaluations` | `read-job` | not traced |
+| `GET /v1/nodes?resources=true` | `node` `read` | not traced |
+| `GET /v1/client/stats?node_id=` | `node` `read` | not traced |
 | job with a `host` volume | `mount-readwrite` on that volume | `nomad/job_endpoint.go:168` |
 
-The policy grants nothing else. The token cannot read nodes
-(`nomad node status` answers `403`), cannot read operator state, cannot read
+The policy grants nothing else. The token can read nodes for `ops dash`, but
+cannot drain or change them. It cannot read operator state, cannot read
 allocations of other namespaces, and cannot reach the `default` namespace
 outside the three job capabilities.
 
