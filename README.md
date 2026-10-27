@@ -54,7 +54,7 @@ the Traefik routes for static sites. `nixos/site` holds placeholder values. Host
 2. Set `OPS_SITE` to that folder in your shell.
 
 The flakes read `site.toml` when Nix builds a host, so a running host never reads it. `ops rebuild`
-and `nixos/install-host.sh` build from a copy of `nixos/` whose `site` folder is yours. For a direct
+and `ops install` build from a copy of `nixos/` whose `site` folder is yours. For a direct
 build of the root flake, pass it yourself:
 
 ```sh
@@ -78,7 +78,7 @@ Set `OPS_HOST` to use a control host other than `cluster.server`.
 ## Install and operate
 
 1. Install a host. This erases its disk:
-   `OPS_SITE=<folder> nixos/install-host.sh <host> <user>@<address>`.
+   `ops install <host> <user>@<address>`. It asks you to type the host name first.
 2. Do each service's one-time setup: [cluster certificates](nixos/cynic/cluster-tls-operations.md),
    [Nomad access control](nixos/cynic/nomad-acl-operations.md), and
    [OpenBao](nixos/cynic/openbao-operations.md). Then [set up backups](nixos/backup-operations.md).

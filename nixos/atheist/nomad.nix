@@ -11,7 +11,7 @@ in
 {
   imports = [ ../modules/nomad-node.nix ];
 
-  # The install copies these in (nixos/install-host.sh) with the installer's owner and
+  # The install copies these in (`ops install`) with the installer's owner and
   # modes; these rules set the ones the readers need.
   systemd.tmpfiles.rules = [
     "z ${cluster.tlsDir} 0700 root root -"

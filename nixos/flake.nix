@@ -5,7 +5,7 @@
   inputs.disko.url = "github:nix-community/disko/v1.12.0";
   inputs.disko.inputs.nixpkgs.follows = "nixpkgs";
   # The installation's own facts, as a folder that holds site.toml. The folder shipped here
-  # holds placeholder values; `ops rebuild` and `install-host.sh` build from a copy of this
+  # holds placeholder values; `ops rebuild` and `ops install` build from a copy of this
   # flake whose site folder is replaced by yours.
   inputs.site = { url = "path:./site"; flake = false; };
 

@@ -14,6 +14,7 @@
 #   ops dash                      every job's health and each node's load, once
 #   ops status giglist
 #   ops rebuild [host]            sync nixos/ to a host and switch it to that config (default every host)
+#   ops install [--yes] host target   erase a machine's disk and install a host's configuration
 #   ops --help
 # An app's cartridge lives in its own repository (folder defaults to the current
 # directory); release sends it to the control host with its images pinned, and the host
@@ -43,6 +44,27 @@ if (typeof v !== "string") {
 }
 console.log(v)' "$OPS_SITE/site.toml" "$1"
 }
+nixos=$(cd "$here/../../nixos" && pwd)
+# Sets $site to the OPS_SITE folder; $1 names the command for the error.
+use_site() {
+  [ -n "${OPS_SITE:-}" ] || { echo "ops $1: set OPS_SITE to the folder that holds your site.toml" >&2; exit 2; }
+  site=$(cd "$OPS_SITE" && pwd)
+}
+# A host is a nixosConfigurations name in nixos/flake.nix; $2 names the command for the error.
+check_host_name() {
+  case $1 in
+    *[!a-z0-9-]* | "")
+      echo "ops $2: '$1' is not a flake host name" >&2
+      exit 2
+      ;;
+  esac
+}
+# Copies the nixos folder to $1, a path or host:path, with the site folder as its `site`
+# folder. nixos/site holds placeholder values; the build must see this installation's.
+copy_nixos() {
+  rsync -a --delete --exclude result --exclude /site "$nixos/" "$1/"
+  rsync -a --delete --exclude .git "$site/" "$1/site/"
+}
 # Building and pushing need the workstation's Docker and registry certificate, and the
 # secret commands read the cartridge from the workstation's folder.
 case "${1:-}" in
@@ -61,6 +83,7 @@ case "${1:-}" in
       '  place-queued              ask Nomad to place queued jobs again (rebuild runs it)' \
       '  status|logs ...           inspect Nomad' \
       '  rebuild [host]            sync nixos/ to the host and switch it (default every host)' \
+      '  install [--yes] <host> <target>  erase the target'"'"'s disk and install the host'"'"'s configuration' \
       'Set OPS_HOST to select the control host, CARTRIDGE to send a cartridge file.'
     exit 0
     ;;
@@ -77,21 +100,14 @@ case "${1:-}" in
     # password on the terminal, so hosts go one at a time; the first failure stops the run.
     # A host is a nixosConfigurations name in nixos/flake.nix; without one, every host.
     # The ssh target is that name, so ~/.ssh/config supplies the address and user.
-    nixos=$(cd "$here/../../nixos" && pwd)
-    [ -n "${OPS_SITE:-}" ] || { echo "ops rebuild: set OPS_SITE to the folder that holds your site.toml" >&2; exit 2; }
-    site=$(cd "$OPS_SITE" && pwd)
+    use_site rebuild
     if [ $# -ge 2 ]; then
       hosts=$2
     else
       hosts=$(sed -n 's/^ *nixosConfigurations\.\([a-z0-9-]*\) *=.*/\1/p' "$nixos/flake.nix")
     fi
     for flake_host in $hosts; do
-      case $flake_host in
-        *[!a-z0-9-]* | "")
-          echo "ops rebuild: '$flake_host' is not a flake host name" >&2
-          exit 2
-          ;;
-      esac
+      check_host_name "$flake_host" rebuild
       target=${3:-$flake_host}
       echo "== $flake_host ($target)" >&2
       # A freshly installed host has no /etc/nixos until its first rebuild declares one.
@@ -99,14 +115,70 @@ case "${1:-}" in
       # The copy replaces /etc/nixos. A change made by hand on the host is lost by the
       # switch, and a rollback needs the source it was built from, so keep what was there.
       ssh "$target" "rsync -a --delete /etc/nixos/ /var/tmp/nixos-before-rebuild/"
-      # nixos/site holds placeholder values; the host builds with your site folder instead.
-      rsync -a --delete --exclude result --exclude /site "$nixos/" "$target:/etc/nixos/"
-      rsync -a --delete --exclude .git "$site/" "$target:/etc/nixos/site/"
+      copy_nixos "$target:/etc/nixos"
       ssh -t "$target" "sudo nixos-rebuild switch --flake 'path:/etc/nixos#$flake_host'"
     done
     # A switch can add the host volume or memory a queued job waits for; Nomad does not
     # retry on its own.
     exec "$0" place-queued
+    ;;
+  install)
+    # Erases a machine's disk and installs a host's configuration with nixos-anywhere, for a
+    # machine that does not run NixOS yet (a running one takes `rebuild`). The workstation has
+    # no Nix, so the build runs in the nixos/nix container. Its store lives in a named volume
+    # bound to ~/.cache, not Docker's data root, because a system closure fills a small root
+    # disk; Docker seeds the empty volume from the image on first use.
+    #
+    # Files under ~/.local/state/server-ansible/extra-files/<host> (SSH host keys, Tailscale
+    # state, and for a cluster node its CA certificates and password hash) are copied onto the
+    # new root, so the host keeps its identity across the reinstall. The host's config sets the
+    # owners and modes of the files it reads; this sets only those of /etc/ssh and Tailscale.
+    # Folder modes are copied too: sshd reads authorized_keys.d as the user, so etc/ssh must be 0755.
+    shift
+    confirmed=no
+    if [ "${1:-}" = --yes ]; then
+      confirmed=yes
+      shift
+    fi
+    flake_host=${1:?ops install: name a host, such as cynic}
+    target=${2:?ops install: name the ssh target, such as operator@192.168.50.10}
+    shift 2
+    check_host_name "$flake_host" install
+    use_site install
+    if [ "$confirmed" != yes ]; then
+      [ -t 0 ] || { echo "ops install: pass --yes to erase $target without a terminal" >&2; exit 2; }
+      printf 'This erases the disk of %s. Type the host name (%s) to continue: ' "$target" "$flake_host" >&2
+      read -r answer
+      [ "$answer" = "$flake_host" ] || { echo "ops install: not confirmed" >&2; exit 1; }
+    fi
+    extra=$HOME/.local/state/server-ansible/extra-files/$flake_host
+    if [ -d "$extra" ]; then
+      set -- --extra-files /extra --chown /etc/ssh 0:0 --chown /var/lib/tailscale 0:0 "$@"
+    else
+      extra=
+    fi
+    if ! docker volume inspect server-ansible-nix >/dev/null 2>&1; then
+      mkdir -p -- "$HOME/.cache/server-ansible-nix"
+      docker volume create --opt type=none --opt o=bind --opt device="$HOME/.cache/server-ansible-nix" server-ansible-nix >/dev/null
+    fi
+    tree=$(mktemp -d)
+    trap 'rm -rf "$tree"' EXIT
+    copy_nixos "$tree"
+    docker run --rm --network host \
+      --volume server-ansible-nix:/nix \
+      --volume "$tree:/src:ro" \
+      --volume "${SSH_KEY:-$HOME/.ssh/id_ed25519}:/key:ro" \
+      ${extra:+--volume} ${extra:+"$extra:/extra:ro"} \
+      --env NIX_CONFIG="experimental-features = nix-command flakes" \
+      nixos/nix:latest sh -euc '
+        install -d -m700 /root/.ssh && install -m600 /key /root/.ssh/id
+        printf "Host *\n  IdentityFile /root/.ssh/id\n  StrictHostKeyChecking accept-new\n" > /root/.ssh/config
+        cp -r /src /work
+        host=$1 target=$2
+        shift 2
+        exec nix run "$0" -- --flake "path:/work#$host" --target-host "$target" "$@"
+      ' github:nix-community/nixos-anywhere/1.11.0 "$flake_host" "$target" "$@"
+    exit 0
     ;;
 esac
 host=${OPS_HOST:-$(site_value cluster.server)}
