@@ -81,7 +81,7 @@ const makeService = Effect.gen(function* () {
     );
   });
 
-  const record = (event: OperationEvent) => write("OperationRecorded", event);
+  const record = (event: OperationEvent) => write({ event: "OperationRecorded", payload: event });
 
   const pendingOperations = (events: ReadonlyArray<OperationEvent>, resourceId: string) => {
     const started = new Map<string, StartedOperation>();

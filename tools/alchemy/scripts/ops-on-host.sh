@@ -11,6 +11,9 @@
 # cartridge records it once Alchemy succeeds.
 set -eu
 cd ~/alchemy
+# The sync leaves node_modules alone, so a dependency change in bun.lock lands here.
+# Unchanged, this takes well under a second.
+bun install --frozen-lockfile --silent
 # The controller env file is readable by the alchemy group after
 # `nomad-acl-issue-controller` has been run once with the group present.
 if [ ! -r /var/lib/nomad-acl/controller.env ]; then
