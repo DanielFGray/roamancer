@@ -1,96 +1,133 @@
 # server-ansible
 
-This repository is rebuilding its application deployment platform around three owners:
+A small deployment platform for self-hosted apps on a few NixOS machines. You describe an app in a
+`cartridge.json` file in its repository. One command builds its image, pushes it to a private
+registry, and deploys it. The result is a Nomad job that rootless Podman runs, with routes, secrets,
+and database credentials already wired in.
 
-- **NixOS** owns the host, rootless Podman, Nomad, and host volumes.
-- **Nomad** places and runs application containers.
-- **Alchemy** declares and reconciles application state through Nomad.
+This is experimental software that one person runs on their own machines. [Status](#status) lists
+what has been tested and what is open.
 
-OpenBao remains the secret store. Application declarations must contain secret references, not secret values. The current production host, `atheist`, runs Caddy and Docker configured by hand; no code in this repository manages it. It moves to NixOS next. The NixOS testground is a disposable proof environment.
+## How it works
 
-## Cynic host
+Four tools share the work, and each one owns a layer:
 
-`nixos/cynic` pins the NixOS configuration for `10.13.37.196`. Nomad and rootless Podman have passed a disposable container run and a host reboot. Nomad retains its node identity after reboot. Tailscale also returns without a new login.
+| Layer | Tool | Owns |
+| --- | --- | --- |
+| Hosts | NixOS | the operating system, rootless Podman, Nomad, host volumes, the firewall |
+| Scheduling | Nomad | where each container runs, its health checks, restarts |
+| Desired state | [Alchemy](https://alchemy.run) | the Nomad jobs, routes, and database logins an app declares |
+| Secrets | OpenBao | passwords and keys; an app's files hold references, never values |
 
-The repository-root flake builds the Alchemy runtime and the host from one
-pinned Nix package set. Run these commands from the
-repository root on a separate builder. The runtime source must be inside the
-flake source directory. Build application packages outside `cynic`.
+Around those:
+
+- **Traefik** is the only public entry point. It runs as a Nomad job, terminates TLS, and reads each
+  route from the tags on the Nomad service, so a moved container keeps its route.
+- **PostgreSQL and Valkey** run once, as a shared `platform-data` cartridge. An app asks for a
+  database or a key prefix, and the platform creates the login.
+- **Staged releases** run a candidate beside the live release at a preview address. You promote it
+  or roll back by changing which release is selected. Only stateless services are supported.
+- **Tailscale Serve** can publish a route on your tailnet only, with no public DNS.
+
+A **cartridge** is a versioned JSON file that lists an app's services, images, ports, volumes,
+routes, secret references, and database needs. The platform turns each service into one Nomad job
+and orders the jobs by their dependencies.
+
+## What you need
+
+- Two or more x86_64 machines that run NixOS. The shared host modules assume Proxmox-style virtual
+  machines (SeaBIOS, virtio disks and network); change `nixos/modules/proxmox-vm.nix` and
+  `disk-config.nix` for other hardware.
+- A workstation with `bun`, `docker`, `ssh`, and `rsync`. Docker runs the Nix builds, so the
+  workstation needs no Nix.
+- SSH access to each machine, with host names set in `~/.ssh/config`.
+
+## Configure your installation
+
+Everything that belongs to one installation is in a *site folder*: addresses, host names, the
+operator account and its SSH keys, and the Traefik routes for static sites. `nixos/site` holds
+placeholder values.
+
+1. Copy `nixos/site` to a private repository. Edit `site.toml` and the files under `routes/`.
+   Do not put secrets there, because the Nix store is readable by every user on a host.
+2. Set `OPS_SITE` to that folder in your shell.
+
+The flakes read `site.toml` when Nix builds a host, so a running host never reads it. `ops rebuild`
+and `nixos/install-host.sh` build from a copy of `nixos/` whose `site` folder is yours. For a direct
+build of the root flake, pass it yourself:
 
 ```sh
-nix build .#alchemy-staged
-nix build .#nixosConfigurations.cynic.config.system.build.toplevel
+nix build .#nixosConfigurations.cynic.config.system.build.toplevel --override-input site path:$OPS_SITE
 ```
 
-The root configuration includes Nomad ACLs and the host-owned Alchemy
-staged runner. The staged commands read their Nomad credential file at run
-time. Building does not activate this configuration. Follow
-`nixos/cynic/nomad-acl-operations.md` for credential setup. The nested host
-flake does not include the staged runner.
+`ops` reaches each machine by its bare host name (`ssh cynic`). Put the address and user in
+`~/.ssh/config`. Set `OPS_HOST` to use a control host other than `cluster.server`.
 
-For a local Docker builder, run `tools/alchemy/build-runtime.sh`. It limits the
-whole build to 2 GiB RAM, no container swap, one CPU, and one Nix build at a
-time. It keeps its Nix store and temporary files under
-`$HOME/.cache/server-ansible-builder`, or `NIX_BUILDER_DIR` when set. The script
-requires at least 2 GiB free disk before starting and stops the container if
-free space falls below 1 GiB. It prints the output path
-inside the builder's Nix store and does not deploy or activate anything.
+## Install and operate
 
-Traefik on `atheist` is the only public entry point: it runs as a Nomad job, terminates TLS on 443 with Let's Encrypt certificates, and routes to Nomad services anywhere in the cluster. One Caddy process on atheist's loopback serves every static site. See [Ingress](tools/alchemy/platform/ingress/README.md) and [Static sites on atheist](nixos/atheist/static-sites-operations.md).
+1. Install a host. This erases its disk:
+   `OPS_SITE=<folder> nixos/install-host.sh <host> <user>@<address>`.
+2. Do each service's one-time setup: [cluster certificates](nixos/cynic/cluster-tls-operations.md),
+   [Nomad access control](nixos/cynic/nomad-acl-operations.md), and
+   [OpenBao](nixos/cynic/openbao-operations.md). Then [set up backups](nixos/backup-operations.md).
+3. Apply later host changes with `ops rebuild [host]`.
+4. Deploy the platform cartridges (`platform-data`, `platform-ingress`, and others) with
+   `ops deploy --stage <name>`.
+5. In an app repository, run `ops release`.
 
+Put `tools/alchemy/scripts` on your `PATH` to run `ops`. The full command list, and how cartridges,
+secrets, and staged releases work, is in [tools/alchemy/README.md](tools/alchemy/README.md).
+[Ingress](tools/alchemy/platform/ingress/README.md) and
+[static sites](nixos/atheist/static-sites-operations.md) have their own guides.
 
-Nomad control-plane listeners use loopback. Operators must use SSH to run Nomad commands or forward port 4646. Application ports still require a tested private routing and firewall policy. The host-owned Alchemy runner is configured in the root flake but is not activated on this host yet.
+## Repository layout
 
-A disposable bridge-network web service served a file from `noneuclid-data`. After allocation replacement, the replacement served the same file through the new address and port returned by Nomad service discovery. This proves one-node storage retention and host-local HTTP access only. It does not prove container-to-container access, ingress from `atheist`, multi-node routing, or recovery after disk loss. The job and its test files were removed.
+| Path | Contents |
+| --- | --- |
+| `flake.nix` | the Alchemy runtime package, the server's configuration with the staged runner, and a test VM image |
+| `nixos/` | host configurations. `flake.nix` here is what hosts build; `modules/` is shared; `site/` holds the placeholder installation values |
+| `tools/alchemy/` | the `ops` command, the Alchemy stacks, the custom Nomad, OpenBao, PostgreSQL, and Valkey resources, the platform cartridges, and the tests |
+| `docs/design/` | design notes for the staged runner, staged releases, and cartridges |
+| `docs/research/` | PostgreSQL research |
+| `docs/status.md` | dated results from test runs |
+| `testground/` | scripts for a disposable local test VM. They predate the site folder and still name the author's user and subnet |
 
-Backups remain deferred under the recorded data-loss exception to the planned rebuild-from-backup workflow. On 2026-10-21, Alchemy deployed shared PostgreSQL 17.6 and Valkey 8.1.3 on cynic. Their admin credentials came from OpenBao through Nomad workload identity. Authentication and container replacement checks passed; an app database and app-scoped Valkey access were not part of that proof. See [the saved platform-data proof](.audit/cynic-platform-data-proof.txt). Public DNS was unchanged.
+## Development
 
-Secret delivery through task environment variables works in that proof. A later live probe on 2026-10-22 verified secret-file visibility after replacing Nomad's `BindReadOnlyPaths` with a host-visible `/sbin/ip` symlink. A bridge-network rootless Podman task read a dummy template from a host-visible tmpfs mount with swap disabled. See `testground/probe-nomad-secrets.sh`; restrictive file permissions require ownership that matches the rootless container's host user. This checks file delivery, not OpenBao login.
+```sh
+cd tools/alchemy
+bun install
+bun test
+bun run typecheck
+bun run lint
+bun run format
+```
 
-## Recorded testground proofs
+`tools/alchemy/build-runtime.sh` builds the Alchemy runtime package in a resource-limited Docker
+container. It does not deploy or activate anything.
 
-The local QEMU staging VM needs `-enable-kvm -cpu host`. The generic QEMU CPU
-model caused the packaged Bun runtimes to stall or fail with an illegal
-instruction. With host CPU features, both tested runtimes started and used
-little CPU. The recorded disposable guest
-had 2 GiB RAM and a 12 GiB virtual disk. Those local artifacts do not establish
-that a guest is running now or provide a reproducible staging provisioner.
+## Status
 
-The `nixos/testground` flake builds a NixOS QCOW image. The initial proof built it in the existing rootless Nix store, then booted NixOS 26.11 with Nomad 2.0.7 and rootless Podman 5.8.8 using `crun`. The new image needed ext4 repair on its disposable overlay before it booted. The image build must be investigated before relying on unattended rebuilds. Nomad's Prometheus endpoint returns node and allocation metrics.
+Dated results from test runs are in [docs/status.md](docs/status.md). There is no license yet.
 
-Alchemy deployed a rootless bridge-network update to the Noneuclid app on the testground VM. After a cartridge update and restoration, the proof recorded a healthy version 4 allocation, HTTP 200, and a no-change Alchemy plan. Noneuclid's working tree contains a versioned JSON deployment file, and the Alchemy runner validates it before planning. See [`tools/alchemy/README.md`](tools/alchemy/README.md) for the deploy commands and current limits.
+Open work:
 
-## Deployment path
-
-1. Build and boot the NixOS testground image from [`nixos/testground`](nixos/testground).
-2. Declare the app job in the project's versioned cartridge and point the Alchemy runner under [`tools/alchemy`](tools/alchemy) at that file.
-3. Plan and reconcile the Nomad resources through Alchemy.
-4. Keep secrets in OpenBao and host volume paths in NixOS configuration.
-
-A v2 cartridge describes multiple services and their PostgreSQL and Valkey needs. The platform derives credentials and resource names, orders jobs by their dependencies, and delivers secret references through Nomad and OpenBao. A service can declare a migration task that runs before it starts. Each cartridge uses its own Alchemy stage, selected with `--stage <cartridge-name>`. The runner does not build or publish images or coordinate durable application state across hosts. The complete app-scoped database and Valkey flow still needs a deployment proof.
-
-## Staged releases
-
-Target behavior: deploy a candidate beside the live release at a generated preview URL. Test it on a real client, such as a phone, before changing the usual app URL. Promote a healthy candidate, retain the prior release for rollback, and preserve app data. The current proof has local `*.localhost` routes; it does not yet provide phone access or stateful release safety.
-
-Later, support traffic splitting between two releases for A/B testing. Keep this separate from candidate preview and promotion: a preview gets test traffic by its own URL, while an A/B release shares production traffic under an explicit split policy.
-
-`tools/alchemy` now has a stateless `Nomad.ReleaseSet` resource. A manifest declares immutable image digests, a selected release, and an optional candidate. Alchemy creates a separate Nomad job for each release, waits for Nomad's health check, publishes a candidate preview host, and routes the usual host to the selected release. Promotion and rollback change the selected release in the manifest. Each release's routes are Traefik tags on its Nomad service, so a promotion is an in-place Nomad update and a moved allocation keeps its route without an Alchemy run. See the [staged release operator flow](tools/alchemy/README.md#staged-release-proof).
-
-The release proof used a disposable single-node NixOS VM, two digest-pinned `whoami` images, Nomad, rootless Podman, and Caddy. Both versions ran together. The preview host returned v2 while the stable host still returned v1. Promotion switched stable traffic to v2; rollback switched it to v1. Candidate cleanup removed its job and preview route, and a repeat plan reported no changes. The stable route survived a Caddy restart. A manual Caddyfile reload removed it; Alchemy detected the missing route and restored it. A Nomad allocation reschedule changed the dynamic port; the stable route returned HTTP 502 until Alchemy detected and repaired it. The VM used `localhost` hostnames and an SSH tunnel to keep Caddy's admin API on loopback; public DNS and TLS are not configured. A later disposable-VM proof on 2026-10-20 adopted the existing release jobs after local Alchemy state was removed and ended with a no-change plan. That adoption proof used the earlier Caddy routing implementation. See the [staged release design](docs/design/staged-releases.md). On 2026-10-21 cynic replaced them with Traefik tags; [Ingress](tools/alchemy/platform/ingress/README.md) records the new measurements.
-
-## Current gaps
-
-- Prove and model application stacks with a database, worker, and web service. In the probe, a rootless `pasta` client could not reach the backend through its Nomad node address and published port. Rootless Podman bridge networking plus Nomad's native service template did allow it. This path uses a node address and published port; production must define routable private addresses and firewall rules.
-- Add health-checked traffic cutover for app updates. The current single-allocation job on a fixed host port had about 5.7 seconds of failed HTTP probes during replacement.
-- Avoid in-place updates to a selected release's Nomad job settings during rollout; those changes can replace the running allocation and interrupt traffic.
-- Add controlled traffic splitting for A/B tests. Candidate preview, promotion, and rollback are implemented for stateless services only.
-- Prove app migrations and dependency provisioning end to end. Nomad prestart migration tasks and dependency ordering are implemented; stateful updates and data-safe rollback remain open.
-- Build and publish immutable application images.
-- Make OpenBao mounts and Nomad authentication setup reproducible, narrow the deployment token's policy-writing privileges, and retain the verified in-memory secret-file delivery. Workload environment delivery is proven; the platform-data proof found neither admin password in Alchemy state or its operation journal.
-- Implement and test backups and restore for host volumes. Shared database servers have been deployed under the recorded data-loss exception; their replacement proof does not cover disk loss.
-- Add TLS for public domains to Traefik, shared Alchemy state, and a verified service move between nodes. The staged runner has a host-local lock; concurrent-operator behavior remains unverified. ReleaseSet adoption requires the manifest and matching owned Nomad jobs; it is not a backup or cross-host recovery mechanism.
-- Repair the Nix image build so a fresh disk boots without a manual filesystem repair.
-- Replace testground firewall and VM defaults with production NixOS policy before reuse.
-
-Use [`docs/research`](docs/research) for current PostgreSQL research.
+- Prove application stacks with a database, a worker, and a web service. Production needs routable
+  private addresses and firewall rules for container-to-container traffic.
+- Add health-checked traffic cutover for app updates. A single-allocation job on a fixed host port
+  had about 5.7 seconds of failed HTTP probes during replacement.
+- Avoid in-place changes to a selected release's Nomad job settings during a rollout; they can
+  replace the running allocation.
+- Add traffic splitting for A/B tests. Candidate preview, promotion, and rollback work for stateless
+  services only.
+- Prove migrations and dependency provisioning end to end. Migration tasks and dependency ordering
+  exist; stateful updates and data-safe rollback are open.
+- Build and publish immutable application images from the platform.
+- Make the OpenBao mounts and Nomad authentication setup reproducible, and narrow the deployment
+  token's policy-writing privileges.
+- Test restore for host volumes and shared databases, including recovery after disk loss.
+- Add shared Alchemy state, and verify a service move between nodes. The runner has a host-local lock;
+  concurrent operators are untested.
+- Repair the Nix test-image build so a fresh disk boots without a manual filesystem repair.
+- Replace the test VM's firewall and defaults with production policy before reuse.
+- Move the remaining installation-specific values out of `testground/`.

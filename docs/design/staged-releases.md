@@ -46,7 +46,7 @@ The traffic-cutover work for updates is related to promotion but does not replac
 
 ## Routing proof on the disposable Nomad VM
 
-On 2026-10-11, a disposable single-node Nomad VM ran a Traefik Nomad provider and two stateless `whoami` jobs. The candidate had a generated preview host. The existing release kept the usual host. Both hosts returned HTTP 200 from their expected allocations. The second run saved responses, route samples, and allocation status under `.audit/staged-route-*`.
+On 2026-10-11, a disposable single-node Nomad VM ran a Traefik Nomad provider and two stateless `whoami` jobs. The candidate had a generated preview host. The existing release kept the usual host. Both hosts returned HTTP 200 from their expected allocations.
 
 Promotion and rollback changed the candidate's Nomad service tags. Traefik switched the usual host to the candidate. Traefik then switched the usual host back to the old allocation. In the second run, seven half-second samples returned the old version. The eighth sample returned the candidate. Rollback took 19 samples to return to the old version. All sampled requests returned HTTP 200. The Nomad allocation IDs stayed unchanged. Each task reported zero restarts. The probe jobs were then removed. The VM had no running jobs afterward.
 

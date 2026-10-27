@@ -30,7 +30,7 @@ If the CA key is missing but certificates exist, the service fails and Nomad, Op
 Do this once, after the first start, from your own terminal. The key prints on the terminal only:
 
 ```sh
-ssh -t cynic.dlab 'sudo cat /var/lib/cluster-tls/nomad-agent-ca-key.pem /var/lib/cluster-tls/nomad-agent-ca.pem'
+ssh -t cynic 'sudo cat /var/lib/cluster-tls/nomad-agent-ca-key.pem /var/lib/cluster-tls/nomad-agent-ca.pem'
 ```
 
 Store both blocks in the password manager as "cynic cluster CA". To restore them, write both files back to `/var/lib/cluster-tls` with mode 0600, owned by root, before Nomad starts.

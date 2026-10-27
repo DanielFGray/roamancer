@@ -4,13 +4,13 @@ This package deploys app cartridges and shared platform services through Alchemy
 
 ## Operator commands
 
-`scripts/ops` runs every operator command on the control host from your machine. The control host runs the Nomad server, OpenBao and the Alchemy state; it is `cynic.dlab` unless `OPS_HOST` names another. `ops` syncs this folder to `~/alchemy` there with `--delete`, so a file removed here does not linger, then runs `scripts/ops-on-host.sh` over SSH. The sync leaves the host's Alchemy state and `node_modules` alone. Put `scripts` on your `PATH`, or alias it:
+`scripts/ops` runs every operator command on the control host from your machine. The control host runs the Nomad server, OpenBao and the Alchemy state; it is `cluster.server` in the `site.toml` of the folder that `OPS_SITE` names (see the root README), unless `OPS_HOST` names another. `ops` syncs this folder to `~/alchemy` there with `--delete`, so a file removed here does not linger, then runs `scripts/ops-on-host.sh` over SSH. The sync leaves the host's Alchemy state and `node_modules` alone. Put `scripts` on your `PATH`, or alias it:
 
 ```sh
 ops login                                  # once every 2 hours: mints an OpenBao token from the root token
-ops release ~/build/setlist                # build, push and deploy the app repository's current commit
-ops stage ~/build/setlist                  # deploy that commit at its tailnet-only staged route
-ops promote ~/build/setlist                # promote the exact staged digest, then discard it
+ops release ../my-app                # build, push and deploy the app repository's current commit
+ops stage ../my-app                  # deploy that commit at its tailnet-only staged route
+ops promote ../my-app                # promote the exact staged digest, then discard it
 ops discard giglist                        # destroy the staged instance
 ops deployment list giglist                # the recorded deployments, newest first
 ops rollback giglist 12                    # deploy recorded deployment 12 again
@@ -24,7 +24,7 @@ ops secret list platform/observability     # a platform cartridge, from tools/al
 ops dash                                   # every job's health and why a queued one waits; each node's use and reservations
 ops place-queued                           # ask Nomad to place jobs with queued allocations again; `ops rebuild` runs it last
 ops status giglist                         # each service's newest allocations
-ops rebuild                                # host config for every host in nixos/flake.nix, one at a time; `ops rebuild cynic` for one. sudo asks for your password on each, and the old /etc/nixos is kept in /var/tmp
+ops rebuild                                # host config (with your OPS_SITE folder) for every host in nixos/flake.nix, one at a time; `ops rebuild cynic` for one. sudo asks for your password on each, and the old /etc/nixos is kept in /var/tmp
 ```
 
 `plan`, `deploy`, `destroy`, `state` and `drift` are Alchemy's own commands. Before `plan` and `deploy` the runner runs the host's own `secret check <stage>` against the sent or recorded cartridge, which fails when a secret the cartridge references is unset (a task would otherwise wait on its template until the deploy times out) or the OpenBao token has expired. Before `destroy` and `drift` it checks the token only. The stage is a cartridge's `name`; `Cartridge.resolve` finds the cartridge (see [Where cartridges live](#where-cartridges-live)). The other commands are `src/cli.ts`, for what Alchemy has no place for. `ops logs` reads Nomad by job name, which is the resource's name, so it needs no stage and works for a job whose first deploy failed and left no Alchemy state. It prints stdout and stderr of each running task in the newest running allocation, with the time podman recorded for each line (`src/TaskLog.ts`, which also serves `alchemy logs`).
@@ -35,7 +35,7 @@ The secret commands run on the workstation against the `cartridge.json` in the g
 
 ## Where cartridges live
 
-A platform cartridge lives in this package at `platform/<folder>/cartridge.json`. An app cartridge lives at the root of the app's own repository, and names its image repository without a digest. This package holds no app cartridge, so it knows no app until one is deployed.
+A platform cartridge lives in this package at `platform/<folder>/cartridge.json`. An app cartridge lives at the root of the app's own repository, and names its image repository without a digest. This package holds no app cartridge, so it knows no app until one is deployed; `examples/apps` holds sample cartridges that the tests load.
 
 On the control host, an app's cartridge comes from one of two places. When `ops` sends a file (`release`, `stage`, or `CARTRIDGE=<file>` with any host command), it is copied to `.alchemy/input/` and passed as `CARTRIDGE_FILE`. Otherwise the host reads the newest recorded deployment, so `plan`, `drift` and the deploy-time secret check work without the app's repository.
 
@@ -48,11 +48,11 @@ A cartridge is a versioned JSON file that describes services and their data need
 ```sh
 export NOMAD_ADDR=http://127.0.0.1:4646
 cd tools/alchemy
-CARTRIDGE_FILE=~/build/gametests/noneuclid/cartridge.json bun run plan --stage noneuclid
-CARTRIDGE_FILE=~/build/gametests/noneuclid/cartridge.json bun run deploy --stage noneuclid
+CARTRIDGE_FILE=../my-app/cartridge.json bun run plan --stage my-app
+CARTRIDGE_FILE=../my-app/cartridge.json bun run deploy --stage my-app
 ```
 
-`NOMAD_TOKEN` is optional only on an ACL-free testground. State is local and separated by stage. Use the same control machine and state directory for later plans. `bun run destroy --stage noneuclid` removes that cartridge's managed resources, not the Nix host volume. Use `--stage platform-data` for the shared server cartridge.
+`NOMAD_TOKEN` is optional only on an ACL-free testground. State is local and separated by stage. Use the same control machine and state directory for later plans. `bun run destroy --stage my-app` removes that cartridge's managed resources, not the Nix host volume. Use `--stage platform-data` for the shared server cartridge.
 
 The Nomad provider records reconcile and delete operations in `.alchemy/operations.sqlite`. If a process stops after an operation starts but before it records the result, the next plan detects that pending operation and reconciles the resource against live Nomad state. Inspect the history with `bun run history`. Keep the journal and Alchemy state under `.alchemy` together. This is local operation history, not shared state. On cynic, `restic-backups-alchemy` backs up the state and a consistent copy of the journal (`nixos/backup-operations.md`). The staged plan, deploy, and destroy commands use `staged-host-runner.sh`, which snapshots input and serializes applies through one lock. The NixOS module gives the operator command the `/var/lib/alchemy` state directory.
 
@@ -98,7 +98,7 @@ This proof uses stateless `whoami` containers. It does not support shared writab
 The workstation setup uses an SSH port forward to Nomad's loopback API and a Nomad token from the host (see `nixos/cynic/nomad-acl-operations.md`):
 
 ```sh
-ssh -N -L 14646:127.0.0.1:4646 cynic.dlab &
+ssh -N -L 14646:127.0.0.1:4646 cynic &
 export NOMAD_ADDR=http://127.0.0.1:14646
 ```
 
@@ -131,7 +131,7 @@ The cartridge declares an `apiVersion: "server-ansible/v2"` document with `name`
 
 Use `secrets` on each service to request runtime credentials. Each job's OpenBao role is derived as `alchemy-<job name>`; no role field is declared by hand. A secret reference names either an OpenBao KV-v2 path and key or a declared PostgreSQL or Valkey need, plus destination environment-variable names. Nomad authenticates its workload identity to OpenBao and renders the secret into the task environment. Secret values are not inputs to Alchemy and are not included in its state or operation journal. `NomadJob.ts` writes the OpenBao ACL policy and the job-bound JWT role on reconcile; configure Nomad's Vault-compatible integration and OpenBao JWT auth endpoint separately. Do not put secret values in the cartridge's ordinary `environment` entries.
 
-On 2026-10-20, a fresh disposable VM ran an Alchemy-managed PostgreSQL job and a dependent client job. Nomad obtained both jobs' credentials from OpenBao through job-bound JWT roles. The client discovered PostgreSQL's dynamic endpoint through the generated Nomad service template and successfully queried the database. Both Alchemy resources reached healthy status. A check of the Alchemy state and operation journal found no copy of the test password. The proof used a disposable PostgreSQL role and database, not shared production data. Its saved input and limits are in [`../../.audit/alchemy-postgres-openbao-proof.txt`](../../.audit/alchemy-postgres-openbao-proof.txt).
+On 2026-10-20, a fresh disposable VM ran an Alchemy-managed PostgreSQL job and a dependent client job. Nomad obtained both jobs' credentials from OpenBao through job-bound JWT roles. The client discovered PostgreSQL's dynamic endpoint through the generated Nomad service template and successfully queried the database. Both Alchemy resources reached healthy status. A check of the Alchemy state and operation journal found no copy of the test password. The proof used a disposable PostgreSQL role and database, not shared production data.
 
 This proves ordered multi-job deployment, runtime secret delivery, and an authenticated query on one disposable node. The v2 platform provides a shared PostgreSQL server and database provider; idempotent app-role provisioning is handled by the OpenBao database plugin. The proof configured its test secret, OpenBao policy, and job-bound roles directly. It did not test persistent database data, replacement recovery, multiple nodes, or private cross-node routing. Do not use the proof's broad test policy or root token pattern in a deployment.
 
@@ -220,7 +220,7 @@ The database providers connect directly to the address that Nomad registers for 
 
 Destroying a `ValkeyAccess` revokes and persists the ACL user. Its OpenBao KV value is retained so a later recreation can reuse the credential. The server admin value is also retained when the Nomad job is destroyed. Remove these KV values through the OpenBao lifecycle when they are no longer needed.
 
-On 2026-10-21, Alchemy deployed the `platform-data` cartridge on cynic. PostgreSQL and Valkey accepted their generated admin credentials and rejected incorrect credentials. Valkey also rejected unauthenticated commands. After Nomad replaced both containers, PostgreSQL retained its initialized data directory and Valkey retained its default ACL user. A scan found neither admin password in Alchemy state or the operation journal. The final plan reported no changes. See [the platform-data proof](../../.audit/cynic-platform-data-proof.txt). This did not deploy an app database or app-scoped Valkey access, test application writes, or prove backup and restore.
+On 2026-10-21, Alchemy deployed the `platform-data` cartridge on cynic. PostgreSQL and Valkey accepted their generated admin credentials and rejected incorrect credentials. Valkey also rejected unauthenticated commands. After Nomad replaced both containers, PostgreSQL retained its initialized data directory and Valkey retained its default ACL user. A scan found neither admin password in Alchemy state or the operation journal. The final plan reported no changes. This did not deploy an app database or app-scoped Valkey access, test application writes, or prove backup and restore.
 
 The ACL behavior was checked separately on a disposable Valkey 8 container. An app user could write within its prefix; writes to another prefix and `FLUSHALL` were denied. A read-only user could read its prefix and could not write. `ACL SAVE` preserved the ACL across container replacement when the ACL file was on persistent storage. The Alchemy `ValkeyAccess` provider still needs an end-to-end app deployment proof. Valkey connections in this setup do not use TLS, so do not send credentials over untrusted networks or treat the disposable proof as production network validation.
 
@@ -246,7 +246,7 @@ The platform composition step resolves service names within one cartridge. It do
 
 The live discovery probe used two rootless allocations on the fresh VM. With the Podman driver's `pasta` mode, the client could not reach the server at the node address and published port. With `bridge` mode, Nomad's `nomadService` template provided the server address and port, and the client fetched the Nginx welcome page.
 
-On 2026-10-20, a separate disposable VM probe ran PostgreSQL 16 in one rootless allocation and a `psql` client in another. The client discovered a dynamic endpoint through a Nomad service template and queried the database successfully. Stopping the database allocation caused Nomad to replace it; a new client allocation discovered the replacement and queried it successfully. This used PostgreSQL `trust` authentication for the disposable probe. It does not prove Alchemy database resources, generated roles, OpenBao secrets, persistent data, or multi-node routing. The job files and result are in [`../../.audit/postgres-rootless-service-proof.txt`](../../.audit/postgres-rootless-service-proof.txt).
+On 2026-10-20, a separate disposable VM probe ran PostgreSQL 16 in one rootless allocation and a `psql` client in another. The client discovered a dynamic endpoint through a Nomad service template and queried the database successfully. Stopping the database allocation caused Nomad to replace it; a new client allocation discovered the replacement and queried it successfully. This used PostgreSQL `trust` authentication for the disposable probe. It does not prove Alchemy database resources, generated roles, OpenBao secrets, persistent data, or multi-node routing.
 
 This proves one-node reachability through a published host port. It does not prove private addressing between production nodes, health-filtered discovery, or multi-node placement. Nomad native service discovery supplies addresses through templates; it does not provide DNS. Production nodes need routable private addresses and firewall rules for published service ports.
 

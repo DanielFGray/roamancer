@@ -32,7 +32,7 @@ file. A file on the workstation is still a copy of the keys.
 Open a tunnel from the workstation. OpenBao listens only on cynic's loopback.
 
 ```sh
-ssh -N -L 8200:127.0.0.1:8200 cynic.dlab
+ssh -N -L 8200:127.0.0.1:8200 cynic
 ```
 
 In a second shell, point the CLI at the tunnel:
@@ -51,17 +51,17 @@ Create it once, before OpenBao first starts with the static seal. Run it in your
 terminal, not through an agent: it shows the key once.
 
 ```sh
-ssh -t cynic.dlab sudo openbao-seal-key
+ssh -t cynic sudo openbao-seal-key
 ```
 
 After a rebuild from backup the VM has a new TPM, so the old credential cannot be
 decrypted. Restore the saved key instead:
 
 ```sh
-ssh -t cynic.dlab sudo openbao-seal-key --restore
+ssh -t cynic sudo openbao-seal-key --restore
 ```
 
-Then restart OpenBao: `ssh -t cynic.dlab sudo systemctl restart openbao`. It unseals itself, and
+Then restart OpenBao: `ssh -t cynic sudo systemctl restart openbao`. It unseals itself, and
 Nomad starts its jobs once `openbao-unsealed.service` sees it unsealed.
 
 ## First initialization (once, on a new store)
@@ -82,7 +82,7 @@ exists and the new configuration is switched in, restart OpenBao and enter three
 old unseal keys with `-migrate`:
 
 ```sh
-ssh -t cynic.dlab sudo systemctl restart openbao
+ssh -t cynic sudo systemctl restart openbao
 bao operator unseal -migrate   # three times, a different key each time
 ```
 

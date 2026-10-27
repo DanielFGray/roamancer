@@ -64,4 +64,4 @@ The TypeScript candidate offers editor types, but loading a TypeScript module ex
 
 The initial Noneuclid proof loaded its declaration and produced no change to the managed job. The current v2 implementation also composes PostgreSQL databases, Valkey access, generated admin credentials, and jobs with runtime secrets and optional prestart migrations.
 
-On 2026-10-21, the platform-data cartridge deployed shared PostgreSQL and Valkey on cynic. Authentication, container replacement, and a final no-change plan passed; see [the saved proof](../../.audit/cynic-platform-data-proof.txt). App-scoped database and Valkey provisioning still need an end-to-end proof. Cross-cartridge server dependencies, image delivery, and multi-node data movement remain separate work.
+On 2026-10-21, the platform-data cartridge deployed shared PostgreSQL and Valkey on cynic. Authentication, container replacement, and a final no-change plan passed. App-scoped database and Valkey provisioning still need an end-to-end proof. Cross-cartridge server dependencies, image delivery, and multi-node data movement remain separate work.

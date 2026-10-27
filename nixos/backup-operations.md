@@ -19,10 +19,10 @@ The Postgres dump runs as `nomad`, the only user that can reach Postgres's rootl
 1. Copy cynic's environment file to the new host, mode 0600, owned by the backup's user (`nomad` on cynic, `root` on atheist). From the laptop:
 
    ```sh
-   ssh -t cynic.dlab 'sudo install -m 0600 -o dan /var/lib/backups/restic.env /run/user/1000/restic.env'
-   ssh cynic.dlab 'cat /run/user/1000/restic.env; rm /run/user/1000/restic.env' |
-     ssh atheist.dlab 'umask 077; cat > /run/user/1000/restic.env'
-   ssh -t atheist.dlab 'sudo install -m 0600 -o root /run/user/1000/restic.env /var/lib/backups/restic.env; rm /run/user/1000/restic.env'
+   ssh -t cynic 'sudo install -m 0600 -o "$(id -un)" /var/lib/backups/restic.env /run/user/1000/restic.env'
+   ssh cynic 'cat /run/user/1000/restic.env; rm /run/user/1000/restic.env' |
+     ssh atheist 'umask 077; cat > /run/user/1000/restic.env'
+   ssh -t atheist 'sudo install -m 0600 -o root /run/user/1000/restic.env /var/lib/backups/restic.env; rm /run/user/1000/restic.env'
    ```
 
    The file holds:
@@ -92,7 +92,7 @@ Then check the data: `podman exec pg-restore psql -U postgres -d giglist -c 'sel
 
 ```sh
 podman exec pg-restore pg_dump -U postgres -Fc giglist > giglist.dump
-tools/alchemy/scripts/restore-database.sh cynic.dlab giglist giglist.dump
+tools/alchemy/scripts/restore-database.sh cynic giglist giglist.dump
 ```
 
 The script restores into `giglist_restore` in one transaction, then swaps it in for `giglist`. Apps lose their connections for a moment. The replaced database stays as `giglist_before_restore_<UTC time>` until you drop it.
