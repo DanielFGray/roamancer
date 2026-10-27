@@ -126,12 +126,19 @@ let
     fi
     NOMAD_TOKEN=$(cat "$bootstrap")
     export NOMAD_TOKEN
+    # A switch that changes Nomad restarts it at the same time as this unit; its API
+    # answers some seconds later. A failed first attempt fails the whole switch.
+    for _ in $(seq 60); do
+      leader=$(nomad operator api -X GET /v1/status/leader 2>/dev/null) || leader=
+      case $leader in *:*) break ;; esac
+      sleep 1
+    done
     nomad acl policy apply alchemy-controller ${pkgs.writeText "alchemy-controller-policy.hcl" controllerPolicy}
     # The ingress job reads single services, which needs read-job.
     nomad acl policy apply -namespace default -job traefik -group service -task server \
       traefik ${pkgs.writeText "traefik-policy.hcl" traefikPolicy}
-    # spread places each allocation on the least-loaded node. Stateful jobs still land
-    # on cynic, the only node with their host volumes.
+    # spread places each allocation on the least-loaded node. A job with a host volume
+    # still lands on the node that declares that volume.
     nomad operator scheduler set-config -scheduler-algorithm=spread
   '';
 
