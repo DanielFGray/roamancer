@@ -6,7 +6,7 @@
     ./registry.nix
     ./nomad-acl.nix
     ./openbao.nix
-    ./herdr.nix
+    ../modules/herdr.nix
     ./backups.nix
     ./cluster-tls.nix
   ];

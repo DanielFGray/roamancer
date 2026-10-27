@@ -14,6 +14,7 @@ in
   imports = [
     ../modules/base.nix
     ../modules/static-sites.nix
+    ../modules/herdr.nix
     ./network.nix
     ./nomad.nix
     ./backups.nix
