@@ -38,6 +38,7 @@ const release = Command.make(
     const image = yield* buildAndPush(folder);
     yield* deployPinned(folder, image, yes);
     yield* Console.log(`Released ${image.pinned}`);
+    yield* printTailnetUrls(image.name);
   }),
 ).pipe(Command.withDescription("Build, push and deploy an app's current commit"));
 
@@ -51,20 +52,8 @@ const stage = Command.make(
       CARTRIDGE: cartridgePath(folder),
       STAGED_IMAGE: image.tagged,
     });
-    const state = yield* output(`${root}/scripts/ops`, [
-      "state",
-      "read",
-      `cartridge/${stageName}/output`,
-    ]);
-    const deployed = yield* S.decodeUnknownEffect(
-      S.fromJsonString(S.Struct({ tailnetUrls: S.Array(S.String) })),
-    )(state).pipe(
-      Effect.mapError(
-        (cause) => new ReleaseError({ message: `could not read staged URLs: ${cause}` }),
-      ),
-    );
     yield* Console.log(`Staged ${image.tagged}`);
-    yield* Effect.forEach(deployed.tailnetUrls, (url) => Console.log(url));
+    yield* printTailnetUrls(stageName);
   }),
 ).pipe(Command.withDescription("Build and deploy a tailnet-only staged instance"));
 
@@ -178,6 +167,27 @@ const deployPinned = Effect.fn("deployPinned")(function* (
       );
     }),
   );
+});
+
+/**
+ * Print the tailnet URLs a stage's last deploy published, one per line. A stage with no
+ * tailnet route prints nothing. Alchemy keeps the URLs in the stack output, so a failed
+ * read is an error rather than an empty list.
+ */
+const printTailnetUrls = Effect.fn("printTailnetUrls")(function* (stageName: string) {
+  const state = yield* output(`${root}/scripts/ops`, [
+    "state",
+    "read",
+    `cartridge/${stageName}/output`,
+  ]);
+  const deployed = yield* S.decodeUnknownEffect(
+    S.fromJsonString(S.Struct({ tailnetUrls: S.Array(S.String) })),
+  )(state).pipe(
+    Effect.mapError(
+      (cause) => new ReleaseError({ message: `could not read tailnet URLs: ${cause}` }),
+    ),
+  );
+  yield* Effect.forEach(deployed.tailnetUrls, (url) => Console.log(url));
 });
 
 /** Every image reference in the cartridge's services. */

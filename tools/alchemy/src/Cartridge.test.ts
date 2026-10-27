@@ -13,6 +13,7 @@ import {
   Cartridge,
 } from "./Cartridge.ts";
 import * as Deployments from "./Deployments.ts";
+import { routeTags } from "./Job.ts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import type * as FileSystem from "effect/FileSystem";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -259,6 +260,39 @@ describe("cartridge v2", () => {
           },
         ],
       }),
+    );
+  });
+
+  it("serves a tailnet-only service through Tailscale Serve and registers no Traefik route", () => {
+    const cartridge = S.decodeUnknownSync(Cartridge)({
+      apiVersion: "server-ansible/v2",
+      name: "private-app",
+      services: [
+        {
+          name: "private-app",
+          image: "img",
+          hostPort: "dynamic",
+          containerPort: 80,
+          cpu: 100,
+          memoryMB: 128,
+          networkMode: "bridge",
+          environment: [],
+          connections: [],
+          secrets: [],
+          routes: [{ access: "tailnet" }],
+        },
+      ],
+    });
+    const resources = expand(cartridge);
+    assert.deepEqual(
+      resources.map((resource) => resource._tag),
+      ["TailscaleServe", "NomadService"],
+    );
+    const service = resources.find((resource) => resource._tag === "NomadService");
+    assert.ok(service && service._tag === "NomadService");
+    assert.deepEqual(
+      routeTags({ ...service.service, environment: [], secrets: [], migrate: undefined }),
+      [],
     );
   });
 
