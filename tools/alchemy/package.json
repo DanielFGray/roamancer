@@ -17,14 +17,14 @@
     "lint": "oxlint"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.5",
-    "@effect/platform-node": "4.0.5",
-    "@effect/sql-pg": "4.0.5",
-    "@effect/sql-sqlite-node": "4.0.5",
+    "@effect/platform-bun": "4.0.6",
+    "@effect/platform-node": "4.0.6",
+    "@effect/sql-pg": "4.0.6",
+    "@effect/sql-sqlite-node": "4.0.6",
     "@redis/client": "^5.12.1",
-    "alchemy": "2.0.0-beta.83",
-    "effect": "4.0.5",
-    "pg": "8.22.0"
+    "alchemy": "2.0.0-beta.84",
+    "effect": "4.0.6",
+    "pg": "8.23.1"
   },
   "devDependencies": {
     "bun2nix": "2.1.2",
