@@ -1,5 +1,8 @@
-{ pkgs, ... }:
+{ config, pkgs, site, ... }:
 let
+  # `ops` runs Alchemy in ~/alchemy of the operator's account.
+  alchemyDir = "${config.users.users.${site.operator.name}.home}/alchemy/.alchemy";
+
   # Writes every database and role as SQL to stdout. restic keeps the snapshot only when
   # this exits 0, so a failed or partial dump never becomes a backup.
   dump = pkgs.writeShellApplication {
@@ -48,10 +51,10 @@ in
   services.restic.backups.alchemy = import ../modules/restic-r2.nix // {
     backupPrepareCommand = ''
       rm -f /var/lib/backups/alchemy-operations.sqlite
-      ${pkgs.sqlite}/bin/sqlite3 -readonly /home/dan/alchemy/.alchemy/operations.sqlite \
+      ${pkgs.sqlite}/bin/sqlite3 -readonly ${alchemyDir}/operations.sqlite \
         "VACUUM INTO '/var/lib/backups/alchemy-operations.sqlite'"
     '';
-    paths = [ "/home/dan/alchemy/.alchemy/state" "/var/lib/backups/alchemy-operations.sqlite" ];
+    paths = [ "${alchemyDir}/state" "/var/lib/backups/alchemy-operations.sqlite" ];
     # Before the postgres backup, whose prune locks the whole repository.
     timerConfig = (import ../modules/restic-r2.nix).timerConfig // { OnCalendar = "*-*-* 02:00"; };
   };

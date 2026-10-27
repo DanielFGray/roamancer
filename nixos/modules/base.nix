@@ -1,5 +1,8 @@
-# What every host shares: boot, SSH, dan's account, sudo and the operator's shell tools.
-{ pkgs, ... }:
+# What every host shares: boot, SSH, the operator's account, sudo and the operator's shell tools.
+{ pkgs, site, ... }:
+let
+  operator = site.operator;
+in
 {
   imports = [
     ./proxmox-vm.nix
@@ -45,25 +48,23 @@
     htop
   ];
 
-  users.users.dan = {
+  users.users.${operator.name} = {
     isNormalUser = true;
     shell = pkgs.zsh;
     extraGroups = [ "wheel" ];
-    openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA4+6wknF8UcGuuWT1U4c0X29YDyRuWuB1b014Hyo57F danielfgray@gmail.com"
-    ];
+    openssh.authorizedKeys.keys = operator.sshKeys;
   };
 
-  # sudo is the line between dan's shell, which coding agents can reach through dan's ssh
-  # key, and root, which holds the Nomad and OpenBao credentials. Root is locked, so
-  # without dan's password nobody can become root; each host says where that password
-  # comes from.
+  # sudo is the line between the operator's shell, which coding agents can reach through
+  # the operator's ssh key, and root, which holds the Nomad and OpenBao credentials. Root
+  # is locked, so without the operator's password nobody can become root; each host says
+  # where that password comes from.
   security.sudo.wheelNeedsPassword = true;
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
-  # `ops rebuild` copies the repo's nixos folder here as dan, then root builds
-  # from it. dan can write here, so the copy and the build run back to back in one
+  # `ops rebuild` copies the repo's nixos folder here as the operator, then root builds
+  # from it. The operator can write here, so the copy and the build run back to back in one
   # command: whatever was here before the copy is replaced, never built.
-  systemd.tmpfiles.rules = [ "d /etc/nixos 0755 dan root -" ];
+  systemd.tmpfiles.rules = [ "d /etc/nixos 0755 ${operator.name} root -" ];
 }

@@ -1,4 +1,7 @@
-{ pkgs, ... }:
+{ pkgs, site, ... }:
+let
+  operator = site.operator;
+in
 {
   imports = [
     ../modules/base.nix
@@ -21,13 +24,13 @@
   environment.systemPackages = [ pkgs.bun pkgs.postgresql_17 ];
 
   users.groups.alchemy = { };
-  users.users.dan.extraGroups = [ "alchemy" ];
+  users.users.${operator.name}.extraGroups = [ "alchemy" ];
 
-  # Alchemy runs as dan and serves tailnet routes with `tailscale serve`, which needs the
-  # Tailscale operator; without it every serve change would need sudo.
-  services.tailscale.extraSetFlags = [ "--operator=dan" ];
+  # Alchemy runs as the operator and serves tailnet routes with `tailscale serve`, which
+  # needs the Tailscale operator; without it every serve change would need sudo.
+  services.tailscale.extraSetFlags = [ "--operator=${operator.name}" ];
 
-  # dan's password lives only in /etc/shadow (users.mutableUsers), set with
-  # `sudo passwd dan`.
+  # The operator's password lives only in /etc/shadow (users.mutableUsers), set with
+  # `sudo passwd <operator>`.
   system.stateVersion = "26.05";
 }

@@ -23,6 +23,7 @@
   outputs = { self, nixpkgs, bun2nix, disko, nixos-generators, site, ... }:
     let
       system = "x86_64-linux";
+      siteConfig = builtins.fromTOML (builtins.readFile "${site}/site.toml");
       pkgs = import nixpkgs {
         inherit system;
         overlays = [
@@ -39,6 +40,7 @@
         testground-vm = nixos-generators.nixosGenerate {
           inherit system;
           format = "qcow";
+          specialArgs.site = siteConfig;
           modules = [
             ./nixos/testground/configuration.nix
             ./nixos/modules/alchemy-staged.nix
@@ -54,7 +56,7 @@
 
       nixosConfigurations.cynic = nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs.site = builtins.fromTOML (builtins.readFile "${site}/site.toml");
+        specialArgs.site = siteConfig;
         modules = [
           disko.nixosModules.disko
           ./nixos/cynic/configuration.nix

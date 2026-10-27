@@ -35,3 +35,12 @@ registryClientDir = "/var/lib/registry-client"
 # address list only narrows who can try, on a network where addresses can be forged.
 [cluster.nodes]
 atheist = "192.168.50.11"
+
+# The human account on every host: the only wheel user, the holder of the SSH keys that can
+# log in, and the owner of /etc/nixos so `ops rebuild` can copy the configuration there. It
+# is also the account that runs Alchemy on the control host.
+[operator]
+name = "operator"
+sshKeys = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderPlaceholderPlaceholderPlaceholder operator@example.com",
+]

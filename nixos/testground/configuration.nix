@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, site, ... }:
 let
   nomad = pkgs.stdenvNoCC.mkDerivation {
     pname = "nomad";
@@ -182,8 +182,6 @@ in
   environment.systemPackages = [ nomad pkgs.iproute2 pkgs.podman pkgs.curl pkgs.jq ];
   services.getty.autologinUser = "root";
 
-  # The disposable VM accepts the same key as cynic, so the proof uses one login path.
-  users.users.root.openssh.authorizedKeys.keys = [
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA4+6wknF8UcGuuWT1U4c0X29YDyRuWuB1b014Hyo57F danielfgray@gmail.com"
-  ];
+  # The disposable VM accepts the operator's keys, so the proof uses one login path.
+  users.users.root.openssh.authorizedKeys.keys = site.operator.sshKeys;
 }
