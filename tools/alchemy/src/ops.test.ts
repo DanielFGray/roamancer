@@ -80,10 +80,8 @@ describe("HostName", () => {
 describe("Remote", () => {
   it("pushes HEAD to the host and runs the host command", async () => {
     const { log } = await execute(Effect.flatMap(Remote, (remote) => remote.run(["dash"])));
-    assert.equal(log.length, 6);
-    assert.match(log[3], /^ssh -n ctl git init .*\nif \[ -d alchemy \] && \[ ! -L alchemy \]/s);
-    assert.match(log[3], /ln -sfn server-ansible\/tools\/alchemy alchemy$/);
-    assert.deepEqual(log.slice(5), [
+    assert.deepEqual(log.slice(0, 4), sent("ctl", Git.repository, Git.checkout));
+    assert.deepEqual(log.slice(4), [
       "ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'dash'",
     ]);
   });
@@ -100,14 +98,13 @@ describe("Remote", () => {
   });
 
   it("leaves stdin to the host command alone: setup ssh calls never read it", async () => {
-    const { log } = await execute(Effect.flatMap(Remote, (remote) => remote.run(["login"])));
+    const { log } = await execute(
+      Effect.flatMap(Remote, (remote) => remote.run(["login"], { cartridge: "/tmp/c.json" })),
+    );
     const setup = log.filter((line) => line.startsWith("ssh ") && !line.includes("src/cli.ts"));
     assert.ok(setup.length > 0);
     assert.ok(setup.every((line) => line.startsWith("ssh -n ")));
-    assert.equal(
-      log[log.length - 1],
-      "ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'login'",
-    );
+    assert.match(log[log.length - 1], /^ssh ctl cd alchemy && .* bun src\/cli\.ts 'login'$/);
   });
 
   it("sends a cartridge and what the release records", async () => {
@@ -120,13 +117,13 @@ describe("Remote", () => {
         }),
       ),
     );
-    assert.equal(log[5], "ssh -n ctl mkdir -p alchemy/.alchemy/input");
+    assert.equal(log[4], "ssh -n ctl mkdir -p alchemy/.alchemy/input");
     assert.match(
-      log[6],
+      log[5],
       /^scp -q \/tmp\/c\.json ctl:alchemy\/\.alchemy\/input\/cartridge-\d+-\d+\.json$/,
     );
     assert.match(
-      log[7],
+      log[6],
       /^ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec env 'CARTRIDGE_FILE=\.alchemy\/input\/cartridge-\d+-\d+\.json' 'ORIGIN=abc' 'REVISION=def' bun src\/cli\.ts 'deploy' '--stage' 'giglist'$/,
     );
   });
@@ -136,12 +133,7 @@ describe("Remote", () => {
       Effect.flatMap(Remote, (remote) => remote.run(["dash"])),
       { env: { OPS_HOST: "other" } },
     );
-    assert.deepEqual(
-      log.slice(0, 5).filter((line) => !line.startsWith("ssh -n other git init")),
-      sent("other", Git.repository, Git.checkout).filter(
-        (line) => !line.startsWith("ssh -n other git init"),
-      ),
-    );
+    assert.deepEqual(log.slice(0, 4), sent("other", Git.repository, Git.checkout));
     assert.equal(
       log[log.length - 1],
       "ssh other cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'dash'",
@@ -177,12 +169,12 @@ describe("Remote", () => {
 describe("rebuild", () => {
   it("pushes both repositories and switches the named host", async () => {
     const { log, site } = await execute(rebuild(Option.some("cynic"), Option.some("root@z")));
-    assert.deepEqual(log.slice(0, 10), [
+    assert.deepEqual(log.slice(0, 8), [
       ...sent("root@z", Git.repository, Git.checkout),
       ...sent("root@z", site, "site"),
     ]);
     assert.equal(
-      log[10],
+      log[8],
       `ssh -t root@z rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/server-ansible/nixos#cynic" --override-input site "path:$HOME/site-tree"`,
     );
     assert.equal(
@@ -275,7 +267,6 @@ const sent = (target: string, dir: string, remote: string) => [
   `git -C ${dir} rev-parse --show-prefix`,
   `git -C ${dir} rev-parse --short HEAD`,
   `git -C ${dir} status --porcelain`,
-  `ssh -n ${target} git init -q -b deploy '${remote}' && git -C '${remote}' config receive.denyCurrentBranch updateInstead`,
   `git -C ${dir} push --quiet --force ${target}:${remote} HEAD:refs/heads/deploy`,
 ];
 

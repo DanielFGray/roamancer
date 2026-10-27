@@ -19,15 +19,10 @@ export const repository = new URL("../../..", import.meta.url).pathname.replace(
 
 /**
  * Make `remote` (a folder in the home of `target`'s account) a checkout of `dir`'s HEAD.
- * Pushes with --force, because a rewritten history must still deploy. `setup` is further shell
- * for the same ssh call, run before the push.
+ * Pushes with --force, because a rewritten history must still deploy. The host declares the
+ * checkout in nixos/modules/deploy-repos.nix.
  */
-export const push = Effect.fn("Git.push")(function* (
-  target: string,
-  dir: string,
-  remote: string,
-  setup = "",
-) {
+export const push = Effect.fn("Git.push")(function* (target: string, dir: string, remote: string) {
   // A subfolder of a repository would push the repository's root while a local export
   // writes only the subfolder.
   const prefix = yield* Exec.output("git", ["-C", dir, "rev-parse", "--show-prefix"]).pipe(
@@ -39,17 +34,6 @@ export const push = Effect.fn("Git.push")(function* (
     });
   }
   yield* announce(dir, `to ${target}:${remote}`);
-  // -n: this ssh must not read stdin, which a piped command input (`ops login`) is on.
-  yield* Exec.run("ssh", [
-    "-n",
-    target,
-    `git init -q -b deploy ${Exec.quote(remote)} && git -C ${Exec.quote(remote)} config receive.denyCurrentBranch updateInstead${
-      setup === ""
-        ? ""
-        : `
-${setup}`
-    }`,
-  ]);
   yield* Exec.run("git", [
     ...["-C", dir, "push", "--quiet", "--force"],
     `${target}:${remote}`,

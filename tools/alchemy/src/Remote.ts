@@ -61,14 +61,6 @@ export const remoteCommand = (
   return `cd alchemy && bun install --frozen-lockfile --silent && exec ${run}`;
 };
 
-// Runs in the push's ssh call. ~/alchemy is a link into the checkout, dangling until the push lands. A real folder there is the earlier layout, which
-// held Alchemy's state: it must be moved into the checkout by hand, never replaced.
-const linkAlchemy = `if [ -d alchemy ] && [ ! -L alchemy ]; then
-  echo "~/alchemy is a folder from the rsync layout. Move its .alchemy and node_modules to ~/${Git.checkout}/tools/alchemy, remove it, and run this again." >&2
-  exit 1
-fi
-ln -sfn ${Git.checkout}/tools/alchemy alchemy`;
-
 export class Remote extends Context.Service<Remote>()("ops/Remote", {
   make: Effect.gen(function* () {
     const site = yield* Site;
@@ -87,7 +79,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       sent: Sent,
     ) {
       const host = yield* site.host;
-      yield* Git.push(host, Git.repository, Git.checkout, linkAlchemy);
+      yield* Git.push(host, Git.repository, Git.checkout);
       const cartridgeFile =
         sent.cartridge === undefined ? undefined : yield* sendCartridge(host, sent.cartridge);
       const variables: ReadonlyArray<readonly [string, string | undefined]> = [
@@ -107,7 +99,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       const { host, command } = yield* prepare(args, sent);
       // The remote shell starts in the home folder. A terminal is requested only when this
       // one has one. Piped input is not a terminal: it reaches the host command over ssh's
-      // stdin, which the setup calls above never read (see `-n` in Git.push).
+      // stdin, which the cartridge calls above never read (see `-n` there).
       const terminal = yield* stdio.stdinIsTerminal;
       yield* Exec.run("ssh", (terminal ? ["-t"] : []).concat(host, command));
     });

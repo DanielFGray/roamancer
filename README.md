@@ -63,12 +63,13 @@ what you committed. For a direct build of the root flake, pass the site folder y
 nix build .#nixosConfigurations.cynic.config.system.build.toplevel --override-input site path:$OPS_SITE
 ```
 
-Each host keeps its checkouts in the operator's home folder: `~/server-ansible` and, on a host
-you rebuild, `~/site`. Git pushes to them with `receive.denyCurrentBranch=updateInstead`, which
-refuses a push when someone has edited a tracked file on the host. On the control host, `~/alchemy`
-is a link to `~/server-ansible/tools/alchemy`, so Alchemy's state stays at `~/alchemy/.alchemy`.
+Each host keeps its checkouts in the operator's home folder: `~/server-ansible` and `~/site`.
+`nixos/modules/deploy-repos.nix` creates them at boot when they are missing. Git pushes to
+them with `receive.denyCurrentBranch=updateInstead`, which refuses a push when someone has
+edited a tracked file on the host. On the control host, `~/alchemy` is a link to
+`~/server-ansible/tools/alchemy`, so Alchemy's state stays at `~/alchemy/.alchemy`.
 A control host from the earlier layout has `~/alchemy` as a real folder: move its `.alchemy` and
-`node_modules` into `~/server-ansible/tools/alchemy` and remove it. The next command then links it.
+`node_modules` into `~/server-ansible/tools/alchemy` and remove it. The next rebuild then links it.
 
 `ops` reaches each machine by its host name, the same name as its `nixosConfigurations` entry
 (`ssh cynic`). Put the address, port, and user in
