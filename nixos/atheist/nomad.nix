@@ -25,6 +25,10 @@ in
     # Traefik's Let's Encrypt account and certificates. Losing them means asking for
     # every certificate again, which Let's Encrypt rate-limits.
     "d /var/lib/nomad/traefik-acme 0770 nomad nomad -"
+    # Volumes of jobs that fit here and not on cynic, whose memory holds the shared
+    # PostgreSQL and Valkey.
+    "d /var/lib/nomad/twitter-bookmarks-data 0770 nomad nomad -"
+    "d /var/lib/nomad/openobserve-data 0770 nomad nomad -"
   ];
 
   # The ingress runs in nomad's rootless Podman with host networking, so the nomad user
@@ -71,6 +75,14 @@ in
       }
       host_volume "traefik-acme" {
         path = "/var/lib/nomad/traefik-acme"
+        read_only = false
+      }
+      host_volume "twitter-bookmarks-data" {
+        path = "/var/lib/nomad/twitter-bookmarks-data"
+        read_only = false
+      }
+      host_volume "openobserve-data" {
+        path = "/var/lib/nomad/openobserve-data"
         read_only = false
       }
     }
