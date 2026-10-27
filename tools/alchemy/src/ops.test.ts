@@ -102,11 +102,11 @@ describe("Remote", () => {
     assert.equal(log[0], syncAlchemy);
     assert.equal(log[1], "ssh ctl mkdir -p alchemy/.alchemy/input");
     assert.match(
-      log[2]!,
+      log[2],
       /^scp -q \/tmp\/c\.json ctl:alchemy\/\.alchemy\/input\/cartridge-\d+-\d+\.json$/,
     );
     assert.match(
-      log[3]!,
+      log[3],
       /^ssh ctl env 'CARTRIDGE_FILE=\.alchemy\/input\/cartridge-\d+-\d+\.json' 'ORIGIN=abc' 'REVISION=def' alchemy\/scripts\/ops-on-host\.sh 'deploy' '--stage' 'giglist'$/,
     );
   });
@@ -170,24 +170,22 @@ describe("install", () => {
     const [volume, copyNixos, copySite, docker] = log;
     assert.equal(volume, "docker volume inspect server-ansible-nix");
     assert.match(
-      copyNixos!,
+      copyNixos,
       new RegExp(`^rsync -a --delete --exclude result --exclude /site ${nixosFolder}/ `),
     );
-    assert.match(copySite!, new RegExp(`^rsync -a --delete --exclude \\.git ${site}/ `));
-    const tree = / (\S+)\/$/.exec(copyNixos!)?.[1];
+    assert.match(copySite, new RegExp(`^rsync -a --delete --exclude \\.git ${site}/ `));
+    const tree = / (\S+)\/$/.exec(copyNixos)?.[1];
     assert.ok(tree !== undefined);
-    assert.ok(
-      docker!.startsWith("docker run --rm --network host --volume server-ansible-nix:/nix"),
-    );
-    assert.ok(docker!.includes(`--volume ${tree}:/src:ro`));
-    assert.ok(docker!.includes(`--volume ${home}/.ssh/id_ed25519:/key:ro`));
-    assert.ok(!docker!.includes("/extra"));
-    assert.ok(docker!.endsWith("github:nix-community/nixos-anywhere/1.11.0 cynic root@z --debug"));
+    assert.ok(docker.startsWith("docker run --rm --network host --volume server-ansible-nix:/nix"));
+    assert.ok(docker.includes(`--volume ${tree}:/src:ro`));
+    assert.ok(docker.includes(`--volume ${home}/.ssh/id_ed25519:/key:ro`));
+    assert.ok(!docker.includes("/extra"));
+    assert.ok(docker.endsWith("github:nix-community/nixos-anywhere/1.11.0 cynic root@z --debug"));
   });
 
   it("copies the host's saved identity onto the new root", async () => {
     const { log } = await execute(install(options), { extraFiles: "cynic" });
-    const docker = log.at(-1)!;
+    const docker = log[log.length - 1];
     assert.ok(docker.includes("/extra:ro"));
     assert.ok(
       docker.endsWith(
@@ -201,7 +199,7 @@ describe("install", () => {
       reply: (line) => (line.startsWith("docker volume inspect") ? 1 : 0),
     });
     assert.match(
-      log[1]!,
+      log[1],
       /^docker volume create --opt type=none --opt o=bind --opt device=\S+\/\.cache\/server-ansible-nix server-ansible-nix$/,
     );
   });
