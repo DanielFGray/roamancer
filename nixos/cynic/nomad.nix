@@ -7,6 +7,7 @@ in
 
   systemd.tmpfiles.rules = [
     "d /var/lib/nomad/noneuclid-data 0770 nomad nomad -"
+    "d /var/lib/nomad/twitter-bookmarks-data 0770 nomad nomad -"
     # The platform postgres image (postgres-image.nix) runs the server as uid 999, as the
     # official image does. In nomad's rootless
     # user namespace (subUidRanges in nomad-node.nix) container uid N maps to host uid
@@ -59,6 +60,10 @@ in
 
       host_volume "noneuclid-data" {
         path = "/var/lib/nomad/noneuclid-data"
+        read_only = false
+      }
+      host_volume "twitter-bookmarks-data" {
+        path = "/var/lib/nomad/twitter-bookmarks-data"
         read_only = false
       }
       host_volume "postgres-data" {

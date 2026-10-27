@@ -32,6 +32,10 @@ let
       capabilities = ["mount-readwrite"]
     }
 
+    host_volume "twitter-bookmarks-data" {
+      capabilities = ["mount-readwrite"]
+    }
+
     host_volume "postgres-data" {
       capabilities = ["mount-readwrite"]
     }
