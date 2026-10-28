@@ -5,8 +5,10 @@ import * as S from "effect/Schema";
 import {
   connectionUrl,
   databaseDeclarations,
+  declarationsForDatabase,
   managedEnvKeys,
   managedEnvValues,
+  resolveDatabaseTarget,
 } from "./Declaration.ts";
 import { DevDbCartridge } from "./DevDbCartridge.ts";
 
@@ -34,7 +36,7 @@ const cartridge = S.decodeUnknownSync(DevDbCartridge)({
 });
 
 describe("managedEnvKeys", () => {
-  it("collects url/username/password env names from PostgresCredentials once", () => {
+  it("collects url/username/password env names plus SHADOW and TEST URLs once", () => {
     assert.deepEqual(managedEnvKeys(cartridge), [
       {
         kind: "url",
@@ -54,15 +56,31 @@ describe("managedEnvKeys", () => {
         database: "giglist",
         login: "api",
       },
+      {
+        kind: "shadowUrl",
+        env: "SHADOW_DATABASE_URL",
+        database: "giglist",
+        login: "migration",
+      },
+      {
+        kind: "testUrl",
+        env: "TEST_DATABASE_URL",
+        database: "giglist",
+        login: "migration",
+      },
     ]);
   });
 });
 
 describe("databaseDeclarations", () => {
-  it("uses postgresRoles and postgresLoginRole with api NOINHERIT and migration inherit", () => {
+  it("provisions live, shadow, and test with the same roles", () => {
     const password = Redacted.make("secret");
-    const [declaration] = databaseDeclarations(cartridge, () => password);
-    assert.equal(declaration?.name, "giglist");
+    const declarations = databaseDeclarations(cartridge, () => password);
+    assert.deepEqual(
+      declarations.map((declaration) => declaration.name),
+      ["giglist", "giglist_shadow", "giglist_test"],
+    );
+    const [declaration] = declarations;
     assert.equal(declaration?.ownerRole, "giglist_owner");
     assert.equal(declaration?.visitorRole, "giglist_visitor");
     assert.deepEqual(declaration?.extensions, ["citext", "pgcrypto"]);
@@ -85,11 +103,34 @@ describe("databaseDeclarations", () => {
         },
       ],
     );
+    assert.deepEqual(
+      declarations[2]?.logins.map((login) => login.name),
+      ["alchemy_giglist_api", "alchemy_giglist_migration"],
+    );
+  });
+});
+
+describe("resolveDatabaseTarget / declarationsForDatabase", () => {
+  it("resets only the test DB when asked for <db>_test", () => {
+    const password = Redacted.make("secret");
+    assert.deepEqual(resolveDatabaseTarget(cartridge, "giglist_test")?.targets, ["test"]);
+    assert.deepEqual(
+      declarationsForDatabase(cartridge, "giglist_test", () => password).map((d) => d.name),
+      ["giglist_test"],
+    );
+  });
+
+  it("resets live+shadow+test when asked for the live name", () => {
+    const password = Redacted.make("secret");
+    assert.deepEqual(
+      declarationsForDatabase(cartridge, "giglist", () => password).map((d) => d.name),
+      ["giglist", "giglist_shadow", "giglist_test"],
+    );
   });
 });
 
 describe("managedEnvValues", () => {
-  it("builds host URLs on 127.0.0.1:5417 for url env keys", () => {
+  it("builds host URLs on 127.0.0.1:5417 for url, shadow, and test env keys", () => {
     const values = managedEnvValues(managedEnvKeys(cartridge), (role) => `pw-for-${role}`);
     assert.equal(
       values.DATABASE_URL,
@@ -101,5 +142,21 @@ describe("managedEnvValues", () => {
     );
     assert.equal(values.AUTH_DATABASE_USER, "alchemy_giglist_api");
     assert.match(values.AUTH_DATABASE_URL!, /127\.0\.0\.1:5417\/giglist/);
+    assert.equal(
+      values.SHADOW_DATABASE_URL,
+      connectionUrl({
+        username: "alchemy_giglist_migration",
+        password: "pw-for-alchemy_giglist_migration",
+        database: "giglist_shadow",
+      }),
+    );
+    assert.equal(
+      values.TEST_DATABASE_URL,
+      connectionUrl({
+        username: "alchemy_giglist_migration",
+        password: "pw-for-alchemy_giglist_migration",
+        database: "giglist_test",
+      }),
+    );
   });
 });

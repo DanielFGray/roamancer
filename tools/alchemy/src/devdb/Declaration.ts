@@ -1,5 +1,8 @@
 /**
  * Cartridge → provisioning declarations and the .env keys PostgresCredentials name.
+ * Each cartridge database also gets `<name>_shadow` (graphile-migrate) and
+ * `<name>_test` (app test suites), same roles and extensions. Managed env writes
+ * SHADOW_DATABASE_URL and TEST_DATABASE_URL as the migration login on those DBs.
  */
 import { postgresLoginRole } from "../Cartridge.ts";
 import { postgresRoles } from "../PostgresDatabase.ts";
@@ -12,10 +15,55 @@ import { HOST, PORT } from "./Cluster.ts";
 import { type DevDbCartridge, isPostgresCredentials } from "./DevDbCartridge.ts";
 
 export type ManagedEnvKey = {
-  readonly kind: "url" | "username" | "password";
+  readonly kind: "url" | "username" | "password" | "shadowUrl" | "testUrl";
   readonly env: string;
   readonly database: string;
   readonly login: "api" | "migration";
+};
+
+/** The shadow database graphile-migrate uses for one cartridge database. */
+export const shadowDatabaseName = (database: string) => `${database}_shadow`;
+
+/** The scratch database app DB tests use for one cartridge database. */
+export const testDatabaseName = (database: string) => `${database}_test`;
+
+/** Live / shadow / test names derived from one cartridge database entry. */
+export const derivedDatabaseNames = (database: string) => ({
+  live: database,
+  shadow: shadowDatabaseName(database),
+  test: testDatabaseName(database),
+});
+
+/**
+ * Resolve a reset/up target: the live name, or a derived `_shadow` / `_test`
+ * name, back to the cartridge entry and which declarations to (re)provision.
+ */
+export const resolveDatabaseTarget = (
+  cartridge: DevDbCartridge,
+  name: string,
+):
+  | {
+      readonly entry: DevDbCartridge["postgres"][number];
+      readonly targets: ReadonlyArray<"live" | "shadow" | "test">;
+    }
+  | undefined => {
+  const live = cartridge.postgres.find((candidate) => candidate.database === name);
+  if (live !== undefined) {
+    return { entry: live, targets: ["live", "shadow", "test"] };
+  }
+  const asShadow = cartridge.postgres.find(
+    (candidate) => shadowDatabaseName(candidate.database) === name,
+  );
+  if (asShadow !== undefined) {
+    return { entry: asShadow, targets: ["shadow"] };
+  }
+  const asTest = cartridge.postgres.find(
+    (candidate) => testDatabaseName(candidate.database) === name,
+  );
+  if (asTest !== undefined) {
+    return { entry: asTest, targets: ["test"] };
+  }
+  return undefined;
 };
 
 /** Every PostgresCredentials env binding across services and migrate tasks, unique by env name. */
@@ -46,6 +94,21 @@ export const managedEnvKeys = (cartridge: DevDbCartridge): ReadonlyArray<Managed
       }
     }
   }
+  // One SHADOW_ / TEST_ URL per cartridge database (graphile-migrate / vitest standard names).
+  for (const entry of cartridge.postgres) {
+    byEnv.set("SHADOW_DATABASE_URL", {
+      kind: "shadowUrl",
+      env: "SHADOW_DATABASE_URL",
+      database: entry.database,
+      login: "migration",
+    });
+    byEnv.set("TEST_DATABASE_URL", {
+      kind: "testUrl",
+      env: "TEST_DATABASE_URL",
+      database: entry.database,
+      login: "migration",
+    });
+  }
   return [...byEnv.values()];
 };
 
@@ -70,21 +133,52 @@ export const loginDeclarations = (
   ];
 };
 
-/** One provisioning declaration per cartridge postgres entry. */
+const declarationFor = (
+  name: string,
+  sourceDatabase: string,
+  extensions: ReadonlyArray<string>,
+  passwordFor: (role: string) => Redacted.Redacted<string>,
+): PostgresDatabaseDeclaration => {
+  const roles = postgresRoles(sourceDatabase);
+  return {
+    name,
+    ownerRole: roles.owner,
+    visitorRole: roles.visitor,
+    extensions,
+    logins: loginDeclarations(sourceDatabase, passwordFor),
+  };
+};
+
+const declarationsForTargets = (
+  entry: DevDbCartridge["postgres"][number],
+  targets: ReadonlyArray<"live" | "shadow" | "test">,
+  passwordFor: (role: string) => Redacted.Redacted<string>,
+): ReadonlyArray<PostgresDatabaseDeclaration> => {
+  const names = derivedDatabaseNames(entry.database);
+  return targets.map((target) =>
+    declarationFor(names[target], entry.database, entry.extensions, passwordFor),
+  );
+};
+
+/** Live database plus its shadow and test DBs, same roles and extensions. */
 export const databaseDeclarations = (
   cartridge: DevDbCartridge,
   passwordFor: (role: string) => Redacted.Redacted<string>,
 ): ReadonlyArray<PostgresDatabaseDeclaration> =>
-  cartridge.postgres.map((entry) => {
-    const roles = postgresRoles(entry.database);
-    return {
-      name: entry.database,
-      ownerRole: roles.owner,
-      visitorRole: roles.visitor,
-      extensions: entry.extensions,
-      logins: loginDeclarations(entry.database, passwordFor),
-    };
-  });
+  cartridge.postgres.flatMap((entry) =>
+    declarationsForTargets(entry, ["live", "shadow", "test"], passwordFor),
+  );
+
+/** Declarations for a live name or a derived `_shadow` / `_test` (for `ops dev db reset`). */
+export const declarationsForDatabase = (
+  cartridge: DevDbCartridge,
+  database: string,
+  passwordFor: (role: string) => Redacted.Redacted<string>,
+): ReadonlyArray<PostgresDatabaseDeclaration> => {
+  const resolved = resolveDatabaseTarget(cartridge, database);
+  if (resolved === undefined) return [];
+  return declarationsForTargets(resolved.entry, resolved.targets, passwordFor);
+};
 
 export const connectionUrl = (input: {
   readonly username: string;
@@ -105,6 +199,18 @@ export const managedEnvValues = (
     const role = postgresLoginRole(key.database, key.login);
     if (key.kind === "username") values[key.env] = role;
     else if (key.kind === "password") values[key.env] = passwordFor(role);
+    else if (key.kind === "shadowUrl")
+      values[key.env] = connectionUrl({
+        username: role,
+        password: passwordFor(role),
+        database: shadowDatabaseName(key.database),
+      });
+    else if (key.kind === "testUrl")
+      values[key.env] = connectionUrl({
+        username: role,
+        password: passwordFor(role),
+        database: testDatabaseName(key.database),
+      });
     else
       values[key.env] = connectionUrl({
         username: role,

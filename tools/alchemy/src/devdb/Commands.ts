@@ -8,9 +8,11 @@ import { postgresLoginRole } from "../Cartridge.ts";
 import { OpsError } from "../Exec.ts";
 import {
   databaseDeclarations,
+  declarationsForDatabase,
   loginDeclarations,
   managedEnvKeys,
   managedEnvValues,
+  resolveDatabaseTarget,
 } from "./Declaration.ts";
 import { decodeDevDbFile } from "./DevDbCartridge.ts";
 import { applyManagedKeys } from "./EnvFile.ts";
@@ -67,7 +69,7 @@ const up = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Start the shared Postgres 17 cluster and provision this app's databases into .env",
+    "Start the shared Postgres 17 cluster and provision this app's databases (and shadows) into .env",
   ),
 );
 
@@ -102,25 +104,34 @@ const reset = Command.make(
   Effect.fn(function* ({ database }) {
     yield* requireManagedContainer();
     const cartridge = yield* readCartridge();
-    const roles = [postgresLoginRole(database, "api"), postgresLoginRole(database, "migration")];
-    const passwords = yield* ensurePasswords(roles);
-    const declaration = databaseDeclarations(cartridge, passwords.forRole).find(
-      (entry) => entry.name === database,
-    );
-    if (declaration === undefined) {
+    const resolved = resolveDatabaseTarget(cartridge, database);
+    if (resolved === undefined) {
       return yield* new OpsError({
-        message: `database '${database}' is not declared in cartridge.json`,
+        message: `database '${database}' is not declared in cartridge.json (live, _shadow, or _test)`,
       });
     }
-    yield* resetDatabase(declaration, passwords.admin);
+    const sourceDatabase = resolved.entry.database;
+    const roles = [
+      postgresLoginRole(sourceDatabase, "api"),
+      postgresLoginRole(sourceDatabase, "migration"),
+    ];
+    const passwords = yield* ensurePasswords(roles);
+    const declarations = declarationsForDatabase(cartridge, database, passwords.forRole);
+    yield* Effect.forEach(declarations, (declaration) =>
+      resetDatabase(declaration, passwords.admin),
+    );
     const values = managedEnvValues(
-      managedEnvKeys(cartridge).filter((key) => key.database === database),
+      managedEnvKeys(cartridge).filter((key) => key.database === sourceDatabase),
       (role) => Redacted.value(passwords.forRole(role)),
     );
     yield* writeEnv(values);
-    yield* Console.log(`reset ${database}`);
+    yield* Console.log(`reset ${declarations.map((declaration) => declaration.name).join(", ")}`);
   }),
-).pipe(Command.withDescription("Drop and re-provision one database on the managed cluster"));
+).pipe(
+  Command.withDescription(
+    "Drop and re-provision a live database (with shadow+test) or a derived _shadow/_test name",
+  ),
+);
 
 const psql = Command.make(
   "psql",

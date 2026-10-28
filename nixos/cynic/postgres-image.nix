@@ -50,7 +50,10 @@ let
         rm "$pwfile"
         echo "host all all all scram-sha-256" >> "$PGDATA/pg_hba.conf"
       fi
-      exec postgres -c listen_addresses='*'
+      # pgsodium's event trigger reads this GUC; without shared_preload it is
+      # unknown unless set at startup. off keeps key-as-argument mode usable
+      # (migrations/DDL) while the trigger remains installed.
+      exec postgres -c listen_addresses='*' -c pgsodium.enable_event_trigger=off
     '';
   };
 in

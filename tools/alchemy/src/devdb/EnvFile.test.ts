@@ -55,4 +55,18 @@ describe("applyManagedKeys", () => {
       "DATABASE_URL=new\nAUTH_DATABASE_URL=new-auth\n",
     );
   });
+
+  it("strips ROOT_DATABASE_* keys while writing managed updates", () => {
+    const before = [
+      "ROOT_DATABASE_URL=postgres://postgres@localhost/template1",
+      "ROOT_DATABASE_PASSWORD=secret",
+      "DATABASE_URL=old",
+      "KEEP=yes",
+      "",
+    ].join("\n");
+    assert.equal(
+      applyManagedKeys(before, { DATABASE_URL: "new", SHADOW_DATABASE_URL: "shadow" }),
+      ["DATABASE_URL=new", "KEEP=yes", "SHADOW_DATABASE_URL=shadow", ""].join("\n"),
+    );
+  });
 });
