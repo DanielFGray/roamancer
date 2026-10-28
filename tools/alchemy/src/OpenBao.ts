@@ -1,5 +1,6 @@
 import { Config, Context, Effect, Layer, Option, Redacted, Schema as S } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import { loginRolePolicy } from "./PostgresProvisioning.ts";
 
 const KvValue = S.Struct({
   data: S.Struct({
@@ -52,19 +53,22 @@ type DatabaseRole = {
 };
 
 // The SQL that OpenBao runs for each new login. OpenBao substitutes {{name}}, {{password}}
-// and {{expiration}}.
+// and {{expiration}}. LOGIN / NOINHERIT and the session-role statement come from
+// loginRolePolicy so they cannot drift from ensureLoginRole.
 export const databaseCreationStatements = (
   role: Pick<DatabaseRole, "database" | "memberOf" | "inherit">,
 ): string => {
   const user = '"{{name}}"';
-  const options = role.inherit ? "LOGIN" : "LOGIN NOINHERIT";
+  const member = `"${role.memberOf}"`;
+  const policy = loginRolePolicy(role.inherit);
   return [
-    `CREATE ROLE ${user} WITH ${options} PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';`,
-    `GRANT "${role.memberOf}" TO ${user};`,
+    `CREATE ROLE ${user} WITH ${policy.options} PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';`,
+    `GRANT ${member} TO ${user};`,
     `GRANT CONNECT ON DATABASE "${role.database}" TO ${user};`,
     // Each release gets a new migration login. Tables owned by an earlier login would refuse
     // ALTER from the next one, so the login creates them as the owner role instead.
-    ...(role.inherit ? [`ALTER ROLE ${user} SET role = "${role.memberOf}";`] : []),
+    // A NOINHERIT login clears any leftover session role so SET ROLE stays explicit.
+    `${policy.sessionRoleStatement(user, member)};`,
   ].join(" ");
 };
 

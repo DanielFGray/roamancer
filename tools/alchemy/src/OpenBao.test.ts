@@ -12,7 +12,7 @@ describe("PostgreSQL credential statements", () => {
 
     assert.equal(
       sql,
-      `CREATE ROLE "{{name}}" WITH LOGIN NOINHERIT PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT "setlist_visitor" TO "{{name}}"; GRANT CONNECT ON DATABASE "setlist" TO "{{name}}";`,
+      `CREATE ROLE "{{name}}" WITH LOGIN NOINHERIT PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT "setlist_visitor" TO "{{name}}"; GRANT CONNECT ON DATABASE "setlist" TO "{{name}}"; ALTER ROLE "{{name}}" RESET role;`,
     );
   });
 

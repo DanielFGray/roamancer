@@ -20,6 +20,16 @@ import { KvSecretReference } from "./Job.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
 import { OperationJournal } from "./OperationJournal.ts";
+import {
+  createDatabase,
+  ensureDatabaseRoles,
+  ensureExtensions,
+  lockDatabase,
+  provisionPostgresDatabase,
+  PostgresProvisioningError,
+  readDatabaseOwner,
+  type PostgresDatabaseDeclaration,
+} from "./PostgresProvisioning.ts";
 import { dependencyRegistrationRetry, firstServiceLocation } from "./ServiceRegistration.ts";
 
 const DatabaseIdentifier = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
@@ -107,131 +117,21 @@ const attributes = (id: string, props: PostgresDatabaseProps, copy: boolean) => 
   migrationCredentialPath: `database/creds/${props.migrationCredentialRole}`,
 });
 
-// Creates a group role that cannot log in, or fails when the name already belongs to a login role.
-// Logins join group roles, so a group that someone can log in as would hand out its rights directly.
-const ensureGroupRole = (sql: SqlClient.SqlClient, role: string, target: string) =>
-  Effect.gen(function* () {
-    const roles = yield* sql<{ readonly rolcanlogin: boolean }>`
-      SELECT rolcanlogin FROM pg_roles WHERE rolname = ${role}
-    `.pipe(
-      Effect.mapError(() => new PostgresDatabaseError({ operation: "read group role", target })),
-    );
-    const existing = Option.map(Arr.head(roles), (row) => row.rolcanlogin);
-    yield* Option.match(existing, {
-      onNone: () =>
-        sql`CREATE ROLE ${sql(role)} NOLOGIN`.pipe(
-          Effect.asVoid,
-          Effect.mapError(
-            () =>
-              new PostgresDatabaseError({
-                operation: "create group role",
-                target,
-              }),
-          ),
-        ),
-      onSome: (canLogin) =>
-        canLogin
-          ? Effect.fail(
-              new PostgresDatabaseError({
-                operation: "validate group role",
-                target: role,
-              }),
-            )
-          : Effect.void,
-    });
+const provisioningError = (error: PostgresProvisioningError) =>
+  new PostgresDatabaseError({
+    operation: error.operation,
+    target: error.target,
+    detail: error.detail,
   });
 
-/**
- * Takes the advisory lock of one database on a reserved connection and holds it until the
- * enclosing scope closes. A session lock belongs to its connection, and a pooled query may run
- * on any connection, so the lock needs a connection that no other query uses.
- */
-const lockDatabase = Effect.fn("PostgresDatabase.lockDatabase")(function* (name: string) {
-  const sql = yield* SqlClient.SqlClient;
-  const connection = yield* sql.reserve;
-  const key = [`alchemy:${name}`];
-  const lockError = () => new PostgresDatabaseError({ operation: "lock database", target: name });
-  yield* Effect.acquireRelease(
-    connection
-      .execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", key, undefined)
-      .pipe(Effect.mapError(lockError)),
-    () =>
-      connection
-        .execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", key, undefined)
-        .pipe(Effect.ignore),
-  );
-});
-
-// Role setup shared by the plain and the copy paths: group roles and the grant that
-// lets the creator create a database owned by the owner role. Database creation itself is a
-// separate step (createDatabase) so each path creates its own database under its own name.
-const provisionDatabase = Effect.fn("PostgresDatabase.provision")(function* (input: {
-  readonly name: string;
-  readonly ownerRole: string;
-  readonly visitorRole: string;
-}) {
-  const sql = yield* SqlClient.SqlClient;
-  yield* ensureGroupRole(sql, input.ownerRole, input.name);
-  yield* ensureGroupRole(sql, input.visitorRole, input.name);
-  // CREATE DATABASE ... OWNER requires the creator to be a member of the owner role, and a role
-  // that creates another role does not become its member on PostgreSQL 17.
-  yield* sql`GRANT ${sql(input.ownerRole)} TO CURRENT_USER`.pipe(
-    Effect.asVoid,
-    Effect.mapError(
-      () =>
-        new PostgresDatabaseError({
-          operation: "grant owner role",
-          target: input.name,
-        }),
-    ),
-  );
-});
-
-const createDatabase = Effect.fn("PostgresDatabase.createDatabase")(function* (input: {
-  readonly name: string;
-  readonly ownerRole: string;
-}) {
-  const sql = yield* SqlClient.SqlClient;
-  const databaseOwner = yield* readDatabaseOwner(input.name);
-  const created = yield* Option.match(databaseOwner, {
-    onNone: () =>
-      sql`CREATE DATABASE ${sql(input.name)} OWNER ${sql(input.ownerRole)}`.pipe(
-        Effect.as(true),
-        Effect.mapError(
-          () =>
-            new PostgresDatabaseError({
-              operation: "create database",
-              target: input.name,
-            }),
-        ),
-      ),
-    onSome: (owner) =>
-      owner === input.ownerRole
-        ? Effect.succeed(false)
-        : Effect.fail(
-            new PostgresDatabaseError({
-              operation: "validate database owner",
-              target: input.name,
-            }),
-          ),
-  });
-  return created;
-});
-
-const readDatabaseOwner = Effect.fn("PostgresDatabase.readDatabaseOwner")(function* (name: string) {
-  const sql = yield* SqlClient.SqlClient;
-  const databases = yield* sql<{ readonly owner: string }>`
-      SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = ${name}
-    `.pipe(
-    Effect.mapError(
-      () =>
-        new PostgresDatabaseError({
-          operation: "read database",
-          target: name,
-        }),
-    ),
-  );
-  return Option.map(Arr.head(databases), (database) => database.owner);
+const databaseDeclaration = (props: PostgresDatabaseProps): PostgresDatabaseDeclaration => ({
+  name: props.name,
+  ownerRole: props.ownerRole,
+  visitorRole: props.visitorRole,
+  extensions: props.extensions,
+  // OpenBao issues dynamic logins; the shared operation only creates logins that
+  // carry a static password (ops). The provider leaves this list empty.
+  logins: [],
 });
 
 /**
@@ -260,49 +160,6 @@ const renameDatabase = Effect.fn("PostgresDatabase.renameDatabase")(function* (
   yield* sql`ALTER DATABASE ${sql(from)} RENAME TO ${sql(to)}`.pipe(
     Effect.asVoid,
     Effect.mapError(() => new PostgresDatabaseError({ operation: "rename database", target: to })),
-  );
-});
-
-// Runs as the admin, a superuser, so untrusted extensions work too. It checks every name before
-// it creates any, so an extension missing from the server image changes nothing.
-const createExtensions = Effect.fn("PostgresDatabase.createExtensions")(function* (input: {
-  readonly database: string;
-  readonly extensions: ReadonlyArray<string>;
-}) {
-  const sql = yield* SqlClient.SqlClient;
-  const available = yield* sql<{ readonly name: string }>`
-      SELECT name FROM pg_available_extensions WHERE name IN ${sql.in(input.extensions)}
-    `.pipe(
-    Effect.mapError(
-      () =>
-        new PostgresDatabaseError({
-          operation: "read extensions",
-          target: input.database,
-        }),
-    ),
-  );
-  const missing = input.extensions.filter(
-    (extension) => !available.some((row) => row.name === extension),
-  );
-  if (missing.length > 0) {
-    return yield* new PostgresDatabaseError({
-      operation: "find extensions in the server image",
-      target: missing.join(", "),
-    });
-  }
-  yield* Effect.forEach(
-    input.extensions,
-    (extension) =>
-      sql`CREATE EXTENSION IF NOT EXISTS ${sql(extension)}`.pipe(
-        Effect.mapError(
-          () =>
-            new PostgresDatabaseError({
-              operation: "create extension",
-              target: extension,
-            }),
-        ),
-      ),
-    { discard: true },
   );
 });
 
@@ -571,109 +428,101 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
         target: input.news.server,
       }),
     );
-  // One deploy at a time creates or copies a database. The lock is held on a reserved connection
-  // of its own pool, which stays open until the database is in place.
-  const created = yield* Effect.scoped(
-    Effect.gen(function* () {
-      const lockPool = yield* Layer.build(adminLayer("postgres"));
-      yield* lockDatabase(input.news.name).pipe(
-        Effect.provideContext(lockPool),
-        Effect.catchTag("SqlError", connectError),
-      );
-      yield* provisionDatabase({
-        name: input.news.name,
-        ownerRole: input.news.ownerRole,
-        visitorRole: input.news.visitorRole,
-      }).pipe(Effect.provide(adminLayer("postgres")), Effect.catchTag("SqlError", connectError));
+  const catchProvision = Effect.catchTags({
+    PostgresProvisioningError: (error: PostgresProvisioningError) =>
+      Effect.fail(provisioningError(error)),
+    SqlError: () => connectError(),
+  });
 
-      const target = input.news.name;
-      const ownerRole = input.news.ownerRole;
+  // One deploy at a time creates or copies a database. The plain path uses the shared
+  // provisioner (its own lock). The copy path holds the lock across dump and rename.
+  const created = yield* Option.match(Option.fromNullishOr(input.news.copyFrom), {
+    onNone: () =>
+      provisionPostgresDatabase(databaseDeclaration(input.news), adminLayer).pipe(
+        Effect.map((result) => result.created),
+        catchProvision,
+      ),
+    onSome: (source) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const lockPool = yield* Layer.build(adminLayer("postgres"));
+          yield* lockDatabase(input.news.name).pipe(
+            Effect.provideContext(lockPool),
+            catchProvision,
+          );
+          yield* ensureDatabaseRoles({
+            name: input.news.name,
+            ownerRole: input.news.ownerRole,
+            visitorRole: input.news.visitorRole,
+          }).pipe(Effect.provide(adminLayer("postgres")), catchProvision);
 
-      return yield* Option.match(Option.fromNullishOr(input.news.copyFrom), {
-        onNone: () =>
-          Effect.gen(function* () {
-            const wasCreated = yield* createDatabase({
-              name: target,
-              ownerRole,
-            }).pipe(
-              Effect.provide(adminLayer("postgres")),
-              Effect.catchTag("SqlError", connectError),
-            );
-            if (wasCreated && input.news.extensions.length > 0) {
-              yield* createExtensions({
-                database: target,
-                extensions: input.news.extensions,
-              }).pipe(
-                Effect.provide(adminLayer(target)),
-                Effect.catchTag("SqlError", connectError),
-              );
-            }
-            return wasCreated;
-          }),
-        onSome: (source) =>
-          Effect.gen(function* () {
-            const owner = yield* readDatabaseOwner(target).pipe(
-              Effect.provide(adminLayer("postgres")),
-              Effect.catchTag("SqlError", connectError),
-            );
-            if (Option.isSome(owner)) {
-              // The real name only ever holds a finished copy, so an existing database is not copied again.
-              return owner.value === ownerRole
-                ? false
-                : yield* new PostgresDatabaseError({
-                    operation: "validate database owner",
-                    target,
-                  });
-            }
-            // The copy is built under a temporary name and renamed into place only once it has
-            // committed. A leftover temporary database from an earlier failure is dropped first.
-            const into = yield* copyDatabaseName(target).pipe(
-              Effect.provide(adminLayer("postgres")),
-              Effect.catchTag("SqlError", connectError),
-            );
-            const dropInto = dropDatabase(into).pipe(
-              Effect.provide(adminLayer("postgres")),
-              Effect.catchTag("SqlError", connectError),
-            );
-            yield* Effect.gen(function* () {
-              yield* dropInto;
-              yield* createDatabase({ name: into, ownerRole }).pipe(
-                Effect.provide(adminLayer("postgres")),
-                Effect.catchTag("SqlError", connectError),
-              );
-              if (input.news.extensions.length > 0) {
-                yield* createExtensions({ database: into, extensions: input.news.extensions }).pipe(
-                  Effect.provide(adminLayer(into)),
-                  Effect.catchTag("SqlError", connectError),
-                );
-              }
-              yield* copyDatabase({
-                source,
+          const target = input.news.name;
+          const ownerRole = input.news.ownerRole;
+
+          const owner = yield* readDatabaseOwner(target).pipe(
+            Effect.provide(adminLayer("postgres")),
+            catchProvision,
+          );
+          if (Option.isSome(owner)) {
+            // The real name only ever holds a finished copy, so an existing database is not copied again.
+            if (owner.value !== ownerRole) {
+              return yield* new PostgresDatabaseError({
+                operation: "validate database owner",
                 target,
-                into,
-                location,
-                admin: input.news.adminUsername,
-                password,
               });
-              yield* renameDatabase(into, target).pipe(
-                Effect.provide(adminLayer("postgres")),
-                Effect.catchTag("SqlError", connectError),
-              );
-            }).pipe(
-              Effect.onError(() =>
-                dropInto.pipe(
-                  Effect.catchTag("PostgresDatabaseError", (error) =>
-                    Effect.logError(`Failed to clean up a failed database copy: ${error.message}`),
-                  ),
-                  Effect.ignore,
-                ),
-              ),
+            }
+            yield* ensureExtensions({
+              database: target,
+              extensions: input.news.extensions,
+            }).pipe(Effect.provide(adminLayer(target)), catchProvision);
+            return false;
+          }
+          // The copy is built under a temporary name and renamed into place only once it has
+          // committed. A leftover temporary database from an earlier failure is dropped first.
+          const into = yield* copyDatabaseName(target).pipe(
+            Effect.provide(adminLayer("postgres")),
+            Effect.catchTag("SqlError", connectError),
+          );
+          const dropInto = dropDatabase(into).pipe(
+            Effect.provide(adminLayer("postgres")),
+            Effect.catchTag("SqlError", connectError),
+          );
+          yield* Effect.gen(function* () {
+            yield* dropInto;
+            yield* createDatabase({ name: into, ownerRole }).pipe(
+              Effect.provide(adminLayer("postgres")),
+              catchProvision,
             );
-            return true;
-          }),
-      });
-    }),
-  );
+            yield* ensureExtensions({
+              database: into,
+              extensions: input.news.extensions,
+            }).pipe(Effect.provide(adminLayer(into)), catchProvision);
+            yield* copyDatabase({
+              source,
+              target,
+              into,
+              location,
+              admin: input.news.adminUsername,
+              password,
+            });
+            yield* renameDatabase(into, target).pipe(
+              Effect.provide(adminLayer("postgres")),
+              Effect.catchTag("SqlError", connectError),
+            );
+          }).pipe(
+            Effect.onError(() =>
+              dropInto.pipe(
+                Effect.catchTag("PostgresDatabaseError", (error) =>
+                  Effect.logError(`Failed to clean up a failed database copy: ${error.message}`),
+                ),
+                Effect.ignore,
+              ),
+            ),
+          );
+          return true;
+        }),
+      ),
+  });
 
   const engineConfigName = input.news.connectionName;
   const url = connectionUrl(location, input.news.name);
