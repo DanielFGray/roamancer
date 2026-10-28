@@ -1,16 +1,16 @@
-# The cluster's TLS: the Nomad agent CA for Nomad RPC, OpenBao and the registry's
-# server certificate; a separate registry CA for registry client certificates only.
-# Nomad clients and the workstation verify the registry server with the Nomad CA.
-# Pulls and pushes authenticate with a cert from the registry CA, which Nomad never
-# accepts, so a holder of the registry client key cannot join as a Nomad node.
+# The cluster's TLS: one CA, and a server certificate for cynic that every LAN listener
+# presents: Nomad RPC, OpenBao's LAN listener and the image registry. Nomad clients and
+# the workstation get client certificates from the same CA, so only machines holding
+# one can join the cluster or reach OpenBao. The registry checks no client certificate
+# (registry.nix); Podman only needs the CA to trust its server certificate.
 #
-# cluster-tls.service creates each CA once. It re-issues a certificate when it has
-# less than 30 days left (certificates last a year) or no longer names the addresses
-# its clients use, at boot and daily. It runs before the listeners start, so keys
-# never pass through the Nix store.
+# cluster-tls.service creates the CA once. It re-issues a certificate when it has less
+# than 30 days left (certificates last a year) or no longer names the addresses its
+# clients use, at boot and daily. It runs before the listeners start, so keys never pass
+# through the Nix store.
 #
-# CA keys exist only in tlsDir. Losing either means re-issuing every certificate that
-# CA signed, so back them up in the password manager (cluster-tls-operations.md).
+# The CA key exists only in tlsDir. Losing it means re-issuing every client's
+# certificate, so back it up in the password manager (cluster-tls-operations.md).
 { pkgs, site, ... }:
 let
   cluster = site.cluster;
@@ -41,28 +41,16 @@ in
         nomad tls ca create
       fi
 
-      if [ ! -s registry-ca-key.pem ]; then
-        if [ -e registry-ca.pem ]; then
-          echo "${cluster.tlsDir} has a registry CA but no key; restore the registry CA key" >&2
-          exit 1
-        fi
-        openssl req -x509 -newkey rsa:4096 -sha256 -days 1825 -nodes \
-          -keyout registry-ca-key.pem -out registry-ca.pem \
-          -subj "/CN=cluster-registry-ca"
-      fi
-
       # True when the certificate has 30 days left, chains to the CA, and passes the
       # name checks given after it.
       current() {
         local cert=$1
-        local ca=$2
-        shift 2
+        shift
         openssl x509 -in "$cert" -noout -checkend $((30 * 86400)) >/dev/null 2>&1 &&
-          openssl verify -CAfile "$ca" "$@" "$cert" >/dev/null 2>&1
+          openssl verify -CAfile nomad-agent-ca.pem "$@" "$cert" >/dev/null 2>&1
       }
 
-      if ! current global-server-nomad.pem nomad-agent-ca.pem \
-          -verify_ip ${cluster.lanAddress} -verify_hostname ${cluster.registryName}; then
+      if ! current global-server-nomad.pem -verify_ip ${cluster.lanAddress} -verify_hostname ${cluster.registryName}; then
         rm -f global-server-nomad.pem global-server-nomad-key.pem
         nomad tls cert create -server -region global \
           -additional-ipaddress ${cluster.lanAddress} -additional-dnsname ${cluster.registryName}
@@ -74,23 +62,10 @@ in
         systemctl --no-block try-restart openbao.service docker-registry.service
       fi
 
-      # nomad pulls job images; the operator may push from a build node. Both are in
-      # registry-client. The client key is from the registry CA (Nomad never accepts it).
-      # ca.crt is the Nomad CA, which signs the registry's server certificate.
-      client=${cluster.registryClientDir}
-      if ! current "$client/client.cert" registry-ca.pem; then
-        work=$(mktemp -d)
-        openssl req -newkey rsa:4096 -nodes -sha256 \
-          -keyout "$work/key.pem" -out "$work/req.csr" \
-          -subj "/CN=registry-client"
-        openssl x509 -req -in "$work/req.csr" -CA registry-ca.pem -CAkey registry-ca-key.pem \
-          -CAcreateserial -out "$work/cert.pem" -days 365 -sha256
-        install -d -m 0750 -g registry-client "$client"
-        install -m 0644 nomad-agent-ca.pem "$client/ca.crt"
-        install -m 0644 "$work/cert.pem" "$client/client.cert"
-        install -m 0640 -g registry-client "$work/key.pem" "$client/client.key"
-        rm -rf "$work"
-      fi
+      # Rootless Podman (nomad pulling, the operator pushing from a build node) reads the
+      # CA that signed the registry's server certificate from this folder. The CA is public.
+      install -d -m 0755 ${cluster.registryCaDir}
+      install -m 0644 nomad-agent-ca.pem ${cluster.registryCaDir}/ca.crt
     '';
   };
 

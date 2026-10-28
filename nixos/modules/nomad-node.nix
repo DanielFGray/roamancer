@@ -36,15 +36,10 @@ in
       group = "nomad";
       home = "/var/lib/nomad-user";
       createHome = true;
-      extraGroups = [ "registry-client" ];
       subUidRanges = [{ startUid = 100000; count = 65536; }];
       subGidRanges = [{ startGid = 100000; count = 65536; }];
     };
     users.groups.nomad = { };
-    # Owns the registry client key and cert so Nomad's rootless Podman and the
-    # operator's rootless Podman (a build node) can both push and pull.
-    users.groups.registry-client = { };
-    users.users.${site.operator.name}.extraGroups = [ "registry-client" ];
 
     systemd.tmpfiles.rules = [
       # A unit bind mount would hide Nomad's secrets tmpfs from rootless Podman.
@@ -124,9 +119,9 @@ in
 
     # Jobs pull their images from cynic's registry by this name (registry.nix).
     networking.hosts.${cluster.lanAddress} = [ cluster.registryName ];
-    # Podman reads a registry's CA (ca.crt) and client pair (client.cert, client.key) from
-    # this folder. On cynic, cluster-tls.service writes them; other nodes get theirs at install.
+    # Podman trusts the registry's server certificate with the CA in this folder (ca.crt).
+    # On cynic, cluster-tls.service writes it; other nodes get it at install.
     environment.etc."containers/certs.d/${cluster.registryName}:${toString cluster.registryPort}".source =
-      cluster.registryClientDir;
+      cluster.registryCaDir;
   };
 }
