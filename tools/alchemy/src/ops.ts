@@ -9,6 +9,7 @@ import * as BunServices from "@effect/platform-bun/BunServices";
 import { Config, Console, Effect, Layer, Option, Stdio } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { Builder } from "./Builder.ts";
+import { commands as devCommands } from "./devdb/Commands.ts";
 import { OpsError, route } from "./Exec.ts";
 import { HostSecretsError } from "./HostSecrets.ts";
 import { HostName, install, rebuild } from "./Nixos.ts";
@@ -82,6 +83,7 @@ const ops = Command.make("ops").pipe(
   Command.withDescription("Release apps, rebuild hosts, and run Alchemy on the control host"),
   Command.withSubcommands([
     ...releaseCommands,
+    ...devCommands,
     secret,
     rebuildCommand,
     installCommand,
