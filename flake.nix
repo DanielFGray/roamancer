@@ -47,7 +47,10 @@
       };
     in {
       packages.${system} = {
-        alchemy-runner = pkgs.callPackage ./nixos/modules/alchemy-runner-package.nix { };
+        alchemy-runner = pkgs.callPackage ./nixos/modules/alchemy-runner-package.nix {
+          # Dirty trees have no rev; the package then omits ALCHEMY_RUNNER_REVISION.
+          revision = self.rev or null;
+        };
 
         postgres-image =
           import ./nixos/cynic/postgres-image.nix { pkgs = nixpkgs.legacyPackages.${system}; };

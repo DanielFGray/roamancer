@@ -10,6 +10,7 @@ import { ValkeyAccess } from "./src/ValkeyAccess.ts";
 import { AdminCredential } from "./src/AdminCredential.ts";
 import { TailscaleServe } from "./src/TailscaleServe.ts";
 import * as Cartridge from "./src/Cartridge.ts";
+import * as Package from "./src/Package.ts";
 import * as Deployments from "./src/Deployments.ts";
 import * as StagedCartridge from "./src/StagedCartridge.ts";
 import { compose } from "./src/Compose.ts";
@@ -26,7 +27,7 @@ const stack = Alchemy.Stack(
     const resources = yield* Option.match(StagedCartridge.baseName(stage), {
       onNone: () =>
         Effect.gen(function* () {
-          const cartridge = yield* Cartridge.resolve(".", stage);
+          const cartridge = yield* Cartridge.resolve(Package.root, stage);
           return Cartridge.expand(cartridge);
         }),
       onSome: (base) =>
@@ -34,7 +35,7 @@ const stack = Alchemy.Stack(
           // A staged stage has no default image: without one the run would deploy the
           // live image again, which is the opposite of what the stage asked for.
           const image = yield* Config.String("STAGED_IMAGE");
-          const cartridge = yield* Cartridge.resolve(".", base);
+          const cartridge = yield* Cartridge.resolve(Package.root, base);
           // The stack fails only with ConfigError; a refused cartridge is one.
           const staged = yield* StagedCartridge.staged(cartridge, image).pipe(
             Effect.mapError(

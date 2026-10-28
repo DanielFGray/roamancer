@@ -1,12 +1,12 @@
 /*
  * `ops`, the operator's command: releases and secrets from an app's repository, host
- * configuration (`rebuild`, `install`), and every Alchemy and Nomad command, which runs on the
+ * configuration (`rebuild`, `install`), and every Alchemy and Nomad command, which is a job on the
  * control host. `scripts/ops` starts this file. The site folder that OPS_SITE names says
  * where the control host is (src/Site.ts).
  */
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
-import { Config, Console, Effect, Layer, Option, Stdio } from "effect";
+import { Console, Effect, Layer, Stdio } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { Builder } from "./Builder.ts";
 import { commands as devCommands } from "./devdb/Commands.ts";
@@ -14,32 +14,10 @@ import { OpsError, route } from "./Exec.ts";
 import { HostSecretsError } from "./HostSecrets.ts";
 import { HostName, install, rebuild } from "./Nixos.ts";
 import { commands as releaseCommands } from "./release.ts";
-import { hostCommands, Remote } from "./Remote.ts";
+import { commands as jobCommands, forwarded } from "./Jobs.ts";
+import { Remote } from "./Remote.ts";
 import { secret } from "./secrets.ts";
 import { Site } from "./Site.ts";
-
-const hostCommandNames = hostCommands.map((command) => command.name);
-
-/**
- * A command that runs on the control host. CARTRIDGE names a cartridge file to send with it;
- * without one the host uses the newest recorded deployment.
- */
-const onHost = (host: (typeof hostCommands)[number]) =>
-  Command.make(
-    host.name,
-    {
-      args: Argument.String("args").pipe(
-        Argument.withDescription("Passed to the control host unread"),
-        Argument.variadic(),
-      ),
-    },
-    Effect.fn(function* ({ args }) {
-      const cartridge = yield* Config.option(Config.String("CARTRIDGE"));
-      yield* (yield* Remote).run([host.name, ...args], {
-        cartridge: Option.getOrUndefined(cartridge),
-      });
-    }),
-  ).pipe(Command.withDescription(host.description));
 
 const hostName = Argument.String("host").pipe(Argument.withSchema(HostName));
 
@@ -87,13 +65,13 @@ const ops = Command.make("ops").pipe(
     secret,
     rebuildCommand,
     installCommand,
-    ...hostCommands.map(onHost),
+    ...jobCommands,
   ]),
 );
 
 const main = Effect.gen(function* () {
   const args = yield* (yield* Stdio.Stdio).args;
-  yield* Command.runWith(ops, { version: "1" })(route(hostCommandNames)(args));
+  yield* Command.runWith(ops, { version: "1" })(route(forwarded)(args));
 }).pipe(
   Effect.tapErrorTag("OpsError", (error: OpsError) => Console.error(error.message)),
   Effect.tapErrorTag("HostSecretsError", (error: HostSecretsError) => Console.error(error.message)),

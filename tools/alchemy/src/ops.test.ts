@@ -20,45 +20,23 @@ import * as Spawner from "effect/process/ChildProcessSpawner";
 import { OpsError, route } from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { flakeHosts, HostName, install, rebuild } from "./Nixos.ts";
-import { hostCommands, Remote, remoteCommand } from "./Remote.ts";
+import { deployStage, forwarded } from "./Jobs.ts";
+import { Remote } from "./Remote.ts";
 import { Site } from "./Site.ts";
 
 const repositoryRoot = new URL("../../..", import.meta.url).pathname;
-const hostRoute = route(hostCommands.map((command) => command.name));
+const hostRoute = route(forwarded);
 
 describe("route", () => {
-  it("puts -- after a host command so its flags reach the host", () => {
-    assert.deepEqual(hostRoute(["deploy", "--stage", "giglist"]), [
-      "deploy",
-      "--",
-      "--stage",
-      "giglist",
-    ]);
+  it("puts -- after a forwarding command so its flags reach the host", () => {
+    assert.deepEqual(hostRoute(["logs", "--tail", "x"]), ["logs", "--", "--tail", "x"]);
     assert.deepEqual(hostRoute(["logs", "--", "x"]), ["logs", "--", "x"]);
   });
 
-  it("leaves the commands that run here alone", () => {
-    assert.deepEqual(hostRoute(["install", "--yes", "cynic", "root@x"]), [
-      "install",
-      "--yes",
-      "cynic",
-      "root@x",
-    ]);
+  it("leaves every other command alone", () => {
+    assert.deepEqual(hostRoute(["deploy", "--stage", "giglist"]), ["deploy", "--stage", "giglist"]);
     assert.deepEqual(hostRoute(["--help"]), ["--help"]);
     assert.deepEqual(hostRoute([]), []);
-  });
-});
-
-describe("remoteCommand", () => {
-  it("quotes every argument and variable as one word", () => {
-    assert.equal(
-      remoteCommand(["dash"], []),
-      "cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'dash'",
-    );
-    assert.equal(
-      remoteCommand(["logs", "it's"], [["ORIGIN", "a b"]]),
-      "cd alchemy && bun install --frozen-lockfile --silent && exec env 'ORIGIN=a b' bun src/cli.ts 'logs' 'it'\\''s'",
-    );
   });
 });
 
@@ -77,110 +55,121 @@ describe("HostName", () => {
   });
 });
 
+/** What the fake control host prints: the runner's revision and each submitted job's id. */
+const host = (line: string) =>
+  line.endsWith("alchemy-runner version")
+    ? "abc123\n"
+    : line.endsWith("alchemy-runner submit")
+      ? "7\n"
+      : "";
+
 describe("Remote", () => {
-  it("pushes HEAD to the host and runs the host command", async () => {
-    const { log } = await execute(Effect.flatMap(Remote, (remote) => remote.run(["dash"])));
-    assert.deepEqual(log.slice(0, 4), sent("ctl", Git.repository, Git.checkout));
-    assert.deepEqual(log.slice(4), [
-      "ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'dash'",
+  it("checks the runner revision once, submits JSON on stdin, then waits", async () => {
+    const { log, inputs } = await execute(
+      Effect.flatMap(Remote, (remote) =>
+        Effect.andThen(remote.run({ command: "dash" }), remote.run({ command: "place-queued" })),
+      ),
+      { output: host },
+    );
+    assert.deepEqual(log, [
+      "ssh ctl alchemy-runner version",
+      `git -C ${Git.repository} cat-file -e abc123^{commit}`,
+      `git -C ${Git.repository} diff --quiet abc123 -- tools/alchemy`,
+      "ssh ctl alchemy-runner submit",
+      "ssh ctl 'alchemy-runner' 'wait' '7'",
+      "ssh ctl alchemy-runner submit",
+      "ssh ctl 'alchemy-runner' 'wait' '7'",
     ]);
+    assert.deepEqual(
+      inputs.map((input) => JSON.parse(input)),
+      [
+        { _tag: "submit", command: "dash" },
+        { _tag: "submit", command: "place-queued" },
+      ],
+    );
+  });
+
+  it("refuses every job when tools/alchemy differs from the runner's revision", async () => {
+    const { log, error } = await execute(
+      Effect.flatMap(Remote, (remote) => remote.run({ command: "dash" })),
+      { output: host, reply: (line) => (line.includes(" diff ") ? 1 : 0) },
+    );
+    assert.ok(error instanceof OpsError);
+    assert.match(error.message, /ctl runs server-ansible abc123, .* run `ops rebuild`/);
+    assert.ok(!log.some((line) => line.includes("submit")));
+  });
+
+  it("names a runner revision this checkout lacks, rather than calling it a difference", async () => {
+    const { error } = await execute(
+      Effect.flatMap(Remote, (remote) => remote.run({ command: "dash" })),
+      { output: host, reply: (line) => (line.includes(" cat-file ") ? 1 : 0) },
+    );
+    assert.ok(error instanceof OpsError);
+    assert.match(error.message, /abc123, which this checkout does not have/);
   });
 
   it("asks for a terminal only when stdin is one", async () => {
     const { log } = await execute(
-      Effect.flatMap(Remote, (remote) => remote.run(["login"])),
+      Effect.flatMap(Remote, (remote) => remote.direct(["login"])),
       { terminal: true },
     );
-    assert.equal(
-      log[log.length - 1],
-      "ssh -t ctl cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'login'",
-    );
-  });
-
-  it("leaves stdin to the host command alone: setup ssh calls never read it", async () => {
-    const { log } = await execute(
-      Effect.flatMap(Remote, (remote) => remote.run(["login"], { cartridge: "/tmp/c.json" })),
-    );
-    const setup = log.filter((line) => line.startsWith("ssh ") && !line.includes("src/cli.ts"));
-    assert.ok(setup.length > 0);
-    assert.ok(setup.every((line) => line.startsWith("ssh -n ")));
-    assert.match(log[log.length - 1], /^ssh ctl cd alchemy && .* bun src\/cli\.ts 'login'$/);
-  });
-
-  it("sends a cartridge and what the release records", async () => {
-    const { log } = await execute(
-      Effect.flatMap(Remote, (remote) =>
-        remote.run(["deploy", "--stage", "giglist"], {
-          cartridge: "/tmp/c.json",
-          origin: "abc",
-          revision: "def",
-        }),
-      ),
-    );
-    assert.equal(log[4], "ssh -n ctl mkdir -p alchemy/.alchemy/input");
-    assert.match(
-      log[5],
-      /^scp -q \/tmp\/c\.json ctl:alchemy\/\.alchemy\/input\/cartridge-\d+-\d+\.json$/,
-    );
-    assert.match(
-      log[6],
-      /^ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec env 'CARTRIDGE_FILE=\.alchemy\/input\/cartridge-\d+-\d+\.json' 'ORIGIN=abc' 'REVISION=def' bun src\/cli\.ts 'deploy' '--stage' 'giglist'$/,
-    );
+    assert.deepEqual(log, ["ssh -t ctl 'alchemy-runner' 'login'"]);
   });
 
   it("uses OPS_HOST in place of the site's server", async () => {
     const { log } = await execute(
-      Effect.flatMap(Remote, (remote) => remote.run(["dash"])),
+      Effect.flatMap(Remote, (remote) => remote.direct(["logs", "it's"])),
       { env: { OPS_HOST: "other" } },
     );
-    assert.deepEqual(log.slice(0, 4), sent("other", Git.repository, Git.checkout));
-    assert.equal(
-      log[log.length - 1],
-      "ssh other cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'dash'",
+    assert.deepEqual(log, ["ssh other 'alchemy-runner' 'logs' 'it'\\''s'"]);
+  });
+});
+
+describe("deployStage", () => {
+  const sent = { cartridge: "{}", origin: "o", revision: "r", stagedImage: null };
+
+  it("deploys the plan it showed, naming that plan's job", async () => {
+    const { inputs } = await execute(deployStage("giglist", sent, true), {
+      output: (line) =>
+        line.endsWith("version") ? "abc123\n" : line.endsWith("submit") ? "4\n" : "",
+    });
+    assert.deepEqual(
+      inputs.map((input) => JSON.parse(input)),
+      [
+        { _tag: "submit", command: "plan", stage: "giglist", ...sent },
+        { _tag: "submit", command: "deploy", stage: "giglist", ...sent, planJobId: 4 },
+      ],
     );
   });
 
-  it("names the uncommitted changes that stay behind", async () => {
-    const { messages } = await execute(
-      Effect.flatMap(Remote, (remote) => remote.run(["dash"])),
-      {
-        output: (line) =>
-          line.endsWith("--show-prefix")
-            ? ""
-            : line.endsWith("status --porcelain")
-              ? " M a.ts\n?? b.ts\n"
-              : "abc1234\n",
-      },
-    );
-    assert.match(messages[0], /abc1234 to ctl:server-ansible \(2 uncommitted changes stay here\)/);
-  });
-
-  it("does not push when the directory is not a repository", async () => {
-    const { log, error } = await execute(
-      Effect.flatMap(Remote, (remote) => remote.run(["dash"])),
-      { reply: (line) => (line.includes("rev-parse") ? 128 : 0) },
-    );
+  it("plans but does not deploy without --yes or a terminal", async () => {
+    const { inputs, error } = await execute(deployStage("giglist", sent, false), {
+      output: (line) =>
+        line.endsWith("version") ? "abc123\n" : line.endsWith("submit") ? "4\n" : "",
+    });
     assert.ok(error instanceof OpsError);
-    assert.match(error.message, /not a git repository/);
-    assert.equal(log.filter((line) => line.includes("push")).length, 0);
+    assert.match(error.message, /pass --yes/);
+    assert.deepEqual(
+      inputs.map((input) => JSON.parse(input).command),
+      ["plan"],
+    );
   });
 });
 
 describe("rebuild", () => {
   it("pushes both repositories and switches the named host", async () => {
-    const { log, site } = await execute(rebuild(Option.some("cynic"), Option.some("root@z")));
+    const { log, site } = await execute(rebuild(Option.some("cynic"), Option.some("root@z")), {
+      output: host,
+    });
     assert.deepEqual(log.slice(0, 8), [
       ...sent("root@z", Git.repository, Git.checkout),
       ...sent("root@z", site, "site"),
     ]);
     assert.equal(
       log[8],
-      `ssh -t root@z rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/server-ansible#cynic" --override-input site "path:$HOME/site-tree"`,
+      `ssh -t root@z rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "git+file:$HOME/server-ansible#cynic" --override-input site "path:$HOME/site-tree"`,
     );
-    assert.equal(
-      log[log.length - 1],
-      "ssh ctl cd alchemy && bun install --frozen-lockfile --silent && exec bun src/cli.ts 'place-queued'",
-    );
+    assert.equal(log[log.length - 1], "ssh ctl 'alchemy-runner' 'wait' '7'");
   });
 
   it("rebuilds every host the flake declares, one at a time", async () => {
@@ -304,18 +293,9 @@ const execute = <A, E>(
       );
     }
     const log: Array<string> = [];
-    const spawner = Layer.succeed(
-      Spawner.ChildProcessSpawner,
-      Spawner.make((command) => {
-        const line = ChildProcess.isStandardCommand(command)
-          ? [command.command, ...command.args].join(" ")
-          : "(piped command)";
-        log.push(line);
-        return Effect.succeed(handle(options.reply?.(line) ?? 0, options.output?.(line) ?? ""));
-      }),
-    );
+    const inputs: Array<string> = [];
     const environment = Layer.mergeAll(
-      spawner,
+      recordingSpawner(log, inputs, options),
       Stdio.layerTest({ stdinIsTerminal: Effect.succeed(options.terminal ?? false) }),
       ConfigProvider.layer(
         ConfigProvider.fromEnvRecord({ OPS_SITE: site, HOME: home, ...options.env }),
@@ -329,7 +309,7 @@ const execute = <A, E>(
       ),
     );
     const messages = (yield* TestConsole.errorLines).map(String);
-    return { log, messages, site, home, error: Option.getOrUndefined(error) };
+    return { log, inputs, messages, site, home, error: Option.getOrUndefined(error) };
   }).pipe(
     Effect.scoped,
     Effect.provide(TestConsole.layer),
@@ -351,3 +331,29 @@ const handle = (code: number, stdout: string) =>
     getOutputFd: () => Stream.empty,
     unref: Effect.succeed(Effect.void),
   });
+
+/** A spawner that records each command line and its stdin, and replies as `options` say. */
+const recordingSpawner = (
+  log: Array<string>,
+  inputs: Array<string>,
+  options: {
+    readonly reply?: (line: string) => number;
+    readonly output?: (line: string) => string;
+  },
+) =>
+  Layer.succeed(
+    Spawner.ChildProcessSpawner,
+    Spawner.make(
+      Effect.fnUntraced(function* (command) {
+        if (!ChildProcess.isStandardCommand(command)) {
+          log.push("(piped command)");
+          return handle(0, "");
+        }
+        const line = [command.command, ...command.args].join(" ");
+        log.push(line);
+        const stdin = command.options.stdin;
+        if (Stream.isStream(stdin)) inputs.push(yield* Stream.mkString(Stream.decodeText(stdin)));
+        return handle(options.reply?.(line) ?? 0, options.output?.(line) ?? "");
+      }),
+    ),
+  );

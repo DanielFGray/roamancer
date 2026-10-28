@@ -1,120 +1,109 @@
 /**
- * Commands that run on the control host, the machine with the Nomad server, OpenBao and the
- * Alchemy state. Each call first pushes this repository's HEAD to the host, so the host runs
- * the committed platform cartridges and code, then runs `src/cli.ts` over ssh after
- * `bun install`. The host's checkout is ~/server-ansible, and ~/alchemy links to its
- * tools/alchemy, so Alchemy's state, which git ignores, stays at ~/alchemy/.alchemy through
- * every push.
+ * The control host's job queue, seen from the workstation. Every Alchemy and Nomad command
+ * that needs the host's state or tokens is a job: `ops` sends one JSON request to
+ * `alchemy-runner submit` over ssh, then follows the job with `alchemy-runner wait`. The host
+ * runs only the runner its last `ops rebuild` installed, so before the first job `ops`
+ * refuses when this checkout's tools/alchemy differs from the runner's revision. A job
+ * answers with its exit code: its output is for the operator to read, because the journal
+ * holds the job's stdout and stderr as one stream.
  */
-import { Clock, Context, Effect, Layer, Random, Stdio } from "effect";
+import { Context, Effect, Layer, Schema as S, Stdio } from "effect";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
+import type { JobSubmit } from "./queue/Schema.ts";
 import { Site } from "./Site.ts";
 
-/** What the host receives besides the command line. */
-export interface Sent {
-  /** A cartridge file to copy to the host; the command reads it instead of the recorded one. */
-  readonly cartridge?: string | undefined;
-  /** The root commit of the repository the cartridge came from. */
-  readonly origin?: string | undefined;
-  /** The released commit. */
-  readonly revision?: string | undefined;
-  /** The pushed image a staged deploy runs. */
-  readonly stagedImage?: string | undefined;
-}
-
-/** The commands the host runs; `ops` forwards their arguments unread. */
-export const hostCommands = [
-  { name: "plan", description: "Preview an Alchemy deploy of a stage" },
-  { name: "deploy", description: "Run Alchemy's deploy of a stage, for example --stage giglist" },
-  { name: "destroy", description: "Destroy a stage's resources" },
-  { name: "drift", description: "Report drift between the state and the running resources" },
-  { name: "state", description: "Read Alchemy's state store" },
-  { name: "rollback", description: "Deploy a recorded deployment again: <name> <id>" },
-  { name: "deployment", description: "The recorded deployments of an app: list <name>" },
-  { name: "dash", description: "Every job's health and each node's load, once" },
-  { name: "status", description: "A cartridge's Nomad allocation status" },
-  { name: "logs", description: "A job's logs, or why it is not running" },
-  { name: "place-queued", description: "Ask Nomad to place queued jobs again" },
-  { name: "stage-image", description: "The image a staged deploy runs" },
-  {
-    name: "login",
-    description: "Mint a 2-hour OpenBao token from the root token, typed or piped on stdin",
-  },
-  { name: "check-login", description: "Fail unless the OpenBao token is valid" },
-] as const;
-
-/**
- * The command line `ssh` hands to the host's shell: install dependencies in ~/alchemy, then
- * run src/cli.ts with each argument as one word. Variables Remote already sends are applied
- * to that process only, so `bun install` does not see them.
- */
-export const remoteCommand = (
-  args: ReadonlyArray<string>,
-  environment: ReadonlyArray<readonly [string, string]>,
-) => {
-  const cli = ["bun", "src/cli.ts", ...args.map(Exec.quote)].join(" ");
-  const run =
-    environment.length === 0
-      ? cli
-      : `env ${environment.map(([name, value]) => Exec.quote(`${name}=${value}`)).join(" ")} ${cli}`;
-  return `cd alchemy && bun install --frozen-lockfile --silent && exec ${run}`;
-};
+const runner = "alchemy-runner";
 
 export class Remote extends Context.Service<Remote>()("ops/Remote", {
   make: Effect.gen(function* () {
     const site = yield* Site;
     const stdio = yield* Stdio.Stdio;
+    const sameRevision = yield* Effect.cached(
+      Effect.gen(function* () {
+        yield* checkRevision(yield* site.host);
+      }),
+    );
 
-    // The folder under .alchemy, which a push leaves alone; named per run.
-    const sendCartridge = Effect.fn("Remote.sendCartridge")(function* (host: string, file: string) {
-      const name = `.alchemy/input/cartridge-${yield* Clock.currentTimeMillis}-${yield* Random.nextIntBetween(0, 1_000_000_000)}.json`;
-      yield* Exec.run("ssh", ["-n", host, "mkdir -p alchemy/.alchemy/input"]);
-      yield* Exec.run("scp", ["-q", file, `${host}:alchemy/${name}`]);
-      return name;
-    });
-
-    const prepare = Effect.fn("Remote.prepare")(function* (
-      args: ReadonlyArray<string>,
-      sent: Sent,
-    ) {
+    /** Queue `job` on the host and return its id. */
+    const submit = Effect.fn("Remote.submit")(function* (job: JobSubmit) {
+      yield* sameRevision;
       const host = yield* site.host;
-      yield* Git.push(host, Git.repository, Git.checkout);
-      const cartridgeFile =
-        sent.cartridge === undefined ? undefined : yield* sendCartridge(host, sent.cartridge);
-      const variables: ReadonlyArray<readonly [string, string | undefined]> = [
-        ["CARTRIDGE_FILE", cartridgeFile],
-        ["ORIGIN", sent.origin],
-        ["REVISION", sent.revision],
-        ["STAGED_IMAGE", sent.stagedImage],
-      ];
-      const environment = variables.flatMap(([name, value]) =>
-        value === undefined ? [] : [[name, value] as const],
+      const printed = yield* Exec.output(
+        "ssh",
+        [host, `${runner} submit`],
+        JSON.stringify({ _tag: "submit", ...job }),
       );
-      return { host, command: remoteCommand(args, environment) };
+      return yield* S.decodeUnknownEffect(S.NumberFromString)(printed.trim()).pipe(
+        Effect.mapError(
+          () => new Exec.OpsError({ message: `submit printed no job id: ${printed}` }),
+        ),
+      );
     });
 
-    /** Run a host command on this terminal. */
-    const run = Effect.fn("Remote.run")(function* (args: ReadonlyArray<string>, sent: Sent = {}) {
-      const { host, command } = yield* prepare(args, sent);
-      // The remote shell starts in the home folder. A terminal is requested only when this
-      // one has one. Piped input is not a terminal: it reaches the host command over ssh's
-      // stdin, which the cartridge calls above never read (see `-n` there).
+    /**
+     * Queue `job` and stream its output on this terminal; fails unless it succeeds, and
+     * returns its id. With a terminal, ssh forwards Ctrl-C, which cancels a job that has not
+     * started.
+     */
+    const run = Effect.fn("Remote.run")(function* (job: JobSubmit) {
+      const id = yield* submit(job);
+      yield* direct(["wait", `${id}`]);
+      return id;
+    });
+
+    /**
+     * Run an `alchemy-runner` command that is not a job (login, logs) on this terminal.
+     * Piped input is not a terminal: it reaches the command over ssh's stdin.
+     */
+    const direct = Effect.fn("Remote.direct")(function* (args: ReadonlyArray<string>) {
       const terminal = yield* stdio.stdinIsTerminal;
-      yield* Exec.run("ssh", (terminal ? ["-t"] : []).concat(host, command));
+      yield* Exec.run(
+        "ssh",
+        (terminal ? ["-t"] : []).concat(
+          yield* site.host,
+          [runner, ...args].map(Exec.quote).join(" "),
+        ),
+      );
     });
 
-    /** Run a host command and return what it prints. */
-    const output = Effect.fn("Remote.output")(function* (
-      args: ReadonlyArray<string>,
-      sent: Sent = {},
-    ) {
-      const { host, command } = yield* prepare(args, sent);
-      return yield* Exec.output("ssh", [host, command]);
-    });
-
-    return { run, output };
+    return { submit, run, direct };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);
 }
+
+/**
+ * Fail unless tools/alchemy in this checkout, uncommitted changes included, is the tree the
+ * host's runner was built from. The job requests and the cartridges they name come from
+ * this checkout, so a different runner could read them differently.
+ */
+const checkRevision = Effect.fn("Remote.checkRevision")(function* (host: string) {
+  const revision = (yield* Exec.output("ssh", [host, `${runner} version`])).trim();
+  const known = yield* Exec.succeeds("git", [
+    "-C",
+    Git.repository,
+    "cat-file",
+    "-e",
+    `${revision}^{commit}`,
+  ]);
+  if (!known) {
+    return yield* new Exec.OpsError({
+      message: `${host} runs server-ansible ${revision.slice(0, 12)}, which this checkout does not have. Fetch it, or run \`ops rebuild\` for that host from here.`,
+    });
+  }
+  const same = yield* Exec.succeeds("git", [
+    "-C",
+    Git.repository,
+    "diff",
+    "--quiet",
+    revision,
+    "--",
+    "tools/alchemy",
+  ]);
+  if (!same) {
+    return yield* new Exec.OpsError({
+      message: `${host} runs server-ansible ${revision.slice(0, 12)}, and tools/alchemy here differs from it. Commit, then run \`ops rebuild\` for that host.`,
+    });
+  }
+});

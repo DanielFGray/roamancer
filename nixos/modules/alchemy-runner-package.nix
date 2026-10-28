@@ -5,6 +5,8 @@
   bun2nix,
   jq,
   makeWrapper,
+  # server-ansible commit this package was built from (`self.rev`); null when dirty.
+  revision ? null,
 }:
 
 stdenvNoCC.mkDerivation {
@@ -39,7 +41,13 @@ stdenvNoCC.mkDerivation {
     makeWrapper ${bun}/bin/bun "$out/bin/alchemy-runner" \
       --add-flags "$out/lib/alchemy-runner/src/cli.ts" \
       --set NOMAD_ADDR http://127.0.0.1:4646 \
-      --set OPENBAO_ADDR http://127.0.0.1:8200
+      --set OPENBAO_ADDR http://127.0.0.1:8200 \
+      ${
+        if revision == null then
+          ""
+        else
+          "--set ALCHEMY_RUNNER_REVISION ${lib.escapeShellArg revision}"
+      }
   '';
 
   meta = {

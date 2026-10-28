@@ -44,19 +44,20 @@ export const rebuild = Effect.fn("Nixos.rebuild")(function* (
       yield* Console.error(`== ${host} (${to})`);
       yield* Git.push(to, Git.repository, Git.checkout);
       yield* Git.push(to, site, "site");
-      // $HOME expands in the operator's shell, before sudo. The site input is the committed
-      // tree exported without .git: a path input would copy .git into the world-readable
-      // store, and a git input fails because root does not own the checkout.
+      // $HOME expands in the operator's shell, before sudo. git+file gives the flake a
+      // revision (self.rev) for ALCHEMY_RUNNER_REVISION. The site input stays a path: the
+      // committed tree is exported without .git so root need not own the checkout, and a
+      // path input would otherwise copy .git into the world-readable store.
       yield* Exec.run("ssh", [
         "-t",
         to,
-        `rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "path:$HOME/${Git.checkout}#${host}" --override-input site "path:$HOME/site-tree"`,
+        `rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "git+file:$HOME/${Git.checkout}#${host}" --override-input site "path:$HOME/site-tree"`,
       ]);
     }),
   );
   // A switch can add the host volume or memory a queued job waits for; Nomad does not retry
   // on its own.
-  yield* remote.run(["place-queued"]);
+  yield* remote.run({ command: "place-queued" });
 });
 
 /**

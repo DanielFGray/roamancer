@@ -59,20 +59,7 @@ const fulfill = (paths: Paths, request: Request) =>
     const store = yield* Store;
     switch (request._tag) {
       case "submit": {
-        const submit =
-          request.command === "rollback"
-            ? {
-                command: "rollback" as const,
-                name: request.name,
-                deploymentId: request.deploymentId,
-              }
-            : {
-                command: request.command,
-                stage: request.stage,
-                cartridge: request.cartridge,
-                origin: request.origin,
-                revision: request.revision,
-              };
+        const { _tag, ...submit } = request;
         const job = yield* store.enqueue(submit);
         yield* tryStart();
         return { _tag: "submitted" as const, id: job.id };
@@ -84,7 +71,11 @@ const fulfill = (paths: Paths, request: Request) =>
         if (Option.isNone(job)) {
           return { _tag: "error" as const, message: `no job ${request.id}` };
         }
-        return { _tag: "shown" as const, job: job.value, unit: unitName(job.value.id) };
+        return {
+          _tag: "shown" as const,
+          job: job.value,
+          unit: unitName(job.value.id),
+        };
       }
       case "wait": {
         const ended = yield* waitFor(request.id);

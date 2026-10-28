@@ -21,14 +21,11 @@ in
 
   # Bun runs Alchemy and the host commands in tools/alchemy/src/cli.ts.
   # pg_dump/pg_restore (postgresql_17) are used by ops to copy Postgres databases.
-  environment.systemPackages = [ pkgs.bun pkgs.postgresql_17 ];
+  # sqlite3 checks and backs up the queue and the operation journal (queue-cutover.md).
+  environment.systemPackages = [ pkgs.bun pkgs.postgresql_17 pkgs.sqlite ];
 
   users.groups.alchemy = { };
   users.users.${operator.name}.extraGroups = [ "alchemy" ];
-
-  # Alchemy runs as the operator and serves tailnet routes with `tailscale serve`, which
-  # needs the Tailscale operator; without it every serve change would need sudo.
-  services.tailscale.extraSetFlags = [ "--operator=${operator.name}" ];
 
   # The operator's password lives only in /etc/shadow (users.mutableUsers), set with
   # `sudo passwd <operator>`.

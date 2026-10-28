@@ -1,8 +1,8 @@
 /**
- * Commands that run on the control host: OpenBao login, a cartridge's secrets, the fleet
- * dashboard, Nomad status and logs, deployment records, and Alchemy's plan, deploy, destroy,
- * drift, state and rollback. `scripts/ops` reaches this file over SSH after `bun install` in
- * ~/alchemy.
+ * `alchemy-runner` on the control host. The operator runs `submit`, `version`, `login`
+ * and `logs`; every other operation is a queued job that `job run` executes as the
+ * runner user (queue/Schema.ts lists the job kinds). `ops` on the workstation reaches this
+ * program over SSH.
  */
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
@@ -11,7 +11,6 @@ import {
   Config,
   ConfigProvider,
   Console,
-  Context,
   Effect,
   FileSystem,
   Layer,
@@ -27,26 +26,36 @@ import { FetchHttpClient } from "effect/http";
 import { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import type { PlatformError } from "effect/PlatformError";
+import * as path from "node:path";
 import * as Cartridge from "./Cartridge.ts";
-import { route } from "./Exec.ts";
+import * as Deployments from "./Deployments.ts";
 import * as NomadLive from "./Nomad.ts";
+import * as Package from "./Package.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
-import * as TaskLog from "./TaskLog.ts";
-import * as Deployments from "./Deployments.ts";
-import * as FleetStatus from "./FleetStatus.ts";
 import * as StagedCartridge from "./StagedCartridge.ts";
+import * as TaskLog from "./TaskLog.ts";
+import { request as queueRequest } from "./queue/Client.ts";
 import { LoginRequired } from "./queue/Errors.ts";
 import * as QueueFinished from "./queue/Finished.ts";
 import * as QueuePaths from "./queue/Paths.ts";
 import * as QueueRun from "./queue/Run.ts";
+import type {
+  DeploySubmit,
+  Job as QueuedJob,
+  RollbackSubmit,
+  StageSubmit,
+} from "./queue/Schema.ts";
 import * as QueueServe from "./queue/Serve.ts";
-import type { Job as QueuedJob, JobSubmit } from "./queue/Schema.ts";
+import * as StagelessJobs from "./queue/StagelessJobs.ts";
 import { layer as queueStoreLayer } from "./queue/Store.ts";
+import * as QueueSubmit from "./queue/Submit.ts";
 import * as QueueUnits from "./queue/Units.ts";
 
 /** A failure the operator can act on: printed as its message alone, without a stack trace. */
-export class CliError extends S.TaggedError<CliError>()("CliError", { message: S.String }) {
+export class CliError extends S.TaggedError<CliError>()("CliError", {
+  message: S.String,
+}) {
   readonly [Runtime.errorReported] = false;
 }
 
@@ -60,15 +69,13 @@ export class AlchemyFailed extends S.TaggedError<AlchemyFailed>()("AlchemyFailed
   }
 }
 
-const root = ".";
+/** Nomad tokens `nomad-acl-issue-<name>` writes: read-write for jobs, read-only for the operator. */
 const controllerEnvPath = "/var/lib/nomad-acl/controller.env";
-const name = Argument.String("name").pipe(Argument.withDescription("The cartridge's name"));
-
-/** Commands whose arguments pass to Alchemy unread; the others parse their own flags. */
-const alchemyCommands = ["state"] as const;
+const operatorEnvPath = "/var/lib/nomad-acl/operator.env";
+const openBaoAddr = "http://127.0.0.1:8200";
 
 /**
- * KEY=VALUE lines, as `nomad-acl-issue-controller` writes them.
+ * KEY=VALUE lines, as the `nomad-acl-issue-*` scripts write them.
  */
 export const parseEnvFile = (text: string): Record<string, string> => {
   const values: Record<string, string> = {};
@@ -82,85 +89,419 @@ export const parseEnvFile = (text: string): Record<string, string> => {
   return values;
 };
 
-/** The value of `--stage` / `--stage=` among the arguments; none without one. */
-export const stageFlag = (args: ReadonlyArray<string>): Option.Option<string> => {
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index];
-    if (arg === undefined) continue;
-    if (arg === "--stage") return Option.fromNullishOr(args[index + 1]);
-    if (arg.startsWith("--stage=")) return Option.some(arg.slice("--stage=".length));
-  }
-  return Option.none();
-};
-
 /**
- * Read `controllerEnv` (KEY=VALUE) and default NOMAD_ADDR / OPENBAO_ADDR to the loopback
- * listeners. Fails when the env file is unreadable.
+ * Read a Nomad env file (KEY=VALUE) and default NOMAD_ADDR / OPENBAO_ADDR to the loopback
+ * listeners. Fails, naming the script that writes it, when the file is unreadable.
  */
-export const loadControllerEnvironment = Effect.fn("loadControllerEnvironment")(function* (
-  controllerEnv: string,
-) {
+export const loadNomadEnvironment = Effect.fn("loadNomadEnvironment")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
-  const readable = yield* fs.access(controllerEnv, { readable: true }).pipe(
+  const readable = yield* fs.access(file, { readable: true }).pipe(
     Effect.as(true),
     Effect.orElseSucceed(() => false),
   );
   if (!readable) {
     return yield* new CliError({
-      message: [
-        `cannot read ${controllerEnv}.`,
-        "Run 'sudo nomad-acl-issue-controller' once after the rebuild so the",
-        "env file becomes group-readable by the alchemy group.",
-      ].join("\n"),
+      message: `cannot read ${file}. Run 'sudo nomad-acl-issue-${path.basename(file, ".env")}' once after the rebuild.`,
     });
   }
-  const controller = parseEnvFile(yield* fs.readFileString(controllerEnv));
-  const values: Record<string, string> = {
-    ...controller,
+  return {
+    ...parseEnvFile(yield* fs.readFileString(file)),
     NOMAD_ADDR: "http://127.0.0.1:4646",
-    OPENBAO_ADDR: "http://127.0.0.1:8200",
-  };
-  return values;
+    OPENBAO_ADDR: openBaoAddr,
+  } as Record<string, string>;
+});
+
+/** Nomad with the operator's read-only token, for `logs`. */
+const operatorLayer = Layer.unwrap(
+  Effect.map(loadNomadEnvironment(operatorEnvPath), (env) =>
+    NomadLive.layer().pipe(
+      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(
+        ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(env), {
+          asPrimary: true,
+        }),
+      ),
+    ),
+  ),
+);
+
+/** OpenBao, Nomad and Deployments over `env`, for a job's body. */
+const jobServices = (env: Record<string, string>) =>
+  Layer.mergeAll(OpenBao.layer, NomadLive.layer(), Deployments.layer()).pipe(
+    Layer.provideMerge(FetchHttpClient.layer),
+    Layer.provideMerge(
+      ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(env), {
+        asPrimary: true,
+      }),
+    ),
+  );
+
+/** Command tree for this host process. Host files load only inside each command handler. */
+const makeCli = () =>
+  Command.make("alchemy-runner").pipe(
+    Command.withDescription(
+      "Submit Alchemy jobs, log in to OpenBao for them, and read the fleet's Nomad health and logs",
+    ),
+    Command.withSubcommands([submit, wait, version, login, logs, queue, job]),
+  );
+
+const submit = Command.make(
+  "submit",
+  {},
+  Effect.fn(function* () {
+    const stdio = yield* Stdio.Stdio;
+    const text = yield* Stream.mkString(Stream.decodeText(stdio.stdin));
+    const id = yield* QueueSubmit.submitJob(text, QueuePaths.production.socket).pipe(
+      Effect.mapError((error) => new CliError({ message: error.message })),
+    );
+    yield* Console.log(id);
+  }),
+).pipe(Command.withDescription("Queue the job one JSON request on stdin describes; print its id"));
+
+const wait = Command.make(
+  "wait",
+  { id: Argument.Int("id").pipe(Argument.withDescription("The job id `submit` printed")) },
+  Effect.fn(function* ({ id }) {
+    const failure = yield* QueueSubmit.waitJob(id, QueuePaths.production.socket).pipe(Effect.flip);
+    if (failure._tag === "SubmitExit") return yield* new AlchemyFailed({ code: failure.code });
+    return yield* new CliError({ message: failure.message });
+  }),
+).pipe(
+  Command.withDescription(
+    "Stream a job's output until it ends and exit with its code; interrupt cancels a queued job",
+  ),
+);
+
+const version = Command.make(
+  "version",
+  {},
+  Effect.fn(function* () {
+    const revision = yield* Config.option(Config.String("ALCHEMY_RUNNER_REVISION"));
+    if (Option.isNone(revision) || revision.value === "") {
+      return yield* new CliError({
+        message: "This runner was built from a dirty tree and has no revision. Run `ops rebuild`.",
+      });
+    }
+    yield* Console.log(revision.value);
+  }),
+).pipe(Command.withDescription("Print the server-ansible commit this runner was built from"));
+
+const login = Command.make(
+  "login",
+  {},
+  Effect.fn(function* () {
+    const rootToken = yield* readRootToken;
+    // fresh, over the root token alone: only the 2-hour child leaves this process.
+    const token = yield* Effect.flatMap(OpenBao, (bao) => bao.createToken("2h")).pipe(
+      Effect.provide(
+        Layer.fresh(OpenBao.layer).pipe(
+          Layer.provide(FetchHttpClient.layer),
+          Layer.provide(
+            ConfigProvider.layerAdd(
+              ConfigProvider.fromEnvRecord({
+                OPENBAO_ADDR: openBaoAddr,
+                OPENBAO_TOKEN: Redacted.value(rootToken),
+              }),
+              { asPrimary: true },
+            ),
+          ),
+        ),
+      ),
+      Effect.mapError(
+        () =>
+          new CliError({
+            message: "Could not mint an OpenBao token from the root token.",
+          }),
+      ),
+    );
+    const stored = yield* queueRequest(QueuePaths.production.socket, {
+      _tag: "token",
+      value: Redacted.value(token),
+    }).pipe(Effect.mapError((error) => new CliError({ message: error.message })));
+    if (stored._tag === "error") return yield* new CliError({ message: stored.message });
+    yield* Console.log("OpenBao token for 2 hours stored for the Alchemy runner.");
+  }),
+).pipe(
+  Command.withDescription(
+    "Mint a 2-hour OpenBao token from the root token and send it to the runner socket",
+  ),
+);
+
+const logs = Command.make(
+  "logs",
+  {
+    job: Argument.String("job").pipe(
+      Argument.withDescription(
+        "The Nomad job, which is the resource's name, such as giglist-worker",
+      ),
+    ),
+    tail: Flag.Boolean("tail").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription("Keep printing new lines"),
+    ),
+    lines: Flag.Int("lines").pipe(
+      Flag.withAlias("n"),
+      Flag.withDefault(100),
+      Flag.withDescription("How many past lines to print"),
+    ),
+  },
+  Effect.fn(function* ({ job, tail, lines }) {
+    const nomad = yield* Nomad;
+    const newest = Arr.head(Arr.sort(yield* nomad.allocations(job), TaskLog.newestFirst));
+    if (Option.isNone(newest)) {
+      return yield* new CliError({
+        message: `Nomad has no allocations for job '${job}'.`,
+      });
+    }
+    const allocation = newest.value;
+    // A job that never started has no output; its task events say why, such as a
+    // template blocked on a missing secret or a failed image pull.
+    if (allocation.ClientStatus !== "running") {
+      return yield* Console.log(
+        [
+          `${job}: newest allocation ${allocation.ID.slice(0, 8)} is ${allocation.ClientStatus}`,
+          ...Object.entries(allocation.TaskStates ?? {}).flatMap(([task, state]) =>
+            (state.Events ?? []).map(
+              (event) =>
+                `${new Date(event.Time / 1e6).toISOString()} ${task} ${event.Type}: ${event.DisplayMessage}`,
+            ),
+          ),
+        ].join("\n"),
+      );
+    }
+    const show = (line: { readonly timestamp: Date; readonly message: string }) =>
+      Console.log(`${line.timestamp.toISOString()} ${line.message}`);
+    yield* Effect.forEach(yield* TaskLog.recent(nomad, job, { limit: lines }), show);
+    if (tail) yield* Stream.runForEach(TaskLog.follow(nomad, job), show);
+  }, Effect.provide(operatorLayer)),
+).pipe(Command.withDescription("Print a Nomad job's recent output, or why it is not running"));
+
+/**
+ * The root token from the terminal's prompt, or from a piped stdin, such as
+ * `pass show infra/openbao-token | ops login`. Only the first line counts: `pass` puts the
+ * secret there and metadata below it.
+ */
+const readRootToken = Effect.gen(function* () {
+  const stdio = yield* Stdio.Stdio;
+  if (yield* stdio.stdinIsTerminal) {
+    return yield* Prompt.run(Prompt.Password({ message: "OpenBao root token" }));
+  }
+  const text = yield* Stream.mkString(Stream.decodeText(stdio.stdin));
+  const line = (text.split("\n")[0] ?? "").trim();
+  if (line === "") {
+    return yield* new CliError({
+      message:
+        "No OpenBao root token on stdin. Pipe the token in, or run `ops login` in a terminal.",
+    });
+  }
+  return Redacted.make(line);
+});
+
+const queueLayer = (paths: typeof QueuePaths.production) =>
+  Layer.mergeAll(
+    queueStoreLayer(paths.database),
+    QueueUnits.layer,
+    QueueServe.layerServer(paths),
+  ).pipe(Layer.provideMerge(BunServices.layer));
+
+const queueServe = Command.make(
+  "serve",
+  {},
+  Effect.fn(function* () {
+    yield* QueueServe.serve(QueuePaths.production).pipe(
+      Effect.mapError((error) => new CliError({ message: error.message })),
+      Effect.provide(queueLayer(QueuePaths.production)),
+    );
+  }),
+).pipe(Command.withDescription("Accept job submissions on the Alchemy submit socket"));
+
+const queue = Command.make("queue").pipe(
+  Command.withDescription("The durable job queue front end"),
+  Command.withSubcommands([queueServe]),
+);
+
+const jobRun = Command.make(
+  "run",
+  {
+    id: Argument.Int("id").pipe(Argument.withDescription("The queued job to run")),
+  },
+  Effect.fn(function* ({ id }) {
+    yield* QueueRun.runJob(id, QueuePaths.production, executeQueuedJob).pipe(
+      Effect.catchTag("LoginRequired", () => new CliError({ message: "run ops login" })),
+      Effect.catchTag("JobExit", (error) => new AlchemyFailed({ code: error.code })),
+      Effect.catchTag("JobCommandError", (error) => new CliError({ message: error.message })),
+      Effect.catchTag("JobNotFound", (error) => new CliError({ message: error.message })),
+      Effect.catchTag("JobNotStarting", (error) => new CliError({ message: error.message })),
+      Effect.provide(queueStoreLayer(QueuePaths.production.database)),
+      Effect.provide(BunServices.layer),
+    );
+  }),
+).pipe(Command.withDescription("Run one queued job body"));
+
+const jobFinished = Command.make(
+  "finished",
+  {
+    id: Argument.Int("id").pipe(Argument.withDescription("The job whose unit stopped")),
+  },
+  Effect.fn(function* ({ id }) {
+    yield* QueueFinished.finished(id, QueuePaths.production).pipe(
+      Effect.mapError((error) => new CliError({ message: error.message })),
+      Effect.provide(queueStoreLayer(QueuePaths.production.database)),
+      Effect.provide(BunServices.layer),
+    );
+  }),
+).pipe(Command.withDescription("Finalise a stopped job unit and start the next"));
+
+const job = Command.make("job").pipe(
+  Command.withDescription("Run or finalise an alchemy-job@ unit"),
+  Command.withSubcommands([jobRun, jobFinished]),
+);
+
+/**
+ * A queued job's body, as the runner user with the controller Nomad token. `env` carries the
+ * OpenBao token and any sent CARTRIDGE_FILE, ORIGIN and REVISION.
+ */
+export const executeQueuedJob: QueueRun.Execute = (job: QueuedJob, env) =>
+  Effect.gen(function* () {
+    const controller = yield* loadNomadEnvironment(controllerEnvPath).pipe(
+      Effect.mapError((error) => new QueueRun.JobCommandError({ message: error.message })),
+    );
+    const jobEnv = { ...controller, ...env };
+    yield* Effect.gen(function* () {
+      const bao = yield* OpenBao;
+      yield* bao.checkToken().pipe(Effect.catchTag("OpenBaoError", () => new LoginRequired()));
+      const submit = job.submit;
+      switch (submit.command) {
+        case "plan":
+        case "deploy":
+        case "destroy":
+        case "drift":
+        case "rollback":
+          return yield* runStageJob(submit, jobEnv);
+        case "state":
+          return yield* runAlchemy(
+            [
+              "state",
+              submit.verb,
+              ...(submit.path === null ? [] : [submit.path]),
+              "-c",
+              Package.stateEntry,
+            ],
+            jobEnv,
+          );
+        case "deployment":
+          return yield* StagelessJobs.listDeployments(submit.name);
+        case "status":
+          return yield* StagelessJobs.status(submit.name);
+        case "stage-image":
+          return yield* StagelessJobs.stageImage(submit.name, submit.stable, submit.expect);
+        case "place-queued":
+          return yield* StagelessJobs.placeQueued();
+        case "dash":
+          return yield* StagelessJobs.dash();
+        default:
+          return submit satisfies never;
+      }
+    }).pipe(Effect.provide(jobServices(jobEnv)), mapQueuedFailure);
+  });
+
+/**
+ * Alchemy argv for a job that changes a stage. A queued job is already approved (the
+ * workstation showed the plan and asked), so deploy, destroy and rollback pass `--yes`.
+ * Rollback reports the deploy it runs after restoring the cartridge.
+ */
+export const alchemyArgv = (
+  submit: StageSubmit | DeploySubmit | RollbackSubmit,
+): ReadonlyArray<string> =>
+  submit.command === "rollback"
+    ? stageArgv("deploy", submit.name)
+    : stageArgv(submit.command, submit.stage);
+
+const stageArgv = (command: "plan" | "deploy" | "destroy" | "drift", stage: string) => [
+  command,
+  "--stage",
+  stage,
+  ...(command === "deploy" || command === "destroy" ? ["--yes"] : []),
+  "-c",
+  command === "destroy" ? Package.stateEntry : Package.appEntry,
+];
+
+const runStageJob = Effect.fn("runStageJob")(function* (
+  submit: StageSubmit | DeploySubmit | RollbackSubmit,
+  env: Record<string, string>,
+) {
+  switch (submit.command) {
+    case "plan":
+    case "deploy":
+      return yield* planOrDeploy(submit.command, submit.stage, env);
+    case "destroy":
+    case "drift":
+      return yield* runAlchemy(alchemyArgv(submit), env);
+    case "rollback": {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(".alchemy/input", { recursive: true });
+      const cartridgeFile = `.alchemy/input/rollback-${submit.name}-${submit.deploymentId}.json`;
+      const { origin, revision } = yield* restoreDeployment(
+        submit.name,
+        submit.deploymentId,
+        cartridgeFile,
+      );
+      return yield* planOrDeploy("deploy", submit.name, {
+        ...env,
+        CARTRIDGE_FILE: cartridgeFile,
+        ORIGIN: origin,
+        REVISION: revision,
+      });
+    }
+  }
 });
 
 /**
- * Read `controllerEnv` (KEY=VALUE) and the OpenBao token under XDG_RUNTIME_DIR. Defaults
- * NOMAD_ADDR and OPENBAO_ADDR to the loopback listeners. Fails when the env file is
- * unreadable or XDG_RUNTIME_DIR is unset.
+ * Plan or deploy one stage. A sent app cartridge must pin its images and come from the
+ * repository the app was first deployed from; a deploy of one is recorded once Alchemy
+ * exits 0. `env` is one record: host settings plus any CARTRIDGE_FILE, ORIGIN and REVISION.
  */
-export const loadHostEnvironment = Effect.fn("loadHostEnvironment")(function* (
-  controllerEnv: string,
+export const planOrDeploy = Effect.fn("planOrDeploy")(function* (
+  command: "plan" | "deploy",
+  stage: string,
+  env: Record<string, string>,
 ) {
-  const controller = yield* loadControllerEnvironment(controllerEnv);
-  const runtimeDir = yield* Config.option(Config.String("XDG_RUNTIME_DIR"));
-  if (Option.isNone(runtimeDir)) {
-    return yield* new CliError({ message: "XDG_RUNTIME_DIR is not set." });
+  const cartridgeFile = env["CARTRIDGE_FILE"];
+  const origin = env["ORIGIN"];
+  const revision = env["REVISION"];
+  const recorded = cartridgeFile !== undefined && origin !== undefined && revision !== undefined;
+  if (recorded) yield* checkDeployment(stage, cartridgeFile, origin, revision);
+  yield* checkSecrets(stage, cartridgeFile);
+  yield* runAlchemy(stageArgv(command, stage), env);
+  if (recorded && command === "deploy") {
+    yield* recordDeployment(stage, cartridgeFile, origin, revision);
   }
-  const tokenFile = `${runtimeDir.value}/openbao.token`;
-  const fs = yield* FileSystem.FileSystem;
-  const token = yield* fs.readFileString(tokenFile).pipe(
-    Effect.map((text) => text.trim()),
-    Effect.option,
-  );
-  const values: Record<string, string> =
-    Option.isSome(token) && token.value !== ""
-      ? { ...controller, OPENBAO_TOKEN_FILE: tokenFile, OPENBAO_TOKEN: token.value }
-      : { ...controller, OPENBAO_TOKEN_FILE: tokenFile };
-  return values;
 });
 
-/** OpenBao commands need the 2-hour token that `login` writes. */
-const requireLogin = Effect.gen(function* () {
-  const bao = yield* OpenBao;
-  yield* bao.checkToken().pipe(
-    Effect.mapError(
-      () =>
-        new CliError({
-          message: "The OpenBao token is missing or expired. Run `ops login` first.",
-        }),
-    ),
+const mapQueuedFailure = <
+  A,
+  E extends {
+    readonly _tag: string;
+    readonly message?: string;
+    readonly code?: number;
+  },
+  R,
+>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, QueueRun.JobExit | QueueRun.JobCommandError | LoginRequired, R> =>
+  effect.pipe(
+    Effect.mapError((error): QueueRun.JobExit | QueueRun.JobCommandError | LoginRequired => {
+      if (error._tag === "AlchemyFailed" && typeof error.code === "number") {
+        return new QueueRun.JobExit({ code: error.code });
+      }
+      if (error._tag === "OpenBaoError" || error._tag === "LoginRequired") {
+        return new LoginRequired();
+      }
+      return new QueueRun.JobCommandError({
+        message: typeof error.message === "string" ? error.message : error._tag,
+      });
+    }),
   );
-});
 
 /** Fail when a secret the cartridge references is not set. */
 const checkSecrets = Effect.fn("checkSecrets")(function* (
@@ -170,9 +511,8 @@ const checkSecrets = Effect.fn("checkSecrets")(function* (
   const cartridgeName = Option.getOrElse(StagedCartridge.baseName(name), () => name);
   const cartridge =
     cartridgeFile === undefined
-      ? yield* Cartridge.resolve(root, cartridgeName)
+      ? yield* Cartridge.resolve(Package.root, cartridgeName)
       : yield* appCartridgeAt(cartridgeFile, cartridgeName);
-  yield* requireLogin;
   const bao = yield* OpenBao;
   const stored = new Map(
     yield* Effect.forEach(Cartridge.kvKeys(cartridge).keys(), (path) =>
@@ -236,727 +576,14 @@ const restoreDeployment = Effect.fn("restoreDeployment")(function* (
   const deployments = yield* Deployments.Deployments;
   const found = yield* deployments.get(name, id);
   if (Option.isNone(found)) {
-    return yield* new CliError({ message: `'${name}' has no recorded deployment ${id}.` });
+    return yield* new CliError({
+      message: `'${name}' has no recorded deployment ${id}.`,
+    });
   }
   const fs = yield* FileSystem.FileSystem;
   yield* fs.writeFileString(file, found.value.cartridge);
   return { origin: found.value.origin, revision: found.value.revision };
 });
-
-/**
- * Plan or deploy one stage. A sent app cartridge must pin its images and come from the
- * repository the app was first deployed from; a deploy of one is recorded once Alchemy
- * exits 0. `env` is one record: host settings plus any CARTRIDGE_FILE, ORIGIN and REVISION.
- */
-export const planOrDeploy = Effect.fn("planOrDeploy")(function* (
-  command: "plan" | "deploy",
-  args: ReadonlyArray<string>,
-  env: Record<string, string>,
-) {
-  const stage = Option.getOrElse(stageFlag(args), () => "");
-  const cartridgeFile = env["CARTRIDGE_FILE"];
-  const origin = env["ORIGIN"];
-  const revision = env["REVISION"];
-  const recorded = cartridgeFile !== undefined && origin !== undefined && revision !== undefined;
-  if (recorded) yield* checkDeployment(stage, cartridgeFile, origin, revision);
-  yield* checkSecrets(stage, cartridgeFile);
-  yield* runAlchemy([command, ...args], env);
-  if (recorded && command === "deploy") {
-    yield* recordDeployment(stage, cartridgeFile, origin, revision);
-  }
-});
-
-const forwarded = {
-  args: Argument.String("args").pipe(
-    Argument.withDescription("Passed to Alchemy unread"),
-    Argument.variadic(),
-  ),
-};
-
-/**
- * Host settings plus CARTRIDGE_FILE, ORIGIN and REVISION from the process Config when set
- * (as `ops` sends them over ssh).
- */
-const releaseEnv = (hostEnv: Record<string, string>) =>
-  Effect.gen(function* () {
-    const cartridgeFile = yield* Config.option(Config.String("CARTRIDGE_FILE"));
-    const origin = yield* Config.option(Config.String("ORIGIN"));
-    const revision = yield* Config.option(Config.String("REVISION"));
-    const env: Record<string, string> = { ...hostEnv };
-    if (Option.isSome(cartridgeFile)) env.CARTRIDGE_FILE = cartridgeFile.value;
-    if (Option.isSome(origin)) env.ORIGIN = origin.value;
-    if (Option.isSome(revision)) env.REVISION = revision.value;
-    return env;
-  });
-
-/**
- * One host-owned Alchemy dispatch for interactive and queued paths. Argv is built here from
- * structured fields only — no free caller options reach the child process.
- * Deploy/destroy carry `approve`: when true, Alchemy gets `--yes` (required without a TTY).
- */
-export type HostOp =
-  | {
-      readonly command: "plan";
-      readonly stage: string;
-      readonly env: Record<string, string>;
-    }
-  | {
-      readonly command: "deploy";
-      readonly stage: string;
-      readonly approve: boolean;
-      readonly env: Record<string, string>;
-    }
-  | {
-      readonly command: "destroy";
-      readonly stage: string;
-      readonly approve: boolean;
-      readonly env: Record<string, string>;
-    }
-  | {
-      readonly command: "drift";
-      readonly stage: string;
-      readonly env: Record<string, string>;
-    }
-  | {
-      readonly command: "rollback";
-      readonly name: string;
-      readonly deploymentId: number;
-      readonly approve: boolean;
-      readonly env: Record<string, string>;
-    };
-
-/** Stage flags Alchemy sees; `--yes` only when the op is approved. */
-const stageAlchemyArgs = (stage: string, approve: boolean): ReadonlyArray<string> =>
-  approve ? ["--stage", stage, "--yes"] : ["--stage", stage];
-
-/**
- * Alchemy argv for a HostOp (including the subcommand). Used by runHostOp and tests.
- * Rollback reports the deploy argv it will run after restoring the cartridge.
- */
-export const alchemyArgv = (op: HostOp): ReadonlyArray<string> => {
-  switch (op.command) {
-    case "plan":
-      return ["plan", "--stage", op.stage];
-    case "deploy":
-      return ["deploy", ...stageAlchemyArgs(op.stage, op.approve)];
-    case "destroy":
-      return ["destroy", ...stageAlchemyArgs(op.stage, op.approve), "-c", "state.run.ts"];
-    case "drift":
-      return ["drift", "--stage", op.stage];
-    case "rollback":
-      return ["deploy", ...stageAlchemyArgs(op.name, op.approve)];
-  }
-};
-
-export const runHostOp = Effect.fn("runHostOp")(function* (op: HostOp) {
-  switch (op.command) {
-    case "plan":
-      yield* planOrDeploy("plan", ["--stage", op.stage], op.env);
-      return;
-    case "deploy":
-      yield* planOrDeploy("deploy", stageAlchemyArgs(op.stage, op.approve), op.env);
-      return;
-    case "destroy":
-      yield* runAlchemy(alchemyArgv(op), op.env);
-      return;
-    case "drift":
-      yield* runAlchemy(alchemyArgv(op), op.env);
-      return;
-    case "rollback": {
-      const fs = yield* FileSystem.FileSystem;
-      yield* fs.makeDirectory(".alchemy/input", { recursive: true });
-      const cartridgeFile = `.alchemy/input/rollback-${op.name}-${op.deploymentId}.json`;
-      const { origin, revision } = yield* restoreDeployment(
-        op.name,
-        op.deploymentId,
-        cartridgeFile,
-      );
-      yield* planOrDeploy("deploy", stageAlchemyArgs(op.name, op.approve), {
-        ...op.env,
-        CARTRIDGE_FILE: cartridgeFile,
-        ORIGIN: origin,
-        REVISION: revision,
-      });
-      return;
-    }
-  }
-});
-
-/**
- * Controller.env and the OpenBao token file as one record. Loaded only when a
- * command provides `hostLayer` (help and argument errors never do).
- */
-class HostEnvironment extends Context.Service<HostEnvironment, Record<string, string>>()(
-  "cli/HostEnvironment",
-) {}
-
-/** HostEnvironment plus Config, OpenBao, Nomad and Deployments for command handlers. */
-const hostLayer = Layer.unwrap(
-  Effect.gen(function* () {
-    const env = yield* loadHostEnvironment(controllerEnvPath);
-    return Layer.mergeAll(
-      Layer.succeed(HostEnvironment, env),
-      OpenBao.layer,
-      NomadLive.layer(),
-      Deployments.layer(),
-    ).pipe(
-      Layer.provideMerge(FetchHttpClient.layer),
-      Layer.provideMerge(
-        ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(env), { asPrimary: true }),
-      ),
-    );
-  }),
-);
-
-const stageOption = Flag.String("stage").pipe(Flag.withDescription("The stage name"));
-const yesOption = Flag.Boolean("yes").pipe(
-  Flag.withDefault(false),
-  Flag.withDescription("Approve without a terminal (pass --yes to Alchemy)"),
-);
-
-/** Command tree for this host process. Host files load only inside each command handler. */
-const makeCli = () => {
-  const plan = Command.make(
-    "plan",
-    { stage: stageOption },
-    Effect.fn(function* ({ stage }) {
-      const hostEnv = yield* HostEnvironment;
-      yield* runHostOp({ command: "plan", stage, env: yield* releaseEnv(hostEnv) });
-    }, Effect.provide(hostLayer)),
-  ).pipe(Command.withDescription("Preview an Alchemy deploy of a stage"));
-
-  const deploy = Command.make(
-    "deploy",
-    { stage: stageOption, yes: yesOption },
-    Effect.fn(function* ({ stage, yes }) {
-      const hostEnv = yield* HostEnvironment;
-      yield* runHostOp({
-        command: "deploy",
-        stage,
-        approve: yes,
-        env: yield* releaseEnv(hostEnv),
-      });
-    }, Effect.provide(hostLayer)),
-  ).pipe(Command.withDescription("Run Alchemy's deploy of a stage"));
-
-  const destroy = Command.make(
-    "destroy",
-    { stage: stageOption, yes: yesOption },
-    Effect.fn(function* ({ stage, yes }) {
-      const hostEnv = yield* HostEnvironment;
-      yield* requireLogin;
-      yield* runHostOp({ command: "destroy", stage, approve: yes, env: hostEnv });
-    }, Effect.provide(hostLayer)),
-  ).pipe(Command.withDescription("Destroy a stage's resources from Alchemy state only"));
-
-  const drift = Command.make(
-    "drift",
-    { stage: stageOption },
-    Effect.fn(function* ({ stage }) {
-      const hostEnv = yield* HostEnvironment;
-      yield* requireLogin;
-      yield* runHostOp({ command: "drift", stage, env: hostEnv });
-    }, Effect.provide(hostLayer)),
-  ).pipe(Command.withDescription("Report drift between the state and the running resources"));
-
-  const state = Command.make(
-    "state",
-    forwarded,
-    Effect.fn(function* ({ args }) {
-      const hostEnv = yield* HostEnvironment;
-      yield* runAlchemy(["state", ...args, "-c", "state.run.ts"], hostEnv);
-    }, Effect.provide(hostLayer)),
-  ).pipe(Command.withDescription("Read Alchemy's state store"));
-
-  const rollback = Command.make(
-    "rollback",
-    {
-      name,
-      id: Argument.Int("id").pipe(Argument.withDescription("The deployment to restore")),
-      yes: yesOption,
-    },
-    Effect.fn(function* ({ name, id, yes }) {
-      const hostEnv = yield* HostEnvironment;
-      yield* runHostOp({
-        command: "rollback",
-        name,
-        deploymentId: id,
-        approve: yes,
-        env: hostEnv,
-      });
-    }, Effect.provide(hostLayer)),
-  ).pipe(Command.withDescription("Deploy a recorded deployment again: <name> <id>"));
-
-  return Command.make("ops").pipe(
-    Command.withDescription(
-      "OpenBao login, secrets, the fleet dashboard, Nomad status and logs, deployment records, and Alchemy on this host",
-    ),
-    Command.withSubcommands([
-      plan,
-      deploy,
-      destroy,
-      drift,
-      state,
-      rollback,
-      queue,
-      job,
-      login,
-      checkLogin,
-      secret,
-      dash,
-      placeQueued,
-      status,
-      logs,
-      stageImage,
-      deployment,
-    ]),
-  );
-};
-
-const queueLayer = (paths: typeof QueuePaths.production) =>
-  Layer.mergeAll(
-    queueStoreLayer(paths.database),
-    QueueUnits.layer,
-    QueueServe.layerServer(paths),
-  ).pipe(Layer.provideMerge(BunServices.layer));
-
-const queueServe = Command.make(
-  "serve",
-  {},
-  Effect.fn(function* () {
-    yield* QueueServe.serve(QueuePaths.production).pipe(
-      Effect.mapError((error) => {
-        const message =
-          typeof error === "object" &&
-          error !== null &&
-          "message" in error &&
-          typeof (error as { message: unknown }).message === "string"
-            ? (error as { message: string }).message
-            : String(error);
-        return new CliError({ message });
-      }),
-      Effect.provide(queueLayer(QueuePaths.production)),
-    );
-  }),
-).pipe(Command.withDescription("Accept job submissions on the Alchemy submit socket"));
-
-const queue = Command.make("queue").pipe(
-  Command.withDescription("The durable job queue front end"),
-  Command.withSubcommands([queueServe]),
-);
-
-const jobRun = Command.make(
-  "run",
-  {
-    id: Argument.Int("id").pipe(Argument.withDescription("The queued job to run")),
-  },
-  Effect.fn(function* ({ id }) {
-    const execute: QueueRun.Execute = (queued, env) => executeQueuedJob(queued, env);
-    yield* QueueRun.runJob(id, QueuePaths.production, execute).pipe(
-      Effect.catchTag("LoginRequired", () => new CliError({ message: "run ops login" })),
-      Effect.catchTag("JobExit", (error) => new AlchemyFailed({ code: error.code })),
-      Effect.catchTag("JobCommandError", (error) => new CliError({ message: error.message })),
-      Effect.catchTag("JobNotFound", (error) => new CliError({ message: error.message })),
-      Effect.catchTag("JobNotStarting", (error) => new CliError({ message: error.message })),
-      Effect.provide(queueStoreLayer(QueuePaths.production.database)),
-      Effect.provide(BunServices.layer),
-    );
-  }),
-).pipe(Command.withDescription("Run one queued job body"));
-
-const jobFinished = Command.make(
-  "finished",
-  {
-    id: Argument.Int("id").pipe(Argument.withDescription("The job whose unit stopped")),
-  },
-  Effect.fn(function* ({ id }) {
-    yield* QueueFinished.finished(id, QueuePaths.production).pipe(
-      Effect.mapError((error) => {
-        const message =
-          typeof error === "object" &&
-          error !== null &&
-          "message" in error &&
-          typeof (error as { message: unknown }).message === "string"
-            ? (error as { message: string }).message
-            : String(error);
-        return new CliError({ message });
-      }),
-      Effect.provide(queueStoreLayer(QueuePaths.production.database)),
-      Effect.provide(BunServices.layer),
-    );
-  }),
-).pipe(Command.withDescription("Finalise a stopped job unit and start the next"));
-
-const job = Command.make("job").pipe(
-  Command.withDescription("Run or finalise an alchemy-job@ unit"),
-  Command.withSubcommands([jobRun, jobFinished]),
-);
-
-/**
- * Queued jobs always run approved: the socket submit is the approval (the workstation
- * shows the plan and asks before it submits).
- */
-export const submitToHostOp = (submit: JobSubmit, env: Record<string, string>): HostOp => {
-  switch (submit.command) {
-    case "plan":
-      return { command: "plan", stage: submit.stage, env };
-    case "drift":
-      return { command: "drift", stage: submit.stage, env };
-    case "deploy":
-      return { command: "deploy", stage: submit.stage, approve: true, env };
-    case "destroy":
-      return { command: "destroy", stage: submit.stage, approve: true, env };
-    case "rollback":
-      return {
-        command: "rollback",
-        name: submit.name,
-        deploymentId: submit.deploymentId,
-        approve: true,
-        env,
-      };
-  }
-};
-
-/**
- * Run a queued job's command with the same plan/deploy/destroy/drift/rollback path the
- * interactive host commands use. Token and cartridge paths come from `env`.
- */
-export const executeQueuedJob = (job: QueuedJob, env: Record<string, string>) =>
-  Effect.gen(function* () {
-    const controller = yield* loadControllerEnvironment(controllerEnvPath).pipe(
-      Effect.mapError((error) => new QueueRun.JobCommandError({ message: error.message })),
-    );
-    const hostEnv = { ...controller, ...env };
-    const host = Layer.mergeAll(OpenBao.layer, NomadLive.layer(), Deployments.layer()).pipe(
-      Layer.provideMerge(FetchHttpClient.layer),
-      Layer.provideMerge(
-        ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(hostEnv), { asPrimary: true }),
-      ),
-    );
-    yield* Effect.gen(function* () {
-      const bao = yield* OpenBao;
-      yield* bao.checkToken().pipe(Effect.catchTag("OpenBaoError", () => new LoginRequired()));
-      yield* runHostOp(submitToHostOp(job.submit, hostEnv));
-    }).pipe(Effect.provide(host), mapQueuedFailure);
-  });
-
-const mapQueuedFailure = <
-  A,
-  E extends { readonly _tag: string; readonly message?: string; readonly code?: number },
-  R,
->(
-  effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, QueueRun.JobExit | QueueRun.JobCommandError | LoginRequired, R> =>
-  effect.pipe(
-    Effect.mapError((error): QueueRun.JobExit | QueueRun.JobCommandError | LoginRequired => {
-      if (error._tag === "AlchemyFailed" && typeof error.code === "number") {
-        return new QueueRun.JobExit({ code: error.code });
-      }
-      if (error._tag === "OpenBaoError" || error._tag === "LoginRequired") {
-        return new LoginRequired();
-      }
-      return new QueueRun.JobCommandError({
-        message: typeof error.message === "string" ? error.message : error._tag,
-      });
-    }),
-  );
-
-const login = Command.make(
-  "login",
-  {},
-  Effect.fn(function* () {
-    const hostEnv = yield* HostEnvironment;
-    const tokenFile = hostEnv["OPENBAO_TOKEN_FILE"];
-    if (tokenFile === undefined) {
-      return yield* new CliError({ message: "OPENBAO_TOKEN_FILE is not set." });
-    }
-    const rootToken = yield* readRootToken;
-    // fresh: the host layer already shares an OpenBao; this one must read the root
-    // token from the prompt instead.
-    const token = yield* Effect.flatMap(OpenBao, (bao) => bao.createToken("2h")).pipe(
-      Effect.provide(
-        Layer.fresh(OpenBao.layer).pipe(
-          Layer.provide(
-            ConfigProvider.layerAdd(
-              ConfigProvider.fromEnvRecord({ OPENBAO_TOKEN: Redacted.value(rootToken) }),
-              { asPrimary: true },
-            ),
-          ),
-        ),
-      ),
-    );
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs.writeFileString(tokenFile, Redacted.value(token), { mode: 0o600 });
-    yield* Console.log(`OpenBao token for 2 hours written to ${tokenFile}.`);
-  }, Effect.provide(hostLayer)),
-).pipe(
-  Command.withDescription(
-    "Mint a 2-hour OpenBao token from the root token, typed or piped on stdin",
-  ),
-);
-
-/**
- * The root token from the terminal's prompt, or from a piped stdin, such as
- * `pass show infra/openbao-token | ops login`. Only the first line counts: `pass` puts the
- * secret there and metadata below it.
- */
-const readRootToken = Effect.gen(function* () {
-  const stdio = yield* Stdio.Stdio;
-  if (yield* stdio.stdinIsTerminal) {
-    return yield* Prompt.run(Prompt.Password({ message: "OpenBao root token" }));
-  }
-  const text = yield* Stream.mkString(Stream.decodeText(stdio.stdin));
-  const line = (text.split("\n")[0] ?? "").trim();
-  if (line === "") {
-    return yield* new CliError({
-      message:
-        "No OpenBao root token on stdin. Pipe the token in, or run `ops login` in a terminal.",
-    });
-  }
-  return Redacted.make(line);
-});
-
-const checkLogin = Command.make(
-  "check-login",
-  {},
-  Effect.fn(function* () {
-    yield* requireLogin;
-  }, Effect.provide(hostLayer)),
-).pipe(Command.withDescription("Fail unless the OpenBao token from `login` is still valid"));
-
-const secretCheck = Command.make(
-  "check",
-  { name },
-  Effect.fn(function* ({ name }) {
-    const file = yield* Config.option(Config.String("CARTRIDGE_FILE"));
-    yield* checkSecrets(name, Option.getOrUndefined(file));
-  }, Effect.provide(hostLayer)),
-).pipe(Command.withDescription("Fail when a secret the cartridge references is not set"));
-
-// The workstation sets and lists secrets (src/secrets.ts); the host keeps the check that
-// guards each plan and deploy against the sent or recorded cartridge.
-const secret = Command.make("secret").pipe(
-  Command.withDescription("Check a cartridge's OpenBao secrets before a deploy"),
-  Command.withSubcommands([secretCheck]),
-);
-
-const status = Command.make(
-  "status",
-  { name },
-  Effect.fn(function* ({ name }) {
-    const cartridge = yield* Cartridge.resolve(root, name);
-    const nomad = yield* Nomad;
-    yield* Effect.forEach(cartridge.services, (service) =>
-      nomad.allocations(service.name).pipe(
-        Effect.flatMap((allocations) =>
-          Console.log(
-            [
-              service.name,
-              ...(allocations.length === 0 ? ["  no allocations"] : []),
-              ...Arr.sort(allocations, TaskLog.newestFirst)
-                .slice(0, 3)
-                .map((allocation) => {
-                  const tasks = Object.entries(allocation.TaskStates ?? {})
-                    .map(
-                      ([task, state]) =>
-                        `${task}=${state.State}${state.Failed ? " (failed)" : ""}` +
-                        (state.Restarts > 0 ? ` restarts=${state.Restarts}` : ""),
-                    )
-                    .join(" ");
-                  return `  ${allocation.ID.slice(0, 8)} v${allocation.JobVersion} ${allocation.ClientStatus} ${tasks}`;
-                }),
-            ].join("\n"),
-          ),
-        ),
-      ),
-    );
-  }, Effect.provide(hostLayer)),
-).pipe(Command.withDescription("Show each service's newest allocations"));
-
-const logs = Command.make(
-  "logs",
-  {
-    job: Argument.String("job").pipe(
-      Argument.withDescription(
-        "The Nomad job, which is the resource's name, such as giglist-worker",
-      ),
-    ),
-    tail: Flag.Boolean("tail").pipe(
-      Flag.withDefault(false),
-      Flag.withDescription("Keep printing new lines"),
-    ),
-    lines: Flag.Int("lines").pipe(
-      Flag.withAlias("n"),
-      Flag.withDefault(100),
-      Flag.withDescription("How many past lines to print"),
-    ),
-  },
-  Effect.fn(function* ({ job, tail, lines }) {
-    const nomad = yield* Nomad;
-    const newest = Arr.head(Arr.sort(yield* nomad.allocations(job), TaskLog.newestFirst));
-    if (Option.isNone(newest)) {
-      return yield* new CliError({ message: `Nomad has no allocations for job '${job}'.` });
-    }
-    const allocation = newest.value;
-    // A job that never started has no output; its task events say why, such as a
-    // template blocked on a missing secret or a failed image pull.
-    if (allocation.ClientStatus !== "running") {
-      return yield* Console.log(
-        [
-          `${job}: newest allocation ${allocation.ID.slice(0, 8)} is ${allocation.ClientStatus}`,
-          ...Object.entries(allocation.TaskStates ?? {}).flatMap(([task, state]) =>
-            (state.Events ?? []).map(
-              (event) =>
-                `${new Date(event.Time / 1e6).toISOString()} ${task} ${event.Type}: ${event.DisplayMessage}`,
-            ),
-          ),
-        ].join("\n"),
-      );
-    }
-    const show = (line: { readonly timestamp: Date; readonly message: string }) =>
-      Console.log(`${line.timestamp.toISOString()} ${line.message}`);
-    yield* Effect.forEach(yield* TaskLog.recent(nomad, job, { limit: lines }), show);
-    if (tail) yield* Stream.runForEach(TaskLog.follow(nomad, job), show);
-  }, Effect.provide(hostLayer)),
-).pipe(Command.withDescription("Print a Nomad job's recent output, or why it is not running"));
-
-const dash = Command.make(
-  "dash",
-  {},
-  Effect.fn(function* () {
-    yield* Console.log(FleetStatus.render(yield* FleetStatus.snapshot()));
-  }, Effect.provide(hostLayer)),
-).pipe(Command.withDescription("Print each job's health and each node's load, once"));
-
-/**
- * Nomad does not retry a queued allocation when a node gains a host volume or memory,
- * so a rebuild that adds either leaves jobs queued until something asks again.
- */
-const placeQueued = Command.make(
-  "place-queued",
-  {},
-  Effect.fn(function* () {
-    const nomad = yield* Nomad;
-    const queued = (yield* nomad.jobs()).filter((job) => FleetStatus.queued(job) > 0);
-    yield* Effect.forEach(queued, (job) =>
-      nomad.evaluate(job.ID).pipe(Effect.andThen(Console.log(`asked Nomad to place ${job.ID}`))),
-    );
-  }, Effect.provide(hostLayer)),
-).pipe(Command.withDescription("Ask Nomad to place every job that has queued allocations again"));
-
-const stageImage = Command.make(
-  "stage-image",
-  {
-    name,
-    stable: Flag.Boolean("stable").pipe(
-      Flag.withDefault(false),
-      Flag.withDescription("Fail unless every staged job's current version deployed successfully"),
-    ),
-  },
-  Effect.fn(function* ({ name, stable }) {
-    const cartridge = yield* Cartridge.resolve(root, name);
-    const nomad = yield* Nomad;
-    // Only application services run the candidate image; a server keeps its own.
-    const jobs = cartridge.services.map(
-      (service) => `${service.name}${StagedCartridge.stagedSuffix}`,
-    );
-    // A staged deploy can stop after registering some jobs, so the jobs Nomad has are enough.
-    const snapshots = (yield* Effect.forEach(jobs, (job) => nomad.job(job))).flatMap(
-      Option.toArray,
-    );
-    if (snapshots.length === 0) {
-      return yield* new CliError({
-        message: `Nomad has no staged job of '${name}'.`,
-      });
-    }
-    const unstable = snapshots
-      .filter((snapshot) => !snapshot.Stable)
-      .map((snapshot) => snapshot.ID);
-    if (stable && (snapshots.length < jobs.length || unstable.length > 0)) {
-      return yield* new CliError({
-        message: `the staged instance of '${name}' is not fully deployed (${[...unstable, ...jobs.filter((job) => !snapshots.some((s) => s.ID === job))].join(", ")}); fix or discard it first`,
-      });
-    }
-    const unique = [
-      ...new Set(
-        snapshots.flatMap((snapshot) =>
-          snapshot.TaskGroups.flatMap((group) =>
-            group.Tasks.flatMap((task) => Option.toArray(Option.fromNullishOr(task.Config.image))),
-          ),
-        ),
-      ),
-    ];
-    if (unique.length !== 1) {
-      return yield* new CliError({
-        message: `the staged jobs of '${name}' run ${unique.length} images; expected one`,
-      });
-    }
-    yield* Console.log(unique[0]);
-  }, Effect.provide(hostLayer)),
-).pipe(Command.withDescription("Print the image a staged instance runs"));
-
-const deploymentList = Command.make(
-  "list",
-  { name },
-  Effect.fn(function* ({ name }) {
-    const deployments = yield* Deployments.Deployments;
-    const all = yield* deployments.list(name);
-    if (all.length === 0) return yield* Console.log(`No recorded deployment of '${name}'.`);
-    yield* Effect.forEach(all, (deployment) =>
-      Console.log(
-        `${deployment.id}\t${deployment.deployedAt}\t${deployment.revision}\t${images(deployment.cartridge).join(" ")}`,
-      ),
-    );
-  }, Effect.provide(hostLayer)),
-).pipe(Command.withDescription("List an app's recorded deployments, newest first"));
-
-const deploymentCheck = Command.make(
-  "check",
-  { name },
-  Effect.fn(function* ({ name }) {
-    const file = yield* Config.String("CARTRIDGE_FILE");
-    const origin = yield* Config.String("ORIGIN");
-    const revision = yield* Config.String("REVISION");
-    yield* checkDeployment(name, file, origin, revision);
-  }, Effect.provide(hostLayer)),
-).pipe(
-  Command.withDescription(
-    "Fail unless the cartridge in CARTRIDGE_FILE is valid, pins its images, and comes from the app's repository",
-  ),
-);
-
-const deploymentRecord = Command.make(
-  "record",
-  { name },
-  Effect.fn(function* ({ name }) {
-    const file = yield* Config.String("CARTRIDGE_FILE");
-    const origin = yield* Config.String("ORIGIN");
-    const revision = yield* Config.String("REVISION");
-    yield* recordDeployment(name, file, origin, revision);
-  }, Effect.provide(hostLayer)),
-).pipe(Command.withDescription("Record the cartridge in CARTRIDGE_FILE as deployed"));
-
-const deploymentRestore = Command.make(
-  "restore",
-  {
-    name,
-    id: Argument.Int("id").pipe(Argument.withDescription("The deployment to restore")),
-    file: Argument.String("file").pipe(Argument.withDescription("Where to write its cartridge")),
-  },
-  Effect.fn(function* ({ name, id, file }) {
-    const { origin, revision } = yield* restoreDeployment(name, id, file);
-    yield* Console.log(`ORIGIN=${origin} REVISION=${revision}`);
-  }, Effect.provide(hostLayer)),
-).pipe(
-  Command.withDescription(
-    "Write a recorded deployment's cartridge to a file and print its ORIGIN and REVISION",
-  ),
-);
-
-const deployment = Command.make("deployment").pipe(
-  Command.withDescription("The record of each app's deployed cartridges"),
-  Command.withSubcommands([deploymentList, deploymentCheck, deploymentRecord, deploymentRestore]),
-);
 
 /**
  * The deployment `ops` sent with a release: the cartridge at `file`, the repository root
@@ -993,15 +620,6 @@ const appCartridgeAt = Effect.fn("appCartridgeAt")(function* (file: string, name
   return cartridge;
 });
 
-/** The images a recorded cartridge's services run; the record is valid JSON by construction. */
-const images = (cartridge: string): ReadonlyArray<string> => [
-  ...new Set(
-    (JSON.parse(cartridge) as { services: ReadonlyArray<{ image: string }> }).services.map(
-      (service) => service.image.replace(/^.*@sha256:(.{12}).*$/, "sha256:$1"),
-    ),
-  ),
-];
-
 /** Run Alchemy on this terminal with `env` added; on non-zero exit, fail with that code only. */
 const runAlchemy = Effect.fn("cli.runAlchemy")(function* (
   args: ReadonlyArray<string>,
@@ -1010,7 +628,7 @@ const runAlchemy = Effect.fn("cli.runAlchemy")(function* (
   const spawner = yield* ChildProcessSpawner;
   const code = yield* spawner
     .exitCode(
-      ChildProcess.make("bunx", ["alchemy", ...args], {
+      ChildProcess.make(process.execPath, [Package.alchemyCli, ...args], {
         stdin: "inherit",
         stdout: "inherit",
         stderr: "inherit",
@@ -1020,7 +638,7 @@ const runAlchemy = Effect.fn("cli.runAlchemy")(function* (
     )
     .pipe(
       Effect.mapError(
-        (error: PlatformError) => new CliError({ message: `bunx: ${error.message}` }),
+        (error: PlatformError) => new CliError({ message: `alchemy: ${error.message}` }),
       ),
     );
   if (code !== 0) return yield* new AlchemyFailed({ code });
@@ -1028,7 +646,7 @@ const runAlchemy = Effect.fn("cli.runAlchemy")(function* (
 
 const main = Effect.gen(function* () {
   const args = yield* (yield* Stdio.Stdio).args;
-  yield* Command.runWith(makeCli(), { version: "1" })(route(alchemyCommands)(args));
+  yield* Command.runWith(makeCli(), { version: "1" })(args);
 }).pipe(
   Effect.tapErrorTag("CliError", (error) => Console.error(error.message)),
   Effect.provide(BunServices.layer),

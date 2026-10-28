@@ -33,14 +33,19 @@ export const run = Effect.fn("Exec.run")(function* (
   if (code !== 0) return yield* new OpsError({ message: exited(command, args, code) });
 });
 
-/** A program's standard output; its standard error stays on this terminal. */
+/**
+ * A program's standard output; its standard error stays on this terminal. `input`, when
+ * given, is its standard input.
+ */
 export const output = Effect.fn("Exec.output")(function* (
   command: string,
   args: ReadonlyArray<string>,
+  input?: string,
 ) {
   const spawner = yield* ChildProcessSpawner;
+  const stdin = input === undefined ? undefined : Stream.make(new TextEncoder().encode(input));
   const handle = yield* spawner
-    .spawn(ChildProcess.make(command, args, { stderr: "inherit" }))
+    .spawn(ChildProcess.make(command, args, { stdin, stderr: "inherit" }))
     .pipe(Effect.mapError(couldNotStart(command)));
   const text = yield* Stream.mkString(Stream.decodeText(handle.stdout)).pipe(
     Effect.mapError(couldNotStart(command)),

@@ -2,19 +2,18 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as BunServices from "@effect/platform-bun/BunServices";
-import { ConfigProvider, Effect, FileSystem, Layer, Option, Redacted, Sink, Stream } from "effect";
+import { Effect, FileSystem, Layer, Option, Redacted, Sink, Stream } from "effect";
 import { ChildProcess } from "effect/process";
 import * as Spawner from "effect/process/ChildProcessSpawner";
 import {
   AlchemyFailed,
   alchemyArgv,
-  loadHostEnvironment,
+  loadNomadEnvironment,
   parseEnvFile,
   planOrDeploy,
-  stageFlag,
-  submitToHostOp,
 } from "./cli.ts";
 import * as Deployments from "./Deployments.ts";
+import * as Package from "./Package.ts";
 import { OpenBao, OpenBaoError } from "./OpenBao.ts";
 
 const tinyCartridge = JSON.stringify({
@@ -65,162 +64,115 @@ describe("cli --help", () => {
     assert.doesNotMatch(result.stderr, /cannot read/);
     assert.doesNotMatch(result.stderr, /XDG_RUNTIME_DIR/);
   });
-
-  it("parses deploy --stage and --yes before it reads host files", () => {
-    const result = spawnSync(
-      process.execPath,
-      [new URL("./cli.ts", import.meta.url).pathname, "deploy", "--stage", "giglist", "--yes"],
-      { env: { ...process.env, XDG_RUNTIME_DIR: "/nonexistent" }, encoding: "utf8" },
-    );
-    assert.doesNotMatch(result.stderr, /Missing required flag/);
-  });
 });
 
-describe("stageFlag", () => {
-  it("reads --stage and --stage=", () => {
-    assert.deepEqual(stageFlag(["--stage", "giglist"]), Option.some("giglist"));
-    assert.deepEqual(stageFlag(["--yes", "--stage=giglist"]), Option.some("giglist"));
-    assert.deepEqual(stageFlag(["--yes"]), Option.none());
-  });
-});
+describe("alchemyArgv", () => {
+  const stage = { stage: "shop", cartridge: null, origin: "", revision: "", stagedImage: null };
+  const app = ["-c", Package.appEntry];
 
-describe("alchemyArgv approve", () => {
-  const env = {};
-
-  it("queued deploy's Alchemy argv contains --yes", () => {
-    const op = submitToHostOp(
-      {
-        command: "deploy",
-        stage: "shop",
-        cartridge: null,
-        origin: "",
-        revision: "",
-      },
-      env,
-    );
-    assert.deepEqual(alchemyArgv(op), ["deploy", "--stage", "shop", "--yes"]);
-  });
-
-  it("interactive deploy without --yes does not pass --yes", () => {
-    assert.deepEqual(alchemyArgv({ command: "deploy", stage: "shop", approve: false, env }), [
+  it("passes --yes to every queued change: the submit was the approval", () => {
+    assert.deepEqual(alchemyArgv({ command: "deploy", ...stage, planJobId: 1 }), [
       "deploy",
       "--stage",
       "shop",
+      "--yes",
+      ...app,
+    ]);
+    assert.deepEqual(alchemyArgv({ command: "destroy", ...stage }), [
+      "destroy",
+      "--stage",
+      "shop",
+      "--yes",
+      "-c",
+      Package.stateEntry,
+    ]);
+    assert.deepEqual(alchemyArgv({ command: "rollback", name: "shop", deploymentId: 3 }), [
+      "deploy",
+      "--stage",
+      "shop",
+      "--yes",
+      ...app,
     ]);
   });
 
-  it("queued destroy includes --yes; interactive without approve does not", () => {
-    assert.ok(
-      alchemyArgv(
-        submitToHostOp(
-          {
-            command: "destroy",
-            stage: "shop",
-            cartridge: null,
-            origin: "",
-            revision: "",
-          },
-          env,
-        ),
-      ).includes("--yes"),
-    );
-    assert.ok(
-      !alchemyArgv({ command: "destroy", stage: "shop", approve: false, env }).includes("--yes"),
-    );
+  it("does not pass --yes to a plan or a drift check", () => {
+    assert.deepEqual(alchemyArgv({ command: "plan", ...stage }), [
+      "plan",
+      "--stage",
+      "shop",
+      ...app,
+    ]);
+    assert.deepEqual(alchemyArgv({ command: "drift", ...stage }), [
+      "drift",
+      "--stage",
+      "shop",
+      ...app,
+    ]);
   });
 });
 
-describe("loadHostEnvironment", () => {
-  it("fails when the controller env file is unreadable", async () => {
+describe("loadNomadEnvironment", () => {
+  it("names the script that writes an unreadable env file", async () => {
     const error = await Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const dir = yield* fs.makeTempDirectoryScoped();
-      return yield* loadHostEnvironment(`${dir}/missing.env`).pipe(
-        Effect.as(Option.none()),
-        Effect.catch((failure) => Effect.succeed(Option.some(failure))),
-      );
+      return yield* loadNomadEnvironment(`${dir}/operator.env`).pipe(Effect.flip);
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer), Effect.runPromise);
-    assert.ok(Option.isSome(error));
-    assert.match(error.value.message, /cannot read .*missing\.env/);
+    assert.match(
+      error.message,
+      /cannot read .*operator\.env\. Run 'sudo nomad-acl-issue-operator'/,
+    );
   });
 
-  it("fails when XDG_RUNTIME_DIR is unset", async () => {
-    const error = await Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const dir = yield* fs.makeTempDirectoryScoped();
-      const path = `${dir}/controller.env`;
-      yield* fs.writeFileString(path, "NOMAD_TOKEN=abc\n");
-      return yield* loadHostEnvironment(path).pipe(
-        Effect.as(Option.none()),
-        Effect.catch((failure) => Effect.succeed(Option.some(failure))),
-        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({}))),
-      );
-    }).pipe(Effect.scoped, Effect.provide(BunServices.layer), Effect.runPromise);
-    assert.ok(Option.isSome(error));
-    assert.match(error.value.message, /XDG_RUNTIME_DIR is not set/);
-  });
-
-  it("loads controller keys and the OpenBao token file", async () => {
+  it("loads the file's keys and the loopback addresses", async () => {
     const values = await Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const dir = yield* fs.makeTempDirectoryScoped();
-      const controller = `${dir}/controller.env`;
-      yield* fs.writeFileString(controller, "NOMAD_TOKEN=secret-token\n");
-      yield* fs.writeFileString(`${dir}/openbao.token`, "bao-token\n");
-      return yield* loadHostEnvironment(controller).pipe(
-        Effect.provide(
-          ConfigProvider.layer(ConfigProvider.fromEnvRecord({ XDG_RUNTIME_DIR: dir })),
-        ),
-      );
+      const file = `${dir}/controller.env`;
+      yield* fs.writeFileString(file, "NOMAD_TOKEN=secret-token\n");
+      return yield* loadNomadEnvironment(file);
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer), Effect.runPromise);
     assert.equal(values.NOMAD_TOKEN, "secret-token");
-    assert.equal(values.OPENBAO_TOKEN, "bao-token");
     assert.equal(values.NOMAD_ADDR, "http://127.0.0.1:4646");
     assert.equal(values.OPENBAO_ADDR, "http://127.0.0.1:8200");
-    assert.ok(values.OPENBAO_TOKEN_FILE.endsWith("/openbao.token"));
   });
 });
 
 describe("planOrDeploy", () => {
-  it("runs checkToken then alchemy when ORIGIN is unset", async () => {
+  it("runs alchemy when ORIGIN is unset", async () => {
     const { log } = await record({
-      program: (env) => planOrDeploy("plan", ["--stage", "tiny"], env),
+      program: (env) => planOrDeploy("plan", "tiny", env),
       env: {},
       cartridge: tinyCartridge,
     });
-    assert.deepEqual(log, ["checkToken", "bunx alchemy plan --stage tiny"]);
+    assert.deepEqual(log, ["alchemy plan --stage tiny -c alchemy.run.ts"]);
   });
 
-  it("checks, checkToken, alchemy, and records a deploy when ORIGIN is set", async () => {
+  it("checks, runs alchemy, and records a deploy when ORIGIN is set", async () => {
     const { log } = await record({
-      program: (env) => planOrDeploy("deploy", ["--stage", "tiny"], env),
+      program: (env) => planOrDeploy("deploy", "tiny", env),
       env: { ORIGIN: "abc", REVISION: "def" },
       cartridge: tinyCartridge,
     });
     assert.deepEqual(log, [
       "deployment check tiny",
-      "checkToken",
-      "bunx alchemy deploy --stage tiny",
+      "alchemy deploy --stage tiny --yes -c alchemy.run.ts",
       "deployment record tiny",
     ]);
   });
 
   it("does not record after a plan that was checked", async () => {
     const { log } = await record({
-      program: (env) => planOrDeploy("plan", ["--stage", "tiny"], env),
+      program: (env) => planOrDeploy("plan", "tiny", env),
       env: { ORIGIN: "abc", REVISION: "def" },
       cartridge: tinyCartridge,
     });
-    assert.deepEqual(log, [
-      "deployment check tiny",
-      "checkToken",
-      "bunx alchemy plan --stage tiny",
-    ]);
+    assert.deepEqual(log, ["deployment check tiny", "alchemy plan --stage tiny -c alchemy.run.ts"]);
   });
 
   it("does not record when Alchemy exits non-zero", async () => {
     const { log, error } = await record({
-      program: (env) => planOrDeploy("deploy", ["--stage", "tiny"], env),
+      program: (env) => planOrDeploy("deploy", "tiny", env),
       env: { ORIGIN: "abc", REVISION: "def" },
       cartridge: tinyCartridge,
       alchemyExit: 2,
@@ -229,8 +181,7 @@ describe("planOrDeploy", () => {
     assert.equal(error.code, 2);
     assert.deepEqual(log, [
       "deployment check tiny",
-      "checkToken",
-      "bunx alchemy deploy --stage tiny",
+      "alchemy deploy --stage tiny --yes -c alchemy.run.ts",
     ]);
   });
 });
@@ -261,8 +212,12 @@ const record = (options: {
     const spawner = Layer.succeed(
       Spawner.ChildProcessSpawner,
       Spawner.make((command) => {
+        // Package paths are absolute; the log names them by file.
         const line = ChildProcess.isStandardCommand(command)
-          ? [command.command, ...command.args].join(" ")
+          ? [command.command, ...command.args]
+              .join(" ")
+              .replace(`${process.execPath} ${Package.alchemyCli}`, "alchemy")
+              .replace(Package.appEntry, "alchemy.run.ts")
           : "(piped command)";
         log.push(line);
         return Effect.succeed(handle(options.alchemyExit ?? 0));

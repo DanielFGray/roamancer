@@ -14,15 +14,17 @@ import {
   JobNotActive,
   JobNotFound,
   JobNotStarting,
+  PlanStale,
 } from "./Errors.ts";
 import {
   JobCommand,
   JobState,
   JobSubmit,
+  type DeploySubmit,
   type Job as JobT,
   type JobState as JobStateT,
   type JobSubmit as JobSubmitT,
-  stageOf,
+  recoveryStage,
 } from "./Schema.ts";
 
 const JobRow = S.Struct({
@@ -31,6 +33,7 @@ const JobRow = S.Struct({
   payload: S.String,
   state: JobState,
   exit_code: S.NullOr(S.Number),
+  runner_revision: S.NullOr(S.String),
   created_at: S.String,
   started_at: S.NullOr(S.String),
   finished_at: S.NullOr(S.String),
@@ -48,6 +51,7 @@ const toJob = Effect.fn("Store.toJob")(function* (row: typeof JobRow.Type) {
     submit,
     state: row.state,
     exitCode: row.exit_code,
+    runnerRevision: row.runner_revision,
     createdAt: row.created_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -90,6 +94,13 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       yield* sql`CREATE INDEX jobs_state ON jobs(state)`;
       yield* sql`CREATE INDEX jobs_created ON jobs(created_at)`;
       yield* sql`INSERT INTO schema_migrations (version) VALUES (1)`;
+      applied.add(1);
+    }
+
+    // Existing databases from migration 1 lack the column; new opens apply 1 then 2.
+    if (!applied.has(2)) {
+      yield* sql`ALTER TABLE jobs ADD COLUMN runner_revision TEXT`;
+      yield* sql`INSERT INTO schema_migrations (version) VALUES (2)`;
     }
 
     const selectJob = SqlSchema.findOne({
@@ -151,13 +162,14 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
     });
 
     /**
-     * Unit body: starting → running. Fails when canceled or recovered mid-flight
-     * so the Alchemy command never runs.
+     * Unit body: starting → running, recording the runner revision that runs it.
+     * Fails when canceled or recovered mid-flight so the Alchemy command never runs.
      */
-    const claim = Effect.fn("Store.claim")(function* (id: number) {
+    const claim = Effect.fn("Store.claim")(function* (id: number, runnerRevision: string | null) {
       const rows = yield* sql<{ id: number }>`
         UPDATE jobs
-        SET state = 'running'
+        SET state = 'running',
+            runner_revision = ${runnerRevision}
         WHERE id = ${id} AND state = 'starting'
         RETURNING id
       `;
@@ -252,7 +264,8 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
           const stages = new Set<string>();
           for (const row of active) {
             const job = yield* toJob(row);
-            stages.add(stageOf(job.submit));
+            const stage = recoveryStage(job.submit);
+            if (Option.isSome(stage)) stages.add(stage.value);
             yield* sql`
               UPDATE jobs
               SET state = 'interrupted',
@@ -277,6 +290,7 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
                 cartridge: null,
                 origin: "",
                 revision: "",
+                stagedImage: null,
               }),
             );
           }
@@ -299,6 +313,45 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       return yield* Effect.forEach(rows, toJob, { concurrency: 1 });
     });
 
+    /**
+     * Deploy gate: the named plan must be a succeeded plan of the same stage and
+     * cartridge, run by the same runner revision, with no later finished job.
+     */
+    const requireFreshPlan = Effect.fn("Store.requireFreshPlan")(function* (
+      deploy: DeploySubmit,
+      runnerRevision: string | null,
+    ) {
+      const planJobId = deploy.planJobId;
+      const stale = (reason: string) => Effect.fail(new PlanStale({ planJobId, reason }));
+      const found = yield* getOption(planJobId);
+      if (Option.isNone(found)) return yield* stale("no such job");
+      const plan = found.value;
+      if (plan.submit.command !== "plan") return yield* stale("not a plan");
+      if (plan.state !== "succeeded" || plan.finishedAt === null) {
+        return yield* stale(`the plan ${plan.state}`);
+      }
+      if (plan.submit.stage !== deploy.stage) return yield* stale("another stage");
+      if (plan.submit.cartridge !== deploy.cartridge) return yield* stale("another cartridge");
+      if (plan.submit.stagedImage !== deploy.stagedImage)
+        return yield* stale("another staged image");
+      if (plan.submit.origin !== deploy.origin || plan.submit.revision !== deploy.revision) {
+        return yield* stale("another release commit");
+      }
+      if (plan.runnerRevision !== runnerRevision) return yield* stale("another runner revision");
+      // Only a job that changes resources outdates a plan; reads and plans in between do not.
+      const later = yield* sql<{ id: number }>`
+        SELECT id FROM jobs
+        WHERE command IN ('deploy', 'destroy', 'rollback')
+          AND finished_at IS NOT NULL
+          AND (
+            finished_at > ${plan.finishedAt}
+            OR (finished_at = ${plan.finishedAt} AND id > ${planJobId})
+          )
+        LIMIT 1
+      `;
+      if (later[0] !== undefined) return yield* stale(`job ${later[0].id} changed resources since`);
+    });
+
     return {
       enqueue,
       get,
@@ -311,6 +364,7 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       cancel,
       recoverInterrupted,
       list,
+      requireFreshPlan,
     } as const;
   }),
 }) {
@@ -334,4 +388,5 @@ export type StoreError =
   | JobNotStarting
   | JobNotActive
   | CancelRefused
-  | InvalidJobRow;
+  | InvalidJobRow
+  | PlanStale;

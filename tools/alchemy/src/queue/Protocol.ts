@@ -3,23 +3,13 @@
  * with Schema before the store or starter runs. Submit carries command-specific data only.
  */
 import { Schema as S } from "effect";
-import { Job, JobState } from "./Schema.ts";
+import { Job, JobState, JobSubmit } from "./Schema.ts";
 
-export const SubmitStage = S.TaggedStruct("submit", {
-  command: S.Literals(["plan", "deploy", "destroy", "drift"]),
-  stage: S.NonEmptyString,
-  cartridge: S.NullOr(S.String),
-  origin: S.String,
-  revision: S.String,
-});
-
-export const SubmitRollback = S.TaggedStruct("submit", {
-  command: S.Literals(["rollback"]),
-  name: S.NonEmptyString,
-  deploymentId: S.Number.check(S.isInt(), S.isGreaterThan(0)),
-});
-
-export const Submit = S.Union([SubmitStage, SubmitRollback]);
+/** A submit is a job payload under the `submit` tag; the front end stores it as sent. */
+export const Submit = S.Union(
+  JobSubmit.members.map((member) => S.TaggedStruct("submit", member.fields)),
+);
+export type Submit = typeof Submit.Type;
 export const List = S.TaggedStruct("list", {});
 export const Show = S.TaggedStruct("show", { id: S.Number });
 export const Wait = S.TaggedStruct("wait", { id: S.Number });

@@ -75,8 +75,15 @@ in
       };
     };
 
+    # Jobs run TailscaleServe's `tailscale serve`, which needs root or the Tailscale
+    # operator. Tailscale has one operator, so it is the account that deploys.
+    services.tailscale.extraSetFlags = [ "--operator=alchemy" ];
+
     systemd.services."alchemy-job@" = {
       description = "Alchemy job %i";
+      # A unit's PATH holds only coreutils and systemd: jobs also run tailscale (TailscaleServe)
+      # and psql, pg_dump and pg_restore (PostgresDatabase).
+      path = [ config.services.tailscale.package pkgs.postgresql_17 ];
       serviceConfig = {
         Type = "oneshot";
         User = "alchemy";

@@ -73,3 +73,13 @@ export class QueueProtocolError extends S.TaggedError<QueueProtocolError>()("Que
 export class TokenWriteError extends S.TaggedError<TokenWriteError>()("TokenWriteError", {
   message: S.String,
 }) {}
+
+/** Deploy refused: the named plan job is missing, wrong, or no longer the newest finish. */
+export class PlanStale extends S.TaggedError<PlanStale>()("PlanStale", {
+  planJobId: S.Number,
+  reason: S.String,
+}) {
+  override get message() {
+    return `the plan in job ${this.planJobId} is stale (${this.reason}): run the plan again`;
+  }
+}

@@ -2,7 +2,7 @@
  * `alchemy-runner job run <id>`: claim the reserved row, run the submitted command, store
  * the exit code. Does not start the next job — ExecStopPost (`job finished`) does that.
  */
-import { Effect, FileSystem, Schema as S } from "effect";
+import { Config, Effect, FileSystem, Option, Schema as S } from "effect";
 import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { JobNotFound, JobNotStarting, LoginRequired } from "./Errors.ts";
 import type { Paths } from "./Paths.ts";
@@ -58,9 +58,24 @@ export const runJob = Effect.fn("queue.runJob")(function* (
     Effect.tapErrorTag("LoginRequired", () => store.abandon(id, "failed", 1)),
   );
 
+  const runnerRevision = yield* Config.option(Config.String("ALCHEMY_RUNNER_REVISION")).pipe(
+    Effect.map(Option.getOrNull),
+  );
+
   const marked = yield* store
-    .claim(id)
+    .claim(id, runnerRevision)
     .pipe(Effect.catchTag("JobNotStarting", (error) => new JobNotStarting(error)));
+
+  if (marked.submit.command === "deploy") {
+    yield* store.requireFreshPlan(marked.submit, runnerRevision).pipe(
+      Effect.catchTag("PlanStale", (error) =>
+        Effect.gen(function* () {
+          yield* store.finish(id, 1);
+          return yield* new JobCommandError({ message: error.message });
+        }),
+      ),
+    );
+  }
 
   const env: Record<string, string> = {
     OPENBAO_TOKEN: token,
@@ -69,13 +84,17 @@ export const runJob = Effect.fn("queue.runJob")(function* (
 
   yield* Effect.scoped(
     Effect.gen(function* () {
-      const cartridge = marked.submit.command === "rollback" ? null : marked.submit.cartridge;
-      if (cartridge !== null && marked.submit.command !== "rollback") {
-        const cartridgeFile = yield* fs.makeTempFileScoped();
-        yield* fs.writeFileString(cartridgeFile, cartridge, { mode: 0o600 });
-        env.CARTRIDGE_FILE = cartridgeFile;
-        env.ORIGIN = marked.submit.origin;
-        env.REVISION = marked.submit.revision;
+      const submit = marked.submit;
+      if ("cartridge" in submit) {
+        if (submit.cartridge !== null) {
+          const cartridgeFile = yield* fs.makeTempFileScoped();
+          yield* fs.writeFileString(cartridgeFile, submit.cartridge, { mode: 0o600 });
+          env.CARTRIDGE_FILE = cartridgeFile;
+        }
+        // A cartridge sent without its repository (CARTRIDGE=<file>) is checked, not recorded.
+        if (submit.origin !== "") env.ORIGIN = submit.origin;
+        if (submit.revision !== "") env.REVISION = submit.revision;
+        if (submit.stagedImage !== null) env.STAGED_IMAGE = submit.stagedImage;
       }
 
       const outcome = yield* execute(marked, env).pipe(
