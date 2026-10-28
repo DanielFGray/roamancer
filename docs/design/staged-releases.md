@@ -9,11 +9,11 @@ The release system must preserve application data. It must not run two versions 
 ## Candidate, promotion, and rollback
 
 - A **candidate release** is a specific app version deployed for review. It has a preview URL and does not change the live route.
-- **Promotion** changes the live route to a candidate after health checks pass and an operator approves it.
+- **Promotion** changes the live route to a release after health checks pass. A merge into `main` is the operator's approval: a push to `main` deploys and promotes. A preview of another branch never goes live by itself.
 - **Rollback** changes the live route back to the previous release. It does not reverse database writes or schema changes.
 - A **traffic split** sends production requests to more than one release according to an explicit policy. The later A/B testing goal includes round-robin assignment and is separate from preview URLs.
 
-For a game release, the operator deploys a candidate, opens its generated URL on a phone, checks for regressions, and promotes it only after review. The usual URL continues to reach the current release until promotion.
+For a game release, the operator creates a preview of the branch, opens its generated URL on a phone, checks for regressions, and merges the branch into `main` only after review. The usual URL continues to reach the current release until that merge deploys.
 
 ## Work order
 
