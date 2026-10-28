@@ -19,9 +19,13 @@
     # here holds placeholder values; pass yours with `--override-input site path:<folder>`.
     # `ops rebuild` and `ops install` override this input with your site folder.
     site = { url = "path:./nixos/site"; flake = false; };
+    # The server-ansible commit this build is from, in the folder's `rev` file. Nix hides
+    # self.rev once an input is overridden, and `ops rebuild` overrides site, so rebuild
+    # overrides this input too, with the commit it switches to. Empty here: no revision.
+    build = { url = "path:./nixos/build"; flake = false; };
   };
 
-  outputs = { self, nixpkgs, bun2nix, disko, nixos-generators, site, ... }:
+  outputs = { self, nixpkgs, bun2nix, disko, nixos-generators, site, build, ... }:
     let
       system = "x86_64-linux";
       siteConfig = builtins.fromTOML (builtins.readFile "${site}/site.toml");
@@ -48,8 +52,10 @@
     in {
       packages.${system} = {
         alchemy-runner = pkgs.callPackage ./nixos/modules/alchemy-runner-package.nix {
-          # Dirty trees have no rev; the package then omits ALCHEMY_RUNNER_REVISION.
-          revision = self.rev or null;
+          # With no recorded commit the package omits ALCHEMY_RUNNER_REVISION.
+          revision =
+            let rev = nixpkgs.lib.trim (builtins.readFile "${build}/rev");
+            in if rev == "" then null else rev;
         };
 
         postgres-image =

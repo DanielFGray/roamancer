@@ -124,7 +124,8 @@
         "disko": "disko",
         "nixos-generators": "nixos-generators",
         "nixpkgs": "nixpkgs",
-        "site": "site"
+        "site": "site",
+        "build": "build"
       }
     },
     "site": {
@@ -174,6 +175,18 @@
         "repo": "treefmt-nix",
         "type": "github"
       }
+    },
+    "build": {
+      "flake": false,
+      "locked": {
+        "path": "./nixos/build",
+        "type": "path"
+      },
+      "original": {
+        "path": "./nixos/build",
+        "type": "path"
+      },
+      "parent": []
     }
   },
   "root": "root",

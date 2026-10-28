@@ -167,7 +167,7 @@ describe("rebuild", () => {
     ]);
     assert.equal(
       log[8],
-      `ssh -t root@z rm -rf "$HOME/site-tree" && mkdir "$HOME/site-tree" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && sudo nixos-rebuild switch --flake "git+file:$HOME/server-ansible#cynic" --override-input site "path:$HOME/site-tree"`,
+      `ssh -t root@z rm -rf "$HOME/site-tree" "$HOME/build-info" && mkdir "$HOME/site-tree" "$HOME/build-info" && git -C "$HOME/site" archive HEAD | tar -x -C "$HOME/site-tree" && git -C "$HOME/server-ansible" rev-parse HEAD > "$HOME/build-info/rev" && sudo nixos-rebuild switch --flake "git+file:$HOME/server-ansible#cynic" --override-input site "path:$HOME/site-tree" --override-input build "path:$HOME/build-info"`,
     );
     assert.equal(log[log.length - 1], "ssh ctl 'alchemy-runner' 'wait' '7'");
   });
