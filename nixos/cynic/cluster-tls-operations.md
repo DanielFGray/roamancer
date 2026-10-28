@@ -42,7 +42,10 @@ Store the pair as "cynic cluster CA". To restore it, write both files back to `/
 atheist (and any Nomad client) needs `ca.crt`, the Nomad agent CA, in `registryCaDir` (`/var/lib/registry-ca`). The CA is public, so copy it as a plain file:
 
 ```sh
-ssh -n cynic 'cat /var/lib/registry-ca/ca.crt' | ssh -t atheist 'sudo install -D -m 0644 /dev/stdin /var/lib/registry-ca/ca.crt'
+# sudo cannot prompt for a password when ssh reads stdin from a pipe, so stage the file.
+ssh -n cynic "cat /var/lib/registry-ca/ca.crt" > /tmp/registry-ca.crt
+scp /tmp/registry-ca.crt atheist:/tmp/registry-ca.crt
+ssh -t atheist "sudo install -D -m 0644 /tmp/registry-ca.crt /var/lib/registry-ca/ca.crt && rm /tmp/registry-ca.crt"
 ```
 
 For a first install, put it at `~/.local/state/server-ansible/extra-files/<host>/var/lib/registry-ca/ca.crt` before `ops install`, which copies it onto the new root. Copy it again only when the CA changes (every 5 years).
