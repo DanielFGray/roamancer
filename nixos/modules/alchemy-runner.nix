@@ -53,31 +53,25 @@ in
       });
     '';
 
-    systemd.sockets.alchemy-submit = {
-      description = "Alchemy job submission socket";
-      wantedBy = [ "sockets.target" ];
-      socketConfig = {
-        ListenStream = "/run/alchemy/submit.sock";
-        SocketUser = "alchemy";
-        SocketGroup = "alchemy-submit";
-        SocketMode = "0660";
-        DirectoryMode = "0755";
-        Accept = false;
-      };
-    };
-
     systemd.services.alchemy-submit = {
       description = "Alchemy job queue front end";
-      requires = [ "alchemy-submit.socket" ];
-      after = [ "alchemy-submit.socket" ];
+      # The front end binds /run/alchemy/submit.sock itself (Serve.ts says why not socket
+      # activation). Group and umask give the socket group alchemy-submit, mode 0770.
+      # No StateDirectory: the job units own /var/lib/alchemy as group alchemy, and a
+      # second owner would make systemd chown it back and forth. createHome makes it.
+      wantedBy = [ "multi-user.target" ];
       serviceConfig = {
         Type = "simple";
         User = "alchemy";
-        Group = "alchemy";
+        Group = "alchemy-submit";
+        UMask = "0007";
         ExecStart = "${cfg.package}/bin/alchemy-runner queue serve";
+        Restart = "on-failure";
+        RuntimeDirectory = "alchemy";
+        RuntimeDirectoryMode = "0755";
+        # Keep /run/alchemy across restarts: it holds the minted OpenBao token.
+        RuntimeDirectoryPreserve = "yes";
         WorkingDirectory = "/var/lib/alchemy";
-        StateDirectory = "alchemy";
-        StateDirectoryMode = "0700";
       };
     };
 

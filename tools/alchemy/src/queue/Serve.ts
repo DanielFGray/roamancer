@@ -1,12 +1,12 @@
 /**
- * Socket-activated front end: one JSON-line request per connection.
- * Uses BunSocketServer (Net.ListenOptions), which accepts `path` or inherited `fd`.
+ * Queue front end: one JSON-line request per connection on the submit socket.
+ * It binds the socket path itself. Under systemd socket activation, Bun reports an
+ * inherited unix socket's address as `{}`, and Effect's socket server fails on it.
  */
 import * as BunSocketServer from "@effect/platform-bun/BunSocketServer";
-import { Config, Effect, FileSystem, Layer, Option, Schedule, Schema as S } from "effect";
+import { Effect, FileSystem, Layer, Option, Schedule, Schema as S } from "effect";
 import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
-import type * as Net from "node:net";
 import { QueueProtocolError, TokenWriteError } from "./Errors.ts";
 import type { Paths } from "./Paths.ts";
 import { Request, Response } from "./Protocol.ts";
@@ -18,23 +18,6 @@ const decodeRequest = S.decodeUnknownEffect(S.fromJsonString(Request));
 const encodeResponse = S.encodeUnknownEffect(S.fromJsonString(Response));
 
 const terminal = new Set(["succeeded", "failed", "interrupted", "canceled"]);
-
-/**
- * Listen options: systemd fd 3 when LISTEN_FDS is set for this pid, else the unix path.
- */
-export const listenOptions = Effect.fn("queue.listenOptions")(function* (paths: Paths) {
-  const listenFds = yield* Config.option(Config.Int("LISTEN_FDS"));
-  const listenPid = yield* Config.option(Config.Int("LISTEN_PID"));
-  if (
-    Option.isSome(listenFds) &&
-    listenFds.value > 0 &&
-    Option.isSome(listenPid) &&
-    listenPid.value === process.pid
-  ) {
-    return { fd: 3 } as const;
-  }
-  return { path: paths.socket } as const;
-});
 
 /** On start, interrupt every starting/running row and enqueue a plan per stage — one txn. */
 export const recover = Effect.fn("queue.recover")(function* () {
@@ -181,11 +164,15 @@ export const serve = (paths: Paths) =>
     yield* server.run((socket) => handleConnection(paths, socket));
   });
 
+/**
+ * The submit socket server. A crash or kill leaves the socket file behind, and binding
+ * over it fails with EADDRINUSE, so remove it first; systemd runs one front end at a time.
+ */
 export const layerServer = (paths: Paths) =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const options = yield* listenOptions(paths);
-      // Node ListenOptions includes `fd`; BunSocketServer's intersection with ServerOpts needs a widen for systemd fd 3.
-      return BunSocketServer.layer(options as Net.ListenOptions & Net.ServerOpts);
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.remove(paths.socket, { force: true });
+      return BunSocketServer.layer({ path: paths.socket });
     }),
   );

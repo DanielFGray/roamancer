@@ -1,11 +1,12 @@
 import { describe, it } from "node:test";
+import { spawnSync } from "node:child_process";
 import * as assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as BunServices from "@effect/platform-bun/BunServices";
-import { ConfigProvider, Effect, Fiber, Layer, Option } from "effect";
+import { ConfigProvider, Effect, Fiber, Layer, Option, Schedule } from "effect";
 import { request } from "./Client.ts";
 import { finished } from "./Finished.ts";
 import { under, type Paths } from "./Paths.ts";
@@ -63,13 +64,19 @@ const withStore = <A, E>(
   effect: Effect.Effect<A, E, Store | Units>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(storeUnits(paths, units))));
 
-const runServe = (paths: Paths, units: Layer.Layer<Units>) => {
+const runServe = async (paths: Paths, units: Layer.Layer<Units>) => {
   const program = serve(paths).pipe(
     Effect.provide(layerServer(paths)),
     Effect.provide(storeUnits(paths, units)),
     Effect.provide(BunServices.layer),
   );
   const fiber = Effect.runFork(program as Effect.Effect<void, unknown>);
+  // Startup time varies, so wait until the socket answers instead of sleeping.
+  await Effect.runPromise(
+    request(paths.socket, { _tag: "list" }).pipe(
+      Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }),
+    ),
+  );
   return {
     stop: () => Effect.runPromise(Fiber.interrupt(fiber)),
   };
@@ -332,12 +339,30 @@ describe("queue cancel race", () => {
 });
 
 describe("queue socket", () => {
+  it("serves after a killed front end left its socket file behind", async () => {
+    const { root, paths } = tempRoot();
+    // A process that exits without closing its server leaves the socket file, as a crash does.
+    const killed = spawnSync(process.execPath, [
+      "-e",
+      `require("node:net").createServer().listen(${JSON.stringify(paths.socket)}, () => process.exit(0))`,
+    ]);
+    assert.equal(killed.status, 0);
+    assert.ok(existsSync(paths.socket));
+    const server = await runServe(paths, fakeUnits().layer);
+    try {
+      const listed = await Effect.runPromise(request(paths.socket, { _tag: "list" }));
+      assert.equal(listed._tag, "listed");
+    } finally {
+      await server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("gives two ids for duplicate submits and cancels only queued jobs", async () => {
     const { root, paths } = tempRoot();
     const fake = fakeUnits();
-    const server = runServe(paths, fake.layer);
+    const server = await runServe(paths, fake.layer);
     try {
-      await delay(80);
       const a = await Effect.runPromise(request(paths.socket, stageSubmit));
       const b = await Effect.runPromise(request(paths.socket, stageSubmit));
       assert.deepEqual(a, { _tag: "submitted", id: 1 });
@@ -379,9 +404,8 @@ describe("queue socket", () => {
   it("wait returns when the job ends", async () => {
     const { root, paths } = tempRoot();
     const fake = fakeUnits();
-    const server = runServe(paths, fake.layer);
+    const server = await runServe(paths, fake.layer);
     try {
-      await delay(80);
       const submitted = await Effect.runPromise(request(paths.socket, stageSubmit));
       assert.equal(submitted._tag, "submitted");
       if (submitted._tag !== "submitted") return;
@@ -413,9 +437,8 @@ describe("queue socket", () => {
   it("token write is atomic rename to the final path", async () => {
     const { root, paths } = tempRoot();
     const fake = fakeUnits();
-    const server = runServe(paths, fake.layer);
+    const server = await runServe(paths, fake.layer);
     try {
-      await delay(80);
       writeFileSync(paths.tokenFile, "stale", { mode: 0o600 });
       await Effect.runPromise(request(paths.socket, { _tag: "token", value: "fresh-token" }));
       assert.equal(readFileSync(paths.tokenFile, "utf8"), "fresh-token");
@@ -430,9 +453,8 @@ describe("queue stop hook", () => {
   it("missing token marks the job failed and the next job starts", async () => {
     const { root, paths } = tempRoot();
     const fake = fakeUnits();
-    const server = runServe(paths, fake.layer);
+    const server = await runServe(paths, fake.layer);
     try {
-      await delay(80);
       await Effect.runPromise(request(paths.socket, stageSubmit));
       await Effect.runPromise(request(paths.socket, { ...stageSubmit, stage: "other" }));
       assert.deepEqual(fake.starts, [1]);
@@ -470,9 +492,8 @@ describe("queue stop hook", () => {
   it("a killed running job is reported by the stop hook", async () => {
     const { root, paths } = tempRoot();
     const fake = fakeUnits();
-    const server = runServe(paths, fake.layer);
+    const server = await runServe(paths, fake.layer);
     try {
-      await delay(80);
       await Effect.runPromise(request(paths.socket, stageSubmit));
       await Effect.runPromise(request(paths.socket, { ...stageSubmit, stage: "other" }));
       assert.deepEqual(fake.starts, [1]);
