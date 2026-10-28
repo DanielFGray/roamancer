@@ -34,7 +34,8 @@ const ValkeyServerDeclaration = S.TaggedStruct("ValkeyServer", {
   service: CartridgeJob,
 });
 
-const PostgresEntry = S.Struct({
+/** One database a cartridge provisions: name, optional server, extensions, optional copy source. */
+export const PostgresEntry = S.Struct({
   database: DatabaseName,
   server: S.optionalKey(ResourceName),
   // Created in the database before migrations run. Each must be in the server's image.
@@ -43,6 +44,7 @@ const PostgresEntry = S.Struct({
   // roles; expand derives them from the copy's own database name, never from this one.
   copyFrom: S.optionalKey(DatabaseName),
 });
+export type PostgresEntry = typeof PostgresEntry.Type;
 
 const ValkeyEntry = S.Struct({
   server: S.optionalKey(ResourceName),

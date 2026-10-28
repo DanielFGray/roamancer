@@ -4,7 +4,6 @@
 import { Console, Effect, FileSystem, Option } from "effect";
 import { Argument, Command } from "effect/cli";
 import * as Redacted from "effect/Redacted";
-import * as Cartridge from "../Cartridge.ts";
 import { postgresLoginRole } from "../Cartridge.ts";
 import { OpsError } from "../Exec.ts";
 import {
@@ -13,6 +12,7 @@ import {
   managedEnvKeys,
   managedEnvValues,
 } from "./Declaration.ts";
+import { decodeDevDbFile } from "./DevDbCartridge.ts";
 import { applyManagedKeys } from "./EnvFile.ts";
 import {
   CONTAINER,
@@ -31,7 +31,7 @@ import { ensurePasswords, readPasswords } from "./Passwords.ts";
 const cwd = ".";
 
 const readCartridge = Effect.fn("devdb.readCartridge")(function* () {
-  return yield* Cartridge.decodeFile(`${cwd}/cartridge.json`, Cartridge.AppCartridge);
+  return yield* decodeDevDbFile(`${cwd}/cartridge.json`);
 });
 
 const writeEnv = Effect.fn("devdb.writeEnv")(function* (values: Readonly<Record<string, string>>) {

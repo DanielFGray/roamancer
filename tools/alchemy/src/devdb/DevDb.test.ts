@@ -12,7 +12,7 @@ import { postgresLoginRole } from "../Cartridge.ts";
 import { provisionPostgresDatabase } from "../PostgresProvisioning.ts";
 import { applyManagedKeys } from "./EnvFile.ts";
 import { databaseDeclarations, managedEnvKeys, managedEnvValues } from "./Declaration.ts";
-import type { Cartridge } from "../Cartridge.ts";
+import type { DevDbCartridge } from "./DevDbCartridge.ts";
 
 const PORT = 55418;
 const CONTAINER = "alchemy-ops-devdb-test";
@@ -31,9 +31,6 @@ const adminLayer = (database: string) =>
   );
 
 const cartridge = {
-  apiVersion: "server-ansible/v2",
-  name: "giglist",
-  servers: [],
   postgres: [{ database: "giglist", extensions: ["pgcrypto"] }],
   services: [
     {
@@ -54,7 +51,7 @@ const cartridge = {
       migrate: { secrets: [] },
     },
   ],
-} as unknown as Cartridge;
+} as DevDbCartridge;
 
 const waitReady = async () => {
   for (let attempt = 0; attempt < 40; attempt++) {

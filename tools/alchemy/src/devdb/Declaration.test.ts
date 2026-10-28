@@ -1,51 +1,37 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Redacted from "effect/Redacted";
-import type { Cartridge } from "../Cartridge.ts";
+import * as S from "effect/Schema";
 import {
   connectionUrl,
   databaseDeclarations,
   managedEnvKeys,
   managedEnvValues,
 } from "./Declaration.ts";
+import { DevDbCartridge } from "./DevDbCartridge.ts";
 
-const cartridge = {
-  apiVersion: "server-ansible/v2" as const,
-  name: "giglist",
-  servers: [],
+const cartridge = S.decodeUnknownSync(DevDbCartridge)({
   postgres: [{ database: "giglist", extensions: ["citext", "pgcrypto"] }],
   services: [
     {
-      name: "giglist-api",
-      image: "x",
-      hostPort: "dynamic" as const,
-      containerPort: 3000,
-      cpu: 1,
-      memoryMB: 1,
-      networkMode: "bridge" as const,
-      command: "bun",
-      args: [],
-      routes: [],
-      environment: [],
-      connections: [],
       secrets: [
         {
-          _tag: "PostgresCredentials" as const,
+          _tag: "PostgresCredentials",
           database: "giglist",
-          login: "migration" as const,
+          login: "migration",
           urlEnv: "DATABASE_URL",
         },
         {
-          _tag: "PostgresCredentials" as const,
+          _tag: "PostgresCredentials",
           database: "giglist",
-          login: "api" as const,
+          login: "api",
           urlEnv: "AUTH_DATABASE_URL",
           usernameEnv: "AUTH_DATABASE_USER",
         },
       ],
     },
   ],
-} as unknown as Cartridge;
+});
 
 describe("managedEnvKeys", () => {
   it("collects url/username/password env names from PostgresCredentials once", () => {
