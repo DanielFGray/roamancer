@@ -85,8 +85,8 @@ operator Nomad policy and `nomad-acl-issue-operator`.
 
 ## 6. Credentials
 
-Rotate the Nomad controller token (issue a new one, then delete the old
-accessor) as in `nomad-acl-operations.md`:
+Rotate the Nomad controller token (issue a new one, then delete every
+`alchemy-controller` accessor the first list shows) as in `nomad-acl-operations.md`:
 
 ```sh
 sudo sh -c 'export NOMAD_TOKEN="$(cat /var/lib/nomad-acl/bootstrap.token)"; exec nomad acl token list'
@@ -101,11 +101,12 @@ sudo nomad-acl-issue-operator
 ```
 
 Revoke the operator's OpenBao token, then delete its file in the runtime
-directory:
+directory. The `bao` CLI defaults to HTTPS, and the loopback listener is plain HTTP.
+The file is deleted only when the revoke succeeds:
 
 ```sh
-BAO_TOKEN=$(cat "$XDG_RUNTIME_DIR/openbao.token") bao token revoke -self
-rm -f "$XDG_RUNTIME_DIR/openbao.token"
+BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=$(cat "$XDG_RUNTIME_DIR/openbao.token") bao token revoke -self &&
+  rm -f "$XDG_RUNTIME_DIR/openbao.token"
 ```
 
 End every existing SSH session for the operator, this one included, as the last command of this step. Supplementary groups from before the rebuild stay in those sessions.
