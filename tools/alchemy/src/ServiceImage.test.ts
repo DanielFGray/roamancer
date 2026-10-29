@@ -68,6 +68,7 @@ describe("image-less cartridge boundary", () => {
     assert.deepEqual(keys.map((key) => key.env).sort(), [
       "AUTH_DATABASE_URL",
       "DATABASE_URL",
+      "ROOT_DATABASE_URL",
       "SHADOW_DATABASE_URL",
       "TEST_DATABASE_URL",
     ]);
@@ -85,7 +86,13 @@ describe("image-less cartridge boundary", () => {
       managedEnvKeys(cartridge)
         .map((key) => key.env)
         .sort(),
-      ["AUTH_DATABASE_URL", "DATABASE_URL", "SHADOW_DATABASE_URL", "TEST_DATABASE_URL"],
+      [
+        "AUTH_DATABASE_URL",
+        "DATABASE_URL",
+        "ROOT_DATABASE_URL",
+        "SHADOW_DATABASE_URL",
+        "TEST_DATABASE_URL",
+      ],
     );
   });
 

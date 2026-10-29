@@ -92,12 +92,13 @@ describe("ops dev db provision + env", () => {
     spawnSync("docker", ["rm", "-f", CONTAINER], { encoding: "utf8" });
   });
 
+  const passwords = new Map([
+    [postgresLoginRole("giglist", "api"), "api-secret"],
+    [postgresLoginRole("giglist", "migration"), "migration-secret"],
+  ]);
+  const passwordFor = (role: string) => Redacted.make(passwords.get(role)!);
+
   it("provisions from the cartridge mapping and a second env write is identical", async () => {
-    const passwords = new Map([
-      [postgresLoginRole("giglist", "api"), "api-secret"],
-      [postgresLoginRole("giglist", "migration"), "migration-secret"],
-    ]);
-    const passwordFor = (role: string) => Redacted.make(passwords.get(role)!);
     const [declaration] = databaseDeclarations(cartridge, passwordFor);
     assert.ok(declaration);
 
@@ -134,5 +135,29 @@ describe("ops dev db provision + env", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // graphile-migrate commit runs these statements through ROOT_DATABASE_URL, which ops
+  // points at `postgres` as the migration login. Apps set databaseOwner to the owner role.
+  it("lets the migration login drop and recreate the shadow database", async () => {
+    for (const declaration of databaseDeclarations(cartridge, passwordFor)) {
+      await Effect.runPromise(provisionPostgresDatabase(declaration, adminLayer));
+    }
+    const rootUrl = managedEnvValues(managedEnvKeys(cartridge), (role) =>
+      passwords.get(role)!,
+    ).ROOT_DATABASE_URL;
+    assert.ok(rootUrl !== undefined, "ops writes ROOT_DATABASE_URL");
+    const root = new URL(rootUrl);
+    root.port = String(PORT);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP DATABASE IF EXISTS giglist_shadow`;
+        yield* sql`CREATE DATABASE giglist_shadow OWNER giglist_owner`;
+        yield* sql`REVOKE ALL ON DATABASE giglist_shadow FROM PUBLIC`;
+      }).pipe(
+        Effect.provide(PgClient.layerFrom(PgClient.makeClient({ url: Redacted.make(root.href) }))),
+      ),
+    );
   });
 });

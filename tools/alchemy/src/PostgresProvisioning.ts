@@ -37,6 +37,8 @@ export type PostgresLoginDeclaration = {
   readonly name: string;
   readonly memberOf: string;
   readonly inherit: boolean;
+  /** CREATEDB, so graphile-migrate can drop and recreate the shadow database it owns. */
+  readonly createDatabases: boolean;
   readonly password: Redacted.Redacted<string>;
 };
 
@@ -392,6 +394,20 @@ const ensureLoginRole = (
           // Password is set only at create; rotation is `ops dev db reset`.
         }),
     });
+    yield* (
+      login.createDatabases
+        ? sql`ALTER ROLE ${sql(login.name)} CREATEDB`
+        : sql`ALTER ROLE ${sql(login.name)} NOCREATEDB`
+    ).pipe(
+      Effect.asVoid,
+      Effect.mapError(
+        () =>
+          new PostgresProvisioningError({
+            operation: "set login createdb",
+            target: login.name,
+          }),
+      ),
+    );
     yield* sql`GRANT ${sql(login.memberOf)} TO ${sql(login.name)}`.pipe(
       Effect.asVoid,
       Effect.mapError(

@@ -56,7 +56,7 @@ describe("applyManagedKeys", () => {
     );
   });
 
-  it("strips ROOT_DATABASE_* keys while writing managed updates", () => {
+  it("strips unmanaged ROOT_DATABASE_* keys and rewrites a managed one in place", () => {
     const before = [
       "ROOT_DATABASE_URL=postgres://postgres@localhost/template1",
       "ROOT_DATABASE_PASSWORD=secret",
@@ -65,8 +65,8 @@ describe("applyManagedKeys", () => {
       "",
     ].join("\n");
     assert.equal(
-      applyManagedKeys(before, { DATABASE_URL: "new", SHADOW_DATABASE_URL: "shadow" }),
-      ["DATABASE_URL=new", "KEEP=yes", "SHADOW_DATABASE_URL=shadow", ""].join("\n"),
+      applyManagedKeys(before, { DATABASE_URL: "new", ROOT_DATABASE_URL: "root" }),
+      ["ROOT_DATABASE_URL=root", "DATABASE_URL=new", "KEEP=yes", ""].join("\n"),
     );
   });
 });

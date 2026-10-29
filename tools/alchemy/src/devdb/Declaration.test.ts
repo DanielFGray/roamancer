@@ -68,6 +68,12 @@ describe("managedEnvKeys", () => {
         database: "giglist",
         login: "migration",
       },
+      {
+        kind: "rootUrl",
+        env: "ROOT_DATABASE_URL",
+        database: "giglist",
+        login: "migration",
+      },
     ]);
   });
 });
@@ -89,17 +95,20 @@ describe("databaseDeclarations", () => {
         name: login.name,
         memberOf: login.memberOf,
         inherit: login.inherit,
+        createDatabases: login.createDatabases,
       })),
       [
         {
           name: "alchemy_giglist_api",
           memberOf: "giglist_visitor",
           inherit: false,
+          createDatabases: false,
         },
         {
           name: "alchemy_giglist_migration",
           memberOf: "giglist_owner",
           inherit: true,
+          createDatabases: true,
         },
       ],
     );
@@ -130,7 +139,7 @@ describe("resolveDatabaseTarget / declarationsForDatabase", () => {
 });
 
 describe("managedEnvValues", () => {
-  it("builds host URLs on 127.0.0.1:5417 for url, shadow, and test env keys", () => {
+  it("builds host URLs on 127.0.0.1:5417 for url, shadow, test, and root env keys", () => {
     const values = managedEnvValues(managedEnvKeys(cartridge), (role) => `pw-for-${role}`);
     assert.equal(
       values.DATABASE_URL,
@@ -157,6 +166,10 @@ describe("managedEnvValues", () => {
         password: "pw-for-alchemy_giglist_migration",
         database: "giglist_test",
       }),
+    );
+    assert.equal(
+      values.ROOT_DATABASE_URL,
+      "postgresql://alchemy_giglist_migration:pw-for-alchemy_giglist_migration@127.0.0.1:5417/postgres?sslmode=disable&options=-c%20role%3Dnone",
     );
   });
 });

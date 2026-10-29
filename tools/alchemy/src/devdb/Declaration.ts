@@ -2,7 +2,9 @@
  * Cartridge → provisioning declarations and the .env keys PostgresCredentials name.
  * Each cartridge database also gets `<name>_shadow` (graphile-migrate) and
  * `<name>_test` (app test suites), same roles and extensions. Managed env writes
- * SHADOW_DATABASE_URL and TEST_DATABASE_URL as the migration login on those DBs.
+ * SHADOW_DATABASE_URL and TEST_DATABASE_URL as the migration login on those DBs, and
+ * ROOT_DATABASE_URL as the same login on `postgres`: graphile-migrate commit drops and
+ * recreates the shadow through it, so the dev migration login has CREATEDB.
  */
 import { postgresLoginRole } from "../Cartridge.ts";
 import { postgresRoles } from "../PostgresDatabase.ts";
@@ -15,7 +17,7 @@ import { HOST, PORT } from "./Cluster.ts";
 import { type DevDbCartridge, isPostgresCredentials } from "./DevDbCartridge.ts";
 
 export type ManagedEnvKey = {
-  readonly kind: "url" | "username" | "password" | "shadowUrl" | "testUrl";
+  readonly kind: "url" | "username" | "password" | "shadowUrl" | "testUrl" | "rootUrl";
   readonly env: string;
   readonly database: string;
   readonly login: "api" | "migration";
@@ -94,7 +96,7 @@ export const managedEnvKeys = (cartridge: DevDbCartridge): ReadonlyArray<Managed
       }
     }
   }
-  // One SHADOW_ / TEST_ URL per cartridge database (graphile-migrate / vitest standard names).
+  // One SHADOW_ / TEST_ / ROOT_ URL per cartridge database (graphile-migrate / vitest standard names).
   for (const entry of cartridge.postgres) {
     byEnv.set("SHADOW_DATABASE_URL", {
       kind: "shadowUrl",
@@ -105,6 +107,12 @@ export const managedEnvKeys = (cartridge: DevDbCartridge): ReadonlyArray<Managed
     byEnv.set("TEST_DATABASE_URL", {
       kind: "testUrl",
       env: "TEST_DATABASE_URL",
+      database: entry.database,
+      login: "migration",
+    });
+    byEnv.set("ROOT_DATABASE_URL", {
+      kind: "rootUrl",
+      env: "ROOT_DATABASE_URL",
       database: entry.database,
       login: "migration",
     });
@@ -122,12 +130,14 @@ export const loginDeclarations = (
       name: postgresLoginRole(database, "api"),
       memberOf: roles.visitor,
       inherit: false,
+      createDatabases: false,
       password: passwordFor(postgresLoginRole(database, "api")),
     },
     {
       name: postgresLoginRole(database, "migration"),
       memberOf: roles.owner,
       inherit: true,
+      createDatabases: true,
       password: passwordFor(postgresLoginRole(database, "migration")),
     },
   ];
@@ -186,8 +196,10 @@ export const connectionUrl = (input: {
   readonly database: string;
   readonly host?: string;
   readonly port?: number;
+  /** PostgreSQL startup options, such as `-c role=none`. */
+  readonly options?: string;
 }) =>
-  `postgresql://${encodeURIComponent(input.username)}:${encodeURIComponent(input.password)}@${input.host ?? HOST}:${input.port ?? PORT}/${input.database}?sslmode=disable`;
+  `postgresql://${encodeURIComponent(input.username)}:${encodeURIComponent(input.password)}@${input.host ?? HOST}:${input.port ?? PORT}/${input.database}?sslmode=disable${input.options === undefined ? "" : `&options=${encodeURIComponent(input.options)}`}`;
 
 /** Values to write for the managed keys, from login role names and passwords. */
 export const managedEnvValues = (
@@ -210,6 +222,15 @@ export const managedEnvValues = (
         username: role,
         password: passwordFor(role),
         database: testDatabaseName(key.database),
+      });
+    else if (key.kind === "rootUrl")
+      // The migration login's sessions default to the owner role, which has no CREATEDB;
+      // role=none keeps this session on the login itself.
+      values[key.env] = connectionUrl({
+        username: role,
+        password: passwordFor(role),
+        database: "postgres",
+        options: "-c role=none",
       });
     else
       values[key.env] = connectionUrl({
