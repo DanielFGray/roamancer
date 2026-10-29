@@ -129,7 +129,9 @@ On cynic, list the stages that have state:
 sudo ls /var/lib/alchemy/.alchemy/state/cartridge
 ```
 
-On the workstation, plan each one and expect no changes:
+On the workstation, plan each one and expect no changes. An app stage that was
+never released through the operation journal fails with "no recorded deployment";
+`ops dash` lists only journaled apps. Release such an app once from its repository.
 
 ```sh
 ops plan --stage <stage>
