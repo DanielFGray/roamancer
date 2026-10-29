@@ -19,8 +19,9 @@ operator runs it once, by hand.
 | `nixos/cynic/nomad-acl.nix` | this slice | the module |
 | `/etc/nomad.d/acl.hcl` | Nix | the ACL block |
 | `/nix/store/...-alchemy-controller-policy.hcl` | Nix | the controller policy, applied by `nomad-cluster-apply` |
+| `/nix/store/...-alchemy-operator-policy.hcl` | Nix | the read-only operator policy, applied by `nomad-cluster-apply` |
 | `/nix/store/...-traefik-policy.hcl` | Nix | the Traefik policy and workload association, applied by `nomad-cluster-apply` |
-| `/var/lib/nomad-acl/` | runtime | mode 0710 root:alchemy when that group exists; otherwise 0700 root:root |
+| `/var/lib/nomad-acl/` | runtime | mode 0711 root:alchemy when that group exists; otherwise 0700 root:root |
 
 The Nix store holds the policies and the operator scripts. No token is written to
 the store, to source control, to a log, or to Alchemy resource state.
@@ -83,14 +84,15 @@ them with the stored management credential; check it with
 sudo nomad-cluster-apply
 ```
 
-This uses the stored management credential to refresh both declared policies
-and to set the scheduler algorithm to `spread`, which places each allocation on
-the least-loaded node.
+This uses the stored management credential to refresh the declared policies
+(`alchemy-controller`, `alchemy-operator`, and `traefik`) and to set the
+scheduler algorithm to `spread`, which places each allocation on the
+least-loaded node.
 It creates no token and leaves existing token files unchanged. It associates
 the Traefik policy with Nomad job `traefik`, group `service`, task `server`:
 the ingress job in `tools/alchemy/platform/ingress`, which reads services with
-its default workload identity. The token-issuance command also runs this policy
-refresh before creating its token.
+its default workload identity. The token-issuance commands also run this policy
+refresh before creating a token.
 
 ## The staged Alchemy token
 
@@ -121,12 +123,54 @@ sudo.
 The token has no expiry. It can be revoked at any time with
 `nomad acl token delete <accessor-id>`.
 
+To rotate it (cutover, leak, or routine replacement): list tokens, issue a new
+one, then delete the old accessor so the previous secret stops working:
+
+```sh
+sudo sh -c 'export NOMAD_TOKEN="$(cat /var/lib/nomad-acl/bootstrap.token)"; exec nomad acl token list'
+sudo nomad-acl-issue-controller
+sudo sh -c 'export NOMAD_TOKEN="$(cat /var/lib/nomad-acl/bootstrap.token)"; exec nomad acl token delete <old-accessor-id>'
+```
+
+## The read-only operator token
+
+The human operator reads the cluster (jobs, allocations, logs, nodes) without
+submitting jobs. Issue that token separately:
+
+```sh
+sudo nomad-acl-issue-operator
+```
+
+The script applies the `alchemy-operator` policy, creates a client token of that
+name, and writes:
+
+- `/var/lib/nomad-acl/operator.token`, mode 0400, owned by the operator account;
+- `/var/lib/nomad-acl/operator.env`, mode 0400, owned by the operator account,
+  holding `NOMAD_TOKEN=<secret>`.
+
+The credential directory is mode 0711 so the operator can open those named
+files without listing the directory or reading `controller.env`. Rotate the
+same way as the controller token: list accessors, run
+`sudo nomad-acl-issue-operator`, then `nomad acl token delete <old-accessor-id>`.
+
 ## The Traefik policy
 
 The ingress job reads Nomad services to build its routes. Its workload identity
 can list services implicitly; reading one service needs `read-job`, which the
 job-associated `traefik` policy grants in the `default` namespace, and nothing
 else. The job needs no token file.
+
+## What the operator policy allows
+
+| Need | Capability |
+| --- | --- |
+| list and inspect jobs and allocations | `list-jobs`, `read-job` |
+| allocation logs | `read-logs` |
+| list namespaces | any namespace capability (granted by the above on `default`) |
+| node list and stats (`ops dash`) | `node` `read` |
+
+The policy grants none of `submit-job`, `dispatch-job`, `alloc-exec`, or
+`alloc-node-exec`.
 
 ## What the controller policy allows
 

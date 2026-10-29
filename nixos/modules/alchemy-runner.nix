@@ -34,8 +34,8 @@ in
       homeMode = "0700";
     };
 
-    # Operator may connect to the submit socket. Membership in group alchemy (Nomad
-    # controller.env reader) stays in the control host's own config until cutover.
+    # The operator may connect to the submit socket. Group alchemy (Nomad controller.env
+    # readers) holds only the alchemy user: the operator reaches Nomad through jobs.
     users.users.${operator.name}.extraGroups = [ "alchemy-submit" ];
 
     environment.systemPackages = [ cfg.package ];

@@ -3,16 +3,18 @@
 # The Nomad listeners are bound to loopback, so only local processes can reach
 # the API. Loopback is not an identity: a workload that can reach the host
 # loopback can call the API. This module turns on Nomad's ACL enforcement and
-# gives the staged Alchemy commands a narrow token and the ingress job a narrow policy.
+# gives the staged Alchemy commands a narrow token, the operator a read-only
+# token, and the ingress job a narrow policy.
 #
 # Credentials never enter the Nix store. The store holds the ACL policy and
 # the operator scripts; the tokens live in root-owned runtime files under
 # /var/lib/nomad-acl.
 
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, site, ... }:
 
 let
   credentialDir = "/var/lib/nomad-acl";
+  operatorName = site.operator.name;
 
   # The capabilities below are the union of what the staged Alchemy commands
   # call and what Nomad checks for those calls. Each line is justified by an API
@@ -63,6 +65,24 @@ let
 
     host_volume "traefik-acme" {
       capabilities = ["mount-readwrite"]
+    }
+  '';
+
+  # Read-only token for the human operator: jobs, allocations, allocation logs,
+  # nodes, and namespaces. No submit, dispatch, or alloc-exec.
+  # Listing namespaces needs any capability on a namespace (Nomad
+  # /v1/namespaces); list-jobs on default is enough for that.
+  operatorPolicy = ''
+    namespace "default" {
+      capabilities = [
+        "list-jobs",
+        "read-job",
+        "read-logs",
+      ]
+    }
+
+    node {
+      policy = "read"
     }
   '';
 
@@ -134,6 +154,7 @@ let
       sleep 1
     done
     nomad acl policy apply alchemy-controller ${pkgs.writeText "alchemy-controller-policy.hcl" controllerPolicy}
+    nomad acl policy apply alchemy-operator ${pkgs.writeText "alchemy-operator-policy.hcl" operatorPolicy}
     # The ingress job reads single services, which needs read-job.
     nomad acl policy apply -namespace default -job traefik -group service -task server \
       traefik ${pkgs.writeText "traefik-policy.hcl" traefikPolicy}
@@ -145,10 +166,13 @@ let
   # Issues a client token from the stored bootstrap token. The policy is
   # applied first, so the token and the policy never drift apart. The token
   # goes to <file>.token and an environment file holding NOMAD_TOKEN goes to
-  # <file>.env. readerGroup, when that group exists, may read the environment
-  # file; otherwise only root can, which is enough for a systemd
-  # EnvironmentFile.
-  issueScript = { command, policyName, file, readerGroup ? null }:
+  # <file>.env.
+  #
+  # readerGroup: group-readable env file (0640) for the Alchemy runner.
+  # readerUser: owner-only files (0400) for the human operator.
+  # The credential directory (tmpfiles, 0711 root) lets each reader traverse to the
+  # file it may read; every file carries its own owner and mode.
+  issueScript = { command, policyName, file, readerGroup ? null, readerUser ? null }:
     pkgs.writeShellScriptBin command (''
       set -euo pipefail
 
@@ -194,14 +218,20 @@ let
       echo "Token stored in $token"
     '' + lib.optionalString (readerGroup != null) ''
       if getent group ${readerGroup} > /dev/null; then
-        chown root:${readerGroup} "$dir"
-        chmod 0710 "$dir"
         chown root:${readerGroup} "$env_file"
         chmod 0640 "$env_file"
         echo "Environment file $env_file is readable by the ${readerGroup} group"
       else
         echo "Environment file $env_file is readable by root only." >&2
         echo "The ${readerGroup} account cannot read it until that account exists." >&2
+      fi
+    '' + lib.optionalString (readerUser != null) ''
+      if getent passwd ${readerUser} > /dev/null; then
+        chown ${readerUser} "$token" "$env_file"
+        chmod 0400 "$token" "$env_file"
+        echo "Token files are readable only by ${readerUser} (0400)"
+      else
+        echo "User ${readerUser} does not exist; token files stay root-only." >&2
       fi
     '' + ''
       echo "Revoke the token this one replaces with nomad acl token delete <accessor-id>."
@@ -212,6 +242,13 @@ let
     policyName = "alchemy-controller";
     file = "controller";
     readerGroup = "alchemy";
+  };
+
+  issueOperator = issueScript {
+    command = "nomad-acl-issue-operator";
+    policyName = "alchemy-operator";
+    file = "operator";
+    readerUser = operatorName;
   };
 in
 {
@@ -225,9 +262,11 @@ in
   '';
 
   # The credential directory holds tokens. It is created at boot, owned by
-  # root, and holds nothing until an operator issues a token.
+  # root, and holds nothing until an operator issues a token. Mode 0711 lets
+  # the operator traverse to operator.env without listing the directory; the
+  # alchemy group still reaches controller.env the same way.
   systemd.tmpfiles.rules = [
-    "d ${credentialDir} ${if config.users.groups ? alchemy then "0710 root alchemy" else "0700 root root"} -"
+    "d ${credentialDir} 0711 root root -"
   ];
 
   # Restart Nomad when the ACL configuration changes. The guard keeps this
@@ -263,5 +302,6 @@ in
     bootstrapScript
     applyCluster
     issueController
+    issueOperator
   ];
 }

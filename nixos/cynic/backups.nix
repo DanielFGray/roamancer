@@ -1,7 +1,8 @@
-{ config, pkgs, site, ... }:
+{ pkgs, ... }:
 let
-  # `ops` runs Alchemy in ~/alchemy of the operator's account.
-  alchemyDir = "${config.users.users.${site.operator.name}.home}/alchemy/.alchemy";
+  # Runner-owned Alchemy state: job units use WorkingDirectory /var/lib/alchemy, and
+  # Alchemy writes under ./.alchemy (see nixos/modules/alchemy-runner.nix).
+  alchemyDir = "/var/lib/alchemy/.alchemy";
 
   # Writes every database and role as SQL to stdout. restic keeps the snapshot only when
   # this exits 0, so a failed or partial dump never becomes a backup.
@@ -45,9 +46,11 @@ in
   systemd.services.restic-backups-postgres.environment.XDG_RUNTIME_DIR = "/run/user/1001";
 
   # Alchemy's state and operation journal: the record of what each stage deployed.
-  # `ops` runs Alchemy in ~/alchemy of the operator's account (tools/alchemy/src/cli.ts).
   # The journal is SQLite in WAL mode, so a file copy taken during a write can be torn;
   # back up a consistent copy made with VACUUM INTO instead of the live files.
+  # This unit runs as root (NixOS restic default). Root can read the alchemy user's
+  # 0700 home at /var/lib/alchemy; the restic.env file under /var/lib/backups is also
+  # root-readable (0700 nomad). Running as alchemy would fail to read restic.env.
   services.restic.backups.alchemy = import ../modules/restic-r2.nix // {
     backupPrepareCommand = ''
       rm -f /var/lib/backups/alchemy-operations.sqlite
