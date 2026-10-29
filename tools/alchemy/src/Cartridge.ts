@@ -349,7 +349,7 @@ export const resolve = Effect.fn("Cartridge.resolve")(function* (root: string, n
           onNone: () =>
             Effect.fail(
               configError(
-                `'${name}' is no platform cartridge and has no recorded deployment; release it from its repository first`,
+                `'${name}' is no platform cartridge and has no recorded deployment; run \`ops release\` in its repository first`,
               ),
             ),
         });
