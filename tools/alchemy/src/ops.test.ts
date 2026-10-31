@@ -15,13 +15,14 @@ import {
 } from "effect";
 import { TestConsole } from "effect/testing";
 import { ChildProcess } from "effect/process";
-import { Prompt } from "effect/cli";
+import { Command, Prompt } from "effect/cli";
 import * as Spawner from "effect/process/ChildProcessSpawner";
-import { OpsError, route } from "./Exec.ts";
+import { OpsError, quote, route } from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { flakeHosts, HostName, install, rebuild } from "./Nixos.ts";
 import { deployStage, forwarded } from "./Jobs.ts";
 import { Remote } from "./Remote.ts";
+import { secret } from "./secrets.ts";
 import { Site } from "./Site.ts";
 
 const repositoryRoot = new URL("../../..", import.meta.url).pathname;
@@ -122,6 +123,41 @@ describe("Remote", () => {
       { env: { OPS_HOST: "other" } },
     );
     assert.deepEqual(log, ["ssh other 'alchemy-runner' 'logs' 'it'\\''s'"]);
+  });
+});
+
+describe("secret", () => {
+  const giglist = new URL("../examples/apps/giglist", import.meta.url).pathname;
+  const run = (args: ReadonlyArray<string>) => Command.runWith(secret, { version: "test" })(args);
+
+  it("sends only KV paths and key names to the host, which asks for the token and value", async () => {
+    const { log, inputs } = await execute(run(["set", "session_secret", giglist]), {
+      terminal: true,
+    });
+    assert.deepEqual(log, [
+      "ssh -t ctl 'alchemy-runner' 'secret' 'set' 'secret/data/giglist' 'session_secret'",
+    ]);
+    assert.deepEqual(inputs, []);
+  });
+
+  it("refuses a key the cartridge does not reference before calling the host", async () => {
+    const { log, error } = await execute(run(["set", "sesion_secret", giglist]));
+    assert.ok(error instanceof OpsError);
+    assert.match(error.message, /references no secret key 'sesion_secret'/);
+    assert.deepEqual(log, []);
+  });
+
+  it("sends the cartridge's references for list and check", async () => {
+    const { log } = await execute(Effect.andThen(run(["list", giglist]), run(["check", giglist])));
+    const references = quote(
+      JSON.stringify({
+        "secret/data/giglist": ["session_secret", "cloudflare_email_api_token"],
+      }),
+    );
+    assert.deepEqual(log, [
+      `ssh ctl 'alchemy-runner' 'secret' 'list' ${references}`,
+      `ssh ctl 'alchemy-runner' 'secret' 'check' 'giglist' ${references}`,
+    ]);
   });
 });
 

@@ -11,7 +11,6 @@ import { Argument, Command, Flag } from "effect/cli";
 import { Builder } from "./Builder.ts";
 import { commands as devCommands } from "./devdb/Commands.ts";
 import { OpsError, route } from "./Exec.ts";
-import { HostSecretsError } from "./HostSecrets.ts";
 import { HostName, install, rebuild } from "./Nixos.ts";
 import { commands as releaseCommands } from "./release.ts";
 import { commands as jobCommands, forwarded } from "./Jobs.ts";
@@ -74,7 +73,6 @@ const main = Effect.gen(function* () {
   yield* Command.runWith(ops, { version: "1" })(route(forwarded)(args));
 }).pipe(
   Effect.tapErrorTag("OpsError", (error: OpsError) => Console.error(error.message)),
-  Effect.tapErrorTag("HostSecretsError", (error: HostSecretsError) => Console.error(error.message)),
   Effect.provide(
     Remote.layer.pipe(
       Layer.provideMerge(Builder.layer),

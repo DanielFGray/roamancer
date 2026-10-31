@@ -695,9 +695,12 @@ describe("cartridge v2", () => {
         ["secret/data/shared", ["c"]],
       ]),
     );
-    assert.deepEqual(missingSecrets(cartridge, new Map([["secret/data/app", ["b", "unused"]]])), [
-      { path: "secret/data/app", key: "a" },
-      { path: "secret/data/shared", key: "c" },
-    ]);
+    assert.deepEqual(
+      missingSecrets(kvKeys(cartridge), new Map([["secret/data/app", ["b", "unused"]]])),
+      [
+        { path: "secret/data/app", key: "a" },
+        { path: "secret/data/shared", key: "c" },
+      ],
+    );
   });
 });

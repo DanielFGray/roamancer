@@ -391,15 +391,15 @@ export const kvKeys = (cartridge: Cartridge) => {
   );
 };
 
+/** Each KV v2 path a cartridge reads, with the keys it reads there, as `kvKeys` returns them. */
+export type KvReferences = ReadonlyMap<string, ReadonlyArray<string>>;
+
 /**
- * Each KV path and key the cartridge reads that is not in `stored`, the key names stored at
- * each path. A task waits on its template forever for such a key.
+ * Each referenced KV path and key that is not in `stored`, the key names stored at each
+ * path. A task waits on its template forever for such a key.
  */
-export const missingSecrets = (
-  cartridge: Cartridge,
-  stored: ReadonlyMap<string, ReadonlyArray<string>>,
-) =>
-  [...kvKeys(cartridge)].flatMap(([path, keys]) =>
+export const missingSecrets = (references: KvReferences, stored: KvReferences) =>
+  [...references].flatMap(([path, keys]) =>
     keys.filter((key) => !(stored.get(path) ?? []).includes(key)).map((key) => ({ path, key })),
   );
 

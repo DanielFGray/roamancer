@@ -32,7 +32,7 @@ import * as Deployments from "./Deployments.ts";
 import * as NomadLive from "./Nomad.ts";
 import * as Package from "./Package.ts";
 import { Nomad } from "./Nomad.ts";
-import { OpenBao } from "./OpenBao.ts";
+import { OpenBao, OpenBaoError } from "./OpenBao.ts";
 import * as StagedCartridge from "./StagedCartridge.ts";
 import * as TaskLog from "./TaskLog.ts";
 import { request as queueRequest } from "./queue/Client.ts";
@@ -140,9 +140,9 @@ const jobServices = (env: Record<string, string>) =>
 const makeCli = () =>
   Command.make("alchemy-runner").pipe(
     Command.withDescription(
-      "Submit Alchemy jobs, log in to OpenBao for them, and read the fleet's Nomad health and logs",
+      "Submit Alchemy jobs, log in to OpenBao for them, set their KV secrets, and read the fleet's Nomad health and logs",
     ),
-    Command.withSubcommands([submit, wait, version, login, logs, queue, job]),
+    Command.withSubcommands([submit, wait, version, login, secret, logs, queue, job]),
   );
 
 const submit = Command.make(
@@ -190,30 +190,8 @@ const login = Command.make(
   "login",
   {},
   Effect.fn(function* () {
-    const rootToken = yield* readRootToken;
-    // fresh, over the root token alone: only the 2-hour child leaves this process.
-    const token = yield* Effect.flatMap(OpenBao, (bao) => bao.createToken("2h")).pipe(
-      Effect.provide(
-        Layer.fresh(OpenBao.layer).pipe(
-          Layer.provide(FetchHttpClient.layer),
-          Layer.provide(
-            ConfigProvider.layerAdd(
-              ConfigProvider.fromEnvRecord({
-                OPENBAO_ADDR: openBaoAddr,
-                OPENBAO_TOKEN: Redacted.value(rootToken),
-              }),
-              { asPrimary: true },
-            ),
-          ),
-        ),
-      ),
-      Effect.mapError(
-        () =>
-          new CliError({
-            message: "Could not mint an OpenBao token from the root token.",
-          }),
-      ),
-    );
+    // Only the 2-hour child leaves this process.
+    const token = yield* mintToken(yield* readRootToken, "2h");
     const stored = yield* queueRequest(QueuePaths.production.socket, {
       _tag: "token",
       value: Redacted.value(token),
@@ -225,6 +203,69 @@ const login = Command.make(
   Command.withDescription(
     "Mint a 2-hour OpenBao token from the root token and send it to the runner socket",
   ),
+);
+
+/** The KV references `ops secret list` and `check` send; the host never reads the cartridge. */
+const references = Argument.String("references").pipe(
+  Argument.withDescription("A JSON object: each KV v2 path and the keys the cartridge reads there"),
+);
+
+const secretList = Command.make(
+  "list",
+  { references },
+  Effect.fn(function* ({ references }) {
+    const referenced = yield* decodeReferences(references);
+    const stored = yield* withRootToken(storedKeys(referenced));
+    yield* Console.log(
+      [...referenced]
+        .map(([kvPath, keys]) => {
+          const present = stored.get(kvPath) ?? [];
+          return [
+            kvPath,
+            ...keys.map((key) => `  ${present.includes(key) ? "set    " : "MISSING"} ${key}`),
+            ...present.filter((key) => !keys.includes(key)).map((key) => `  unused  ${key}`),
+          ].join("\n");
+        })
+        .join("\n"),
+    );
+  }),
+).pipe(Command.withDescription("Show which referenced secrets are set; never prints values"));
+
+const secretCheck = Command.make(
+  "check",
+  {
+    name: Argument.String("name").pipe(Argument.withDescription("The cartridge's name")),
+    references,
+  },
+  Effect.fn(function* ({ name, references }) {
+    yield* withRootToken(requireSecrets(name, yield* decodeReferences(references)));
+  }),
+).pipe(Command.withDescription("Fail when a referenced secret is not set"));
+
+const secretSet = Command.make(
+  "set",
+  {
+    path: Argument.String("path").pipe(
+      Argument.withDescription("The KV v2 path, such as secret/data/giglist"),
+    ),
+    key: Argument.String("key").pipe(Argument.withDescription("The secret's key")),
+  },
+  Effect.fn(function* ({ path: kvPath, key }) {
+    const stdio = yield* Stdio.Stdio;
+    // Piped stdin holds the root token, so the value needs the prompt.
+    if (!(yield* stdio.stdinIsTerminal)) {
+      return yield* new CliError({
+        message: "secret set prompts for the root token and the value: run it in a terminal.",
+      });
+    }
+    yield* withRootToken(promptAndWrite(kvPath, key));
+    yield* Console.log(`Set ${key} at ${kvPath}. Running tasks restart with the new value.`);
+  }),
+).pipe(Command.withDescription("Store one secret; prompts for the root token and the value"));
+
+const secret = Command.make("secret").pipe(
+  Command.withDescription("Read and set KV secrets with the root token, typed or piped on stdin"),
+  Command.withSubcommands([secretList, secretCheck, secretSet]),
 );
 
 const logs = Command.make(
@@ -291,11 +332,52 @@ const readRootToken = Effect.gen(function* () {
   if (line === "") {
     return yield* new CliError({
       message:
-        "No OpenBao root token on stdin. Pipe the token in, or run `ops login` in a terminal.",
+        "No OpenBao root token on stdin. Pipe the token in, or run the command in a terminal.",
     });
   }
   return Redacted.make(line);
 });
+
+/** A child of `parent` that expires after `ttl`. */
+const mintToken = (parent: Redacted.Redacted<string>, ttl: string) =>
+  Effect.flatMap(OpenBao, (bao) => bao.createToken(ttl)).pipe(
+    Effect.provide(openBaoWith(parent)),
+    Effect.mapError(
+      () => new CliError({ message: "Could not mint an OpenBao token from the root token." }),
+    ),
+  );
+
+/**
+ * Run `use` against OpenBao with a 5-minute child of the root token the operator types or
+ * pipes in. Neither token leaves this process or reaches a file.
+ */
+const withRootToken = <A, E, R>(use: Effect.Effect<A, E | OpenBaoError, R>) =>
+  Effect.gen(function* () {
+    const child = yield* mintToken(yield* readRootToken, "5m");
+    return yield* use.pipe(
+      Effect.provide(openBaoWith(child)),
+      Effect.catchIf(
+        (error): error is OpenBaoError | Config.ConfigError =>
+          error instanceof OpenBaoError || error instanceof Config.ConfigError,
+        (error) => new CliError({ message: `OpenBao: ${error.message}` }),
+      ),
+    );
+  });
+
+/** OpenBao over `token` alone; fresh, so no other layer's token stands in for it. */
+const openBaoWith = (token: Redacted.Redacted<string>) =>
+  Layer.fresh(OpenBao.layer).pipe(
+    Layer.provide(FetchHttpClient.layer),
+    Layer.provide(
+      ConfigProvider.layerAdd(
+        ConfigProvider.fromEnvRecord({
+          OPENBAO_ADDR: openBaoAddr,
+          OPENBAO_TOKEN: Redacted.value(token),
+        }),
+        { asPrimary: true },
+      ),
+    ),
+  );
 
 const queueLayer = (paths: typeof QueuePaths.production) =>
   Layer.mergeAll(
@@ -513,19 +595,15 @@ const checkSecrets = Effect.fn("checkSecrets")(function* (
     cartridgeFile === undefined
       ? yield* Cartridge.resolve(Package.root, cartridgeName)
       : yield* appCartridgeAt(cartridgeFile, cartridgeName);
-  const bao = yield* OpenBao;
-  const stored = new Map(
-    yield* Effect.forEach(Cartridge.kvKeys(cartridge).keys(), (path) =>
-      bao
-        .readKvKeys(path)
-        .pipe(
-          Effect.map(
-            (keys) => [path, Option.getOrElse(keys, (): ReadonlyArray<string> => [])] as const,
-          ),
-        ),
-    ),
-  );
-  const missing = Cartridge.missingSecrets(cartridge, stored);
+  yield* requireSecrets(name, Cartridge.kvKeys(cartridge));
+});
+
+/** Fail, naming each key, when a secret `name` reads from `references` is not set. */
+const requireSecrets = Effect.fn("requireSecrets")(function* (
+  name: string,
+  references: Cartridge.KvReferences,
+) {
+  const missing = Cartridge.missingSecrets(references, yield* storedKeys(references));
   if (missing.length > 0) {
     return yield* new CliError({
       message: [
@@ -536,6 +614,37 @@ const checkSecrets = Effect.fn("checkSecrets")(function* (
     });
   }
 });
+
+/** The key names stored at each referenced KV path; none where nothing is stored. */
+const storedKeys = Effect.fn("storedKeys")(function* (references: Cartridge.KvReferences) {
+  const bao = yield* OpenBao;
+  return new Map(
+    yield* Effect.forEach(references.keys(), (path) =>
+      bao
+        .readKvKeys(path)
+        .pipe(
+          Effect.map(
+            (keys) => [path, Option.getOrElse(keys, (): ReadonlyArray<string> => [])] as const,
+          ),
+        ),
+    ),
+  );
+});
+
+/** Ask for one secret's value and store it at `kvPath`, keeping the path's other keys. */
+const promptAndWrite = Effect.fn("promptAndWrite")(function* (kvPath: string, key: string) {
+  const bao = yield* OpenBao;
+  const value = yield* Prompt.run(Prompt.Password({ message: `Value for ${kvPath} ${key}` }));
+  yield* bao.writeKvKey(kvPath, key, value);
+});
+
+const decodeReferences = (text: string) =>
+  S.decodeUnknownEffect(S.fromJsonString(S.Record(S.String, S.Array(S.String))))(text).pipe(
+    Effect.map((record): Cartridge.KvReferences => new Map(Object.entries(record))),
+    Effect.mapError(
+      () => new CliError({ message: `not a JSON object of KV paths and their keys: ${text}` }),
+    ),
+  );
 
 /**
  * Fail unless the cartridge at `file` is valid, pins its images, and comes from the app's
