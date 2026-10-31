@@ -8,7 +8,7 @@ import { Toml } from "effect/encoding";
 import { OpsError } from "./Exec.ts";
 
 const SiteFile = S.Struct({
-  cluster: S.Struct({ server: S.String }),
+  cluster: S.Struct({ server: S.String, lanAddress: S.String }),
   build: S.optionalKey(S.Struct({ node: S.String })),
 });
 
@@ -38,7 +38,7 @@ export class Site extends Context.Service<Site>()("ops/Site", {
         Effect.mapError(
           (cause) =>
             new OpsError({
-              message: `${file} must set cluster.server and, when present, [build] node: ${cause}`,
+              message: `${file} must set cluster.server, cluster.lanAddress and, when present, [build] node: ${cause}`,
             }),
         ),
       );
@@ -59,7 +59,13 @@ export class Site extends Context.Service<Site>()("ops/Site", {
       Option.fromNullishOr(site.build).pipe(Option.map((build) => build.node)),
     );
 
-    return { folder, host, buildNode };
+    /**
+     * The server's LAN address, where Nomad binds the platform Postgres host port. The
+     * dev database tunnel forwards to it through the control host.
+     */
+    const lanAddress = Effect.map(siteFile, (site) => site.cluster.lanAddress);
+
+    return { folder, host, buildNode, lanAddress };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);

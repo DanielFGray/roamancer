@@ -3,6 +3,7 @@
  * command-specific payload. No free argv reaches a child process.
  */
 import { Option, Schema as S } from "effect";
+import { DevDbSubmit } from "../devdb/Declaration.ts";
 
 export const JobCommand = S.Literals([
   "plan",
@@ -16,6 +17,7 @@ export const JobCommand = S.Literals([
   "stage-image",
   "place-queued",
   "dash",
+  "dev-db",
 ]);
 export type JobCommand = typeof JobCommand.Type;
 
@@ -120,6 +122,7 @@ export const StagelessSubmit = S.Union([
   StageImageSubmit,
   PlaceQueuedSubmit,
   DashSubmit,
+  DevDbSubmit,
 ]);
 export type StagelessSubmit = typeof StagelessSubmit.Type;
 

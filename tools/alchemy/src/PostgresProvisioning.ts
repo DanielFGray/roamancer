@@ -294,7 +294,7 @@ export const ensureExtensions = Effect.fn("PostgresProvisioning.ensureExtensions
  * CREATE/ALTER ROLE password and SET/RESET role clauses reject bound parameters, so
  * format() builds a literal statement and unsafe runs it.
  */
-const runFormatted = (
+export const runFormatted = (
   sql: SqlClient.SqlClient,
   template: string,
   args: ReadonlyArray<string>,
@@ -391,7 +391,7 @@ const ensureLoginRole = (
               ),
             );
           }
-          // Password is set only at create; rotation is `ops dev db reset`.
+          // Password is set only at create; `ops dev db` sets its logins' passwords again on each run.
         }),
     });
     yield* (

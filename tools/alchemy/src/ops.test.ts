@@ -319,7 +319,10 @@ const execute = <A, E>(
     const fs = yield* FileSystem.FileSystem;
     const site = yield* fs.makeTempDirectoryScoped();
     const home = yield* fs.makeTempDirectoryScoped();
-    yield* fs.writeFileString(`${site}/site.toml`, '[cluster]\nserver = "ctl"\n');
+    yield* fs.writeFileString(
+      `${site}/site.toml`,
+      '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n',
+    );
     if (options.extraFiles !== undefined) {
       yield* fs.makeDirectory(
         `${home}/.local/state/server-ansible/extra-files/${options.extraFiles}`,

@@ -61,7 +61,7 @@ describe("image-less cartridge boundary", () => {
     assert.throws(() => S.decodeUnknownSync(AppCartridge)(noImageJson));
   });
 
-  it("DevDbCartridge decodes an image-less cartridge and maps env keys", () => {
+  it("DevDbCartridge decodes an image-less cartridge and maps env keys to its dev databases", () => {
     const cartridge = S.decodeUnknownSync(DevDbCartridge)(noImageJson);
     assert.equal(cartridge.postgres[0]?.database, "effect_test");
     const keys = managedEnvKeys(cartridge);
@@ -73,10 +73,10 @@ describe("image-less cartridge boundary", () => {
       "TEST_DATABASE_URL",
     ]);
     const values = managedEnvValues(keys, (role) => `pw-${role}`);
-    assert.match(values.DATABASE_URL!, /alchemy_effect_test_migration/);
-    assert.match(values.AUTH_DATABASE_URL!, /alchemy_effect_test_api/);
-    assert.match(values.SHADOW_DATABASE_URL!, /\/effect_test_shadow\b/);
-    assert.match(values.TEST_DATABASE_URL!, /\/effect_test_test\b/);
+    assert.match(values.DATABASE_URL!, /alchemy_effect_test_dev_migration/);
+    assert.match(values.AUTH_DATABASE_URL!, /alchemy_effect_test_dev_api/);
+    assert.match(values.SHADOW_DATABASE_URL!, /\/effect_test_dev_shadow\b/);
+    assert.match(values.TEST_DATABASE_URL!, /\/effect_test_dev_test\b/);
   });
 
   it("DevDbCartridge also decodes a full deployable cartridge", () => {

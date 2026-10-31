@@ -20,12 +20,12 @@ import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { adminCredentialPath } from "./AdminCredential.ts";
 import { Deployments } from "./Deployments.ts";
 
-const AppName = S.String.check(
+export const AppName = S.String.check(
   S.isPattern(/^[a-z][a-z0-9-]{0,30}$/),
   S.makeFilter((value) => (value === "default" ? 'must not be "default"' : undefined)),
 );
 
-const DatabaseName = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,39}$/));
+export const DatabaseName = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,39}$/));
 
 const PostgresServerDeclaration = S.TaggedStruct("PostgresServer", {
   service: CartridgeJob,
@@ -42,7 +42,7 @@ export const PostgresEntry = S.Struct({
   extensions: cartridgeArray(ExtensionName),
   // A live database this one is created as a copy of. The copy has its own owner and visitor
   // roles; expand derives them from the copy's own database name, never from this one.
-  copyFrom: S.optionalKey(DatabaseName),
+  copyFrom: S.optional(DatabaseName),
 });
 export type PostgresEntry = typeof PostgresEntry.Type;
 
@@ -158,11 +158,44 @@ export const AppCartridge = Cartridge.check(
   }),
 );
 
+const within = (value: string, prefix: string, separator: string) =>
+  value === prefix || value.startsWith(`${prefix}${separator}`);
+
+/**
+ * Why `app` may not own these databases: each must lie in the app's namespace, and neither
+ * the app name nor a database may carry a derived instance's segment, which would let one
+ * live identity take the name of another app's staged or dev copy. `ops dev db` checks a
+ * request with this on the control host, where it holds no whole cartridge.
+ */
+export const postgresNamespaceIssues = (
+  app: string,
+  databases: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const appUnderscore = appIdentifier(app);
+  return [
+    ...app
+      .split("-")
+      .filter(isDerivedInstance)
+      .map(
+        (segment) =>
+          `App name '${app}' must not contain the segment '${segment}': it names a derived instance`,
+      ),
+    ...databases
+      .filter((database) => !within(database, appUnderscore, "_"))
+      .map((database) => `Database '${database}' must equal or start with '${appUnderscore}_'`),
+    // Anywhere, not only after the app prefix: app `gig` with `gig_list_dev` would otherwise
+    // take the dev name of app `gig-list`.
+    ...databases
+      .filter((database) => database.split("_").some(isDerivedInstance))
+      .map(
+        (database) =>
+          `Database '${database}' must not contain the segment 'dev' or 'staged': those name derived instances`,
+      ),
+  ];
+};
+
 const namespaceIssues = (cartridge: Cartridge): ReadonlyArray<string> => {
   const app = cartridge.name;
-  const appUnderscore = appIdentifier(app);
-  const within = (value: string, prefix: string, separator: string) =>
-    value === prefix || value.startsWith(`${prefix}${separator}`);
   const jobs = declaredJobs(cartridge).map(({ job }) => job);
   const kvPaths = jobs.flatMap((job) =>
     [...job.secrets, ...(job.migrate?.secrets ?? [])].flatMap((secret) =>
@@ -174,10 +207,10 @@ const namespaceIssues = (cartridge: Cartridge): ReadonlyArray<string> => {
     ...(job.readOnlyMounts ?? []).map((mount) => mount.volume),
   ]);
   return [
-    ...cartridge.postgres
-      .map((entry) => entry.database)
-      .filter((database) => !within(database, appUnderscore, "_"))
-      .map((database) => `Database '${database}' must equal or start with '${appUnderscore}_'`),
+    ...postgresNamespaceIssues(
+      app,
+      cartridge.postgres.map((entry) => entry.database),
+    ),
     ...jobs
       .filter((job) => !within(job.name, app, "-"))
       .map((job) => `Service '${job.name}' must equal or start with '${app}-'`),
@@ -203,6 +236,27 @@ export const postgresLoginRole = (database: string, login: "api" | "migration") 
 
 // PostgreSQL and Valkey identifiers allow "_" but not "-", so derived database and ACL user names use this form.
 export const appIdentifier = (name: string) => name.replace(/-/g, "_");
+
+/**
+ * The copies of an app that run beside its live instance: the tailnet-only staged copy and
+ * the developer databases of `ops dev db`. Both share the live instance's server, so each
+ * needs names no live identity can take; namespaceIssues reserves the segment in app names
+ * and database names.
+ */
+export const DerivedInstance = S.Literals(["staged", "dev"]);
+export type DerivedInstance = typeof DerivedInstance.Type;
+const isDerivedInstance = S.is(DerivedInstance);
+
+/**
+ * A derived instance's name for one of the app's databases: the app identifier it starts
+ * with gains the instance segment, so for giglist `giglist` becomes `giglist_dev` and
+ * `giglist_reports` becomes `giglist_dev_reports`. AppCartridge requires every database to
+ * start with the app identifier, so the prefix is always there.
+ */
+export const instanceDatabaseName = (app: string, instance: DerivedInstance, database: string) => {
+  const live = appIdentifier(app);
+  return `${live}_${instance}${database.slice(live.length)}`;
+};
 
 const mapSecret = (
   cartridge: Cartridge,
@@ -280,22 +334,32 @@ const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => 
   return rendered;
 };
 
+/**
+ * The server a postgres entry lives on and how to administer it: its superuser and the KV
+ * path of that user's generated password.
+ */
+export const postgresAdmin = (entry: Pick<PostgresEntry, "server">) => {
+  const server = entry.server ?? "postgres";
+  return {
+    server,
+    adminUsername: "postgres",
+    adminCredential: {
+      _tag: "KvSecret" as const,
+      path: adminCredentialPath("postgres", server),
+      key: "password",
+      env: "POSTGRES_PASSWORD",
+    },
+  };
+};
+
 export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> => {
   const databaseResources = cartridge.postgres.map((entry) => {
     const database = entry.database;
-    const server = entry.server ?? "postgres";
     const roles = postgresRoles(database);
     const props: PostgresDatabaseProps = {
       name: database,
-      server,
+      ...postgresAdmin(entry),
       extensions: entry.extensions,
-      adminUsername: "postgres",
-      adminCredential: {
-        _tag: "KvSecret",
-        path: adminCredentialPath("postgres", server),
-        key: "password",
-        env: "POSTGRES_PASSWORD",
-      },
       ownerRole: roles.owner,
       visitorRole: roles.visitor,
       copyFrom: entry.copyFrom,

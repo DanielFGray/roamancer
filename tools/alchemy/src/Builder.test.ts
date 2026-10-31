@@ -20,13 +20,16 @@ const image = { repository, commit };
 
 describe("Site.buildNode", () => {
   it("is none when site.toml has no [build] table", async () => {
-    const node = await withSite('[cluster]\nserver = "ctl"\n', (site) => site.buildNode);
+    const node = await withSite(
+      '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n',
+      (site) => site.buildNode,
+    );
     assert.deepEqual(node, Option.none());
   });
 
   it("is some(host) when [build] node is set", async () => {
     const node = await withSite(
-      '[cluster]\nserver = "ctl"\n\n[build]\nnode = "atheist"\n',
+      '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n\n[build]\nnode = "atheist"\n',
       (site) => site.buildNode,
     );
     assert.deepEqual(node, Option.some("atheist"));
@@ -34,7 +37,7 @@ describe("Site.buildNode", () => {
 
   it("names a bad [build] table instead of blaming cluster.server", async () => {
     const error = await withSite(
-      '[cluster]\nserver = "ctl"\n\n[build]\nnode = 1\n',
+      '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n\n[build]\nnode = 1\n',
       (site) => site.buildNode,
     ).then(
       () => undefined,
@@ -50,7 +53,10 @@ describe("Builder.layer", () => {
   it("pipes a tar of the tree into one ssh call and returns tagged@digest", async () => {
     const { log, result } = await execute(
       Effect.flatMap(Builder, (builder) => builder.build(tree, image)),
-      { siteToml: '[cluster]\nserver = "ctl"\n\n[build]\nnode = "atheist"\n' },
+      {
+        siteToml:
+          '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n\n[build]\nnode = "atheist"\n',
+      },
     );
     assert.equal(log.length, 1);
     assert.equal(
@@ -64,7 +70,8 @@ describe("Builder.layer", () => {
     const { error } = await execute(
       Effect.flatMap(Builder, (builder) => builder.build(tree, image)),
       {
-        siteToml: '[cluster]\nserver = "ctl"\n\n[build]\nnode = "atheist"\n',
+        siteToml:
+          '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n\n[build]\nnode = "atheist"\n',
         reply: () => 1,
       },
     );
@@ -76,7 +83,7 @@ describe("Builder.layer", () => {
     const { log, result } = await execute(
       Effect.flatMap(Builder, (builder) => builder.build(tree, image)),
       {
-        siteToml: '[cluster]\nserver = "ctl"\n',
+        siteToml: '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n',
         output: (line) => (line.startsWith("docker inspect") ? `${repository}@${digest}\n` : ""),
       },
     );
@@ -90,7 +97,10 @@ describe("Builder.layer", () => {
   it("uses the Node path when [build] node is set", async () => {
     const { log, result } = await execute(
       Effect.flatMap(Builder, (builder) => builder.build(tree, image)),
-      { siteToml: '[cluster]\nserver = "ctl"\n\n[build]\nnode = "atheist"\n' },
+      {
+        siteToml:
+          '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n\n[build]\nnode = "atheist"\n',
+      },
     );
     assert.ok(log[0]?.startsWith(`tar -C ${tree} -cf - . | ssh atheist `));
     assert.equal(log.filter((line) => line.startsWith("docker ")).length, 0);
@@ -133,7 +143,7 @@ const execute = <A, E>(
     const site = yield* fs.makeTempDirectoryScoped();
     yield* fs.writeFileString(
       `${site}/site.toml`,
-      options.siteToml ?? '[cluster]\nserver = "ctl"\n',
+      options.siteToml ?? '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n',
     );
     const log: Array<string> = [];
     const spawner = Layer.succeed(

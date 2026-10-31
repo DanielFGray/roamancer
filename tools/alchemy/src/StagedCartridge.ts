@@ -2,7 +2,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as S from "effect/Schema";
-import { appIdentifier, type Cartridge } from "./Cartridge.ts";
+import { type Cartridge, instanceDatabaseName } from "./Cartridge.ts";
 import {
   type CartridgeEnvironmentEntry,
   type CartridgeJob,
@@ -92,7 +92,7 @@ export const staged = (
     const derived: DerivedNames = {
       ownServices: new Set(jobs.map((job) => job.name)),
       databases: databaseNames(cartridge),
-      database: (database) => stagedDatabaseName(cartridge, database),
+      database: (database) => instanceDatabaseName(cartridge.name, "staged", database),
       liveHosts: new Map(
         jobs.flatMap((job) =>
           job.routes.flatMap((route) =>
@@ -114,7 +114,7 @@ export const staged = (
       postgres: cartridge.postgres.map((entry) => ({
         ...entry,
         database: derived.database(entry.database),
-        ...(live.released ? { copyFrom: entry.database } : {}),
+        copyFrom: live.released ? entry.database : entry.copyFrom,
       })),
     };
   });
@@ -139,18 +139,6 @@ const jobsOf = (cartridge: Cartridge): ReadonlyArray<CartridgeJob> => [
 /** The live database names of the cartridge, the values an environment entry may name. */
 const databaseNames = (cartridge: Cartridge) =>
   new Set(cartridge.postgres.map((entry) => entry.database));
-
-/**
- * The staged name of a database: the live app identifier it starts with is replaced by
- * the staged one, so `giglist` becomes `giglist_staged` and `giglist_reports` becomes
- * `giglist_staged_reports`. Cartridge requires every database to start with the app
- * identifier, so the prefix to replace is always there.
- */
-const stagedDatabaseName = (cartridge: Cartridge, database: string) => {
-  const live = appIdentifier(cartridge.name);
-  const stagedApp = appIdentifier(`${cartridge.name}${stagedSuffix}`);
-  return `${stagedApp}${database.slice(live.length)}`;
-};
 
 /**
  * The first service that would write a host volume, with the volume it writes. The staged

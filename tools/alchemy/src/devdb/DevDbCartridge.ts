@@ -1,6 +1,6 @@
 /**
- * The slice of a cartridge.json that `ops dev db` reads: postgres entries and the
- * PostgresCredentials on each service. Other keys (image, routes, …) are ignored, so a
+ * The slice of a cartridge.json that `ops dev db` reads: the app name, postgres entries, and each
+ * service's environment and PostgresCredentials. Other keys (image, routes, …) are ignored, so a
  * deployable cartridge and an image-less local one both decode. Deploy paths keep using
  * AppCartridge, which still requires image.
  */
@@ -9,8 +9,9 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as S from "effect/Schema";
-import { PostgresEntry } from "../Cartridge.ts";
+import { AppName, PostgresEntry } from "../Cartridge.ts";
 import {
+  CartridgeEnvironmentEntry,
   CartridgeSecretReference,
   cartridgeArray,
   PostgresCredentialsDeclaration,
@@ -21,11 +22,13 @@ const DevDbMigrate = S.Struct({
 });
 
 const DevDbService = S.Struct({
+  environment: cartridgeArray(CartridgeEnvironmentEntry),
   secrets: cartridgeArray(CartridgeSecretReference),
   migrate: S.optionalKey(DevDbMigrate),
 });
 
 export const DevDbCartridge = S.Struct({
+  name: AppName,
   postgres: cartridgeArray(PostgresEntry),
   services: S.Array(DevDbService),
 }).check(

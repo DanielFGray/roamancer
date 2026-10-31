@@ -1,5 +1,5 @@
 /**
- * Static local login passwords in ~/.local/state/server-ansible/dev-db.json (0600).
+ * Dev login passwords in ~/.local/state/server-ansible/dev-db.json (0600).
  * Concurrent runs share one lock directory; a stale lock whose owner PID is dead
  * is taken over.
  */
@@ -15,13 +15,11 @@ import * as S from "effect/Schema";
 import { OpsError } from "../Exec.ts";
 
 const StateFile = S.Struct({
-  admin: S.String,
   logins: S.Record(S.String, S.String),
 });
 type StateFile = typeof StateFile.Type;
 
 export type PasswordStore = {
-  readonly admin: Redacted.Redacted<string>;
   readonly forRole: (role: string) => Redacted.Redacted<string>;
 };
 
@@ -104,7 +102,6 @@ const writeState = Effect.fn("devdb.writeState")(function* (file: string, state:
 });
 
 const toStore = (state: StateFile): PasswordStore => ({
-  admin: Redacted.make(state.admin),
   forRole: (role: string) => Redacted.make(state.logins[role]!),
 });
 
@@ -119,28 +116,20 @@ const loadOrCreatePasswords = Effect.fn("devdb.loadOrCreatePasswords")(function*
       Option.getOrElse(() => ({})),
     ),
   };
-  let adminValue = current.pipe(
-    Option.map((state) => state.admin),
-    Option.getOrElse(() => ""),
-  );
   let changed = Option.isNone(current);
-  if (adminValue.length === 0) {
-    adminValue = yield* generatePassword();
-    changed = true;
-  }
   for (const role of loginRoles) {
     if (logins[role] === undefined) {
       logins[role] = yield* generatePassword();
       changed = true;
     }
   }
-  const state: StateFile = { admin: adminValue, logins };
+  const state: StateFile = { logins };
   if (changed) yield* writeState(file, state);
   return toStore(state);
 });
 
 /**
- * Ensures an admin password and one password per login role exist. Returns
+ * Ensures one password per login role exists. Returns
  * redacted values; never logs them.
  */
 export const ensurePasswords = Effect.fn("devdb.ensurePasswords")(function* (
@@ -149,23 +138,4 @@ export const ensurePasswords = Effect.fn("devdb.ensurePasswords")(function* (
   const home = yield* Config.String("HOME");
   const file = statePathFor(home);
   return yield* withLock(home, loadOrCreatePasswords(file, loginRoles));
-});
-
-/**
- * Read the existing password store without creating anything. Fails when the
- * cluster has never been brought up on this workstation.
- */
-export const readPasswords = Effect.fn("devdb.readPasswords")(function* () {
-  const home = yield* Config.String("HOME");
-  const file = statePathFor(home);
-  const current = yield* readState(file);
-  return yield* Option.match(current, {
-    onNone: () =>
-      Effect.fail(
-        new OpsError({
-          message: `no ops dev db passwords at ${file}; run ops dev db up first`,
-        }),
-      ),
-    onSome: (state) => Effect.succeed(toStore(state)),
-  });
 });

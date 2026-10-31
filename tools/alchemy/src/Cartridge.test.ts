@@ -11,6 +11,7 @@ import {
   missingSecrets,
   decodeFile,
   Cartridge,
+  instanceDatabaseName,
 } from "./Cartridge.ts";
 import * as Deployments from "./Deployments.ts";
 import { routeTags } from "./Job.ts";
@@ -124,6 +125,21 @@ describe("cartridge v2", () => {
         { services: [job({ storage: { volume: "other-data", mountPath: "/data" } })] },
         "Volume 'other-data'",
       ],
+      [
+        "database that takes a dev instance's name",
+        { postgres: [{ database: "shop_dev" }] },
+        "Database 'shop_dev'",
+      ],
+      [
+        "database that takes a staged instance's name",
+        { postgres: [{ database: "shop_staged_audit" }] },
+        "Database 'shop_staged_audit'",
+      ],
+      [
+        "database that takes another app's dev name",
+        { postgres: [{ database: "shop_audit_dev" }] },
+        "Database 'shop_audit_dev'",
+      ],
     ];
     for (const [what, overrides, message] of rejected) {
       it(`rejects a ${what} outside the app's namespace`, () => {
@@ -132,6 +148,24 @@ describe("cartridge v2", () => {
         });
       });
     }
+
+    it("rejects an app name that a derived instance of another app would take", () => {
+      assert.throws(() => S.decodeUnknownSync(AppCartridge)(app({ name: "shop-dev" })), {
+        message: /App name 'shop-dev' must not contain the segment 'dev'/,
+      });
+    });
+
+    it("accepts a database whose segment only starts like an instance name", () => {
+      S.decodeUnknownSync(AppCartridge)(app({ postgres: [{ database: "shop_devices" }] }));
+    });
+
+    it("names a derived instance's database after the app identifier", () => {
+      assert.equal(instanceDatabaseName("set-list", "dev", "set_list"), "set_list_dev");
+      assert.equal(
+        instanceDatabaseName("set-list", "staged", "set_list_reports"),
+        "set_list_staged_reports",
+      );
+    });
 
     it("does not hold platform cartridges to it", () => {
       S.decodeUnknownSync(Cartridge)(app({ services: [job({ name: "traefik" })] }));

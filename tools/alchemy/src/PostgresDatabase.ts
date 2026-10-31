@@ -371,9 +371,12 @@ export const copyDatabase = Effect.fn("PostgresDatabase.copyDatabase")(function*
   });
 }, Effect.scoped);
 
-/** The server's address, its admin password, and a client layer for one of its databases. */
-const adminConnection = Effect.fn("PostgresDatabase.adminConnection")(function* (input: {
-  readonly props: PostgresDatabaseProps;
+/**
+ * The server's address, its admin password, and a client layer for one of its databases.
+ * `ops dev db` provisions developer databases through this same connection.
+ */
+export const adminConnection = Effect.fn("PostgresDatabase.adminConnection")(function* (input: {
+  readonly props: Pick<PostgresDatabaseProps, "server" | "adminUsername" | "adminCredential">;
   readonly openBao: typeof OpenBao.Service;
   readonly nomad: typeof Nomad.Service;
 }) {

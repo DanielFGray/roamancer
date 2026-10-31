@@ -48,6 +48,7 @@ import type {
 } from "./queue/Schema.ts";
 import * as QueueServe from "./queue/Serve.ts";
 import * as StagelessJobs from "./queue/StagelessJobs.ts";
+import * as DevDbHost from "./devdb/Host.ts";
 import { layer as queueStoreLayer } from "./queue/Store.ts";
 import * as QueueSubmit from "./queue/Submit.ts";
 import * as QueueUnits from "./queue/Units.ts";
@@ -481,6 +482,8 @@ export const executeQueuedJob: QueueRun.Execute = (job: QueuedJob, env) =>
           return yield* StagelessJobs.placeQueued();
         case "dash":
           return yield* StagelessJobs.dash();
+        case "dev-db":
+          return yield* DevDbHost.devDbJob(submit);
         default:
           return submit satisfies never;
       }
