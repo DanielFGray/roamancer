@@ -19,7 +19,10 @@ let
         echo "Expected one running PostgreSQL container; found multiple." >&2
         exit 1
       fi
-      exec podman exec "$container" pg_dumpall --username=postgres
+      # Dev databases (ops dev db) are scratch copies a developer rebuilds from migrations.
+      # Cartridge.ts reserves the dev segment, so no live database matches these patterns.
+      exec podman exec "$container" pg_dumpall --username=postgres \
+        --exclude-database='*_dev' --exclude-database='*_dev_*'
     '';
   };
 in
