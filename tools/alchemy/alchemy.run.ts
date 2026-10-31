@@ -36,8 +36,10 @@ const stack = Alchemy.Stack(
           // live image again, which is the opposite of what the stage asked for.
           const image = yield* Config.String("STAGED_IMAGE");
           const cartridge = yield* Cartridge.resolve(Package.root, base);
+          const deployments = yield* Deployments.Deployments;
+          const released = Option.isSome(yield* deployments.latest(base));
           // The stack fails only with ConfigError; a refused cartridge is one.
-          const staged = yield* StagedCartridge.staged(cartridge, image).pipe(
+          const staged = yield* StagedCartridge.staged(cartridge, image, { released }).pipe(
             Effect.mapError(
               (refusal) =>
                 new Config.ConfigError(
@@ -65,6 +67,15 @@ const stack = Alchemy.Stack(
             new Config.ConfigError(
               new ConfigProvider.SourceError({
                 message: "Could not read the deployment record",
+                cause,
+              }),
+            ),
+          ),
+        SchemaError: (cause) =>
+          Effect.fail(
+            new Config.ConfigError(
+              new ConfigProvider.SourceError({
+                message: "Could not decode the deployment record",
                 cause,
               }),
             ),

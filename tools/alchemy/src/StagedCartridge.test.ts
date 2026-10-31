@@ -17,10 +17,11 @@ const load = (relative: string) =>
     ),
   );
 
-const stage = (cartridge: Cartridge) => Effect.runPromise(staged(cartridge, candidate));
+const stage = (cartridge: Cartridge, released = true) =>
+  Effect.runPromise(staged(cartridge, candidate, { released }));
 
 const refusal = (cartridge: Cartridge) =>
-  Effect.runPromise(Effect.flip(staged(cartridge, candidate)));
+  Effect.runPromise(Effect.flip(staged(cartridge, candidate, { released: true })));
 
 const serviceNames = (cartridge: Cartridge) => cartridge.services.map((service) => service.name);
 
@@ -123,6 +124,15 @@ describe("staged cartridge", () => {
           entry.name === "EXTERNAL_ROUTE" &&
           entry.route === "platform-openobserve",
       ),
+    );
+  });
+
+  it("gives a never-released app an empty staged database instead of a copy", async () => {
+    const copy = await stage(await load("../examples/apps/giglist/cartridge.json"), false);
+
+    assert.deepEqual(
+      copy.postgres.map((entry) => [entry.database, entry.copyFrom]),
+      [["giglist_staged", undefined]],
     );
   });
 

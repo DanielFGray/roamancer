@@ -62,6 +62,12 @@ export const baseName = (stage: string): Option.Option<string> =>
  * role entry. A staged instance therefore gets its own owner and visitor roles; nothing in
  * the copy names a role of the live instance.
  *
+ * Each staged database copies its live database when the app has been released. A
+ * never-released app has no live database to copy, so its staged databases start empty
+ * and the cartridge's migrations build them. The caller decides from the deployment
+ * record, not from whether the live database exists, so a released app whose live
+ * database is missing still fails its copy instead of staging on empty data.
+ *
  * Refused when the services do not all run one image, because one candidate image cannot
  * replace them, and when a service writes a host volume, because the copy would write the
  * live volume.
@@ -69,6 +75,7 @@ export const baseName = (stage: string): Option.Option<string> =>
 export const staged = (
   cartridge: Cartridge,
   image: string,
+  live: { readonly released: boolean },
 ): Effect.Effect<Cartridge, ImagesNotShared | WritableStorage> =>
   Effect.gen(function* () {
     const jobs = jobsOf(cartridge);
@@ -102,11 +109,12 @@ export const staged = (
         ...server,
         service: stagedJob(server.service, derived),
       })),
-      // The staged database copies the live one, so it names it; its roles are its own.
+      // A copy names the live database it copies; its roles are its own either way. A
+      // never-released entry keeps whatever copy source its own declaration names.
       postgres: cartridge.postgres.map((entry) => ({
         ...entry,
         database: derived.database(entry.database),
-        copyFrom: entry.database,
+        ...(live.released ? { copyFrom: entry.database } : {}),
       })),
     };
   });
