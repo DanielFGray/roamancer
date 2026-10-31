@@ -56,6 +56,13 @@ describe("Tailscale JSON schemas", () => {
     );
   });
 
+  it("decodes a raw TCP forward beside the HTTPS routes", () => {
+    const status = S.decodeUnknownSync(ServeStatus)({
+      TCP: { "5432": { TCPForward: "10.13.37.196:5432" }, "9000": { HTTPS: true } },
+    });
+    assert.deepEqual(Object.keys(status.TCP), ["5432", "9000"]);
+  });
+
   it("decodes an empty Serve config, which Tailscale prints as {}", () => {
     assert.deepEqual(S.decodeUnknownSync(ServeStatus)({}), { TCP: {}, Web: {} });
   });

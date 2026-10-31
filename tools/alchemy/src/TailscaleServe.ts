@@ -14,10 +14,13 @@ export const TailscaleStatus = S.Struct({
 export type TailscaleStatus = typeof TailscaleStatus.Type;
 
 // Tailscale omits TCP and Web when no entry is served, so `{}` means an empty config.
+// Each TCP entry sets only the fields of its kind (omitempty): an HTTPS route carries
+// HTTPS, and a raw forward carries TCPForward and no HTTPS.
 export const ServeStatus = S.Struct({
-  TCP: S.Record(S.String.check(S.isPattern(/^[0-9]+$/)), S.Struct({ HTTPS: S.Boolean })).pipe(
-    S.withDecodingDefaultKey(Effect.succeed({})),
-  ),
+  TCP: S.Record(
+    S.String.check(S.isPattern(/^[0-9]+$/)),
+    S.Struct({ HTTPS: S.optionalKey(S.Boolean), TCPForward: S.optionalKey(S.String) }),
+  ).pipe(S.withDecodingDefaultKey(Effect.succeed({}))),
   Web: S.Record(
     S.String,
     S.Struct({ Handlers: S.Struct({ "/": S.Struct({ Proxy: S.String }) }) }),
