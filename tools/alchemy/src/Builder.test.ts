@@ -1,5 +1,9 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { ConfigProvider, Context, Effect, FileSystem, Layer, Option, Sink, Stream } from "effect";
 import { TestConsole } from "effect/testing";
@@ -61,8 +65,42 @@ describe("Builder.layer", () => {
     assert.equal(log.length, 1);
     assert.equal(
       log[0],
-      `tar -C ${tree} -cf - . | ssh atheist tmp=$(mktemp) && trap 'rm -f "$tmp"' EXIT && podman build -t '${tagged}' - && podman push --digestfile "$tmp" '${tagged}' && cat "$tmp"`,
+      `tar -C ${tree} -cf - . | ssh atheist tmp=$(mktemp) && trap 'rm -f "$tmp"' EXIT && podman build -t '${tagged}' - >&2 && podman push --digestfile "$tmp" '${tagged}' >&2 && cat "$tmp"`,
     );
+    assert.equal(result, `${tagged}@${digest}`);
+  });
+
+  // The remote script runs in a real sh against a podman that, like the real one, prints its
+  // build steps and the image ID on stdout.
+  it("returns only the digest when podman build writes to stdout", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "fake-podman-"));
+    writeFileSync(
+      join(bin, "podman"),
+      `#!/bin/sh
+case "$1" in
+  build) echo "STEP 1/2: FROM scratch"; echo "${"b".repeat(64)}" ;;
+  push) echo "Writing manifest"; printf '%s' "${digest}" > "$3" ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const { result } = await execute(
+      Effect.flatMap(Builder, (builder) => builder.build(tree, image)),
+      {
+        siteToml:
+          '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n\n[build]\nnode = "atheist"\n',
+        output: (line) =>
+          spawnSync(
+            "sh",
+            ["-c", line.slice(line.indexOf("ssh atheist ") + "ssh atheist ".length)],
+            {
+              encoding: "utf8",
+              env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+            },
+          ).stdout,
+      },
+    );
+    rmSync(bin, { recursive: true });
     assert.equal(result, `${tagged}@${digest}`);
   });
 

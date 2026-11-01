@@ -42,7 +42,8 @@ const localBuild = (tree: string, image: BuildImage) =>
 
 /**
  * Rootless Podman on `host`: one ssh call whose stdin is a tar of the exported tree, which
- * builds, pushes, and prints the digest file.
+ * builds, pushes, and prints the digest file. podman build prints its steps and the image ID
+ * on stdout, so build and push write to stderr and stdout carries only the digest.
  */
 const nodeBuild = (host: string) => (tree: string, image: BuildImage) =>
   Effect.gen(function* () {
@@ -51,8 +52,8 @@ const nodeBuild = (host: string) => (tree: string, image: BuildImage) =>
     const remote = [
       "tmp=$(mktemp)",
       `trap 'rm -f "$tmp"' EXIT`,
-      `podman build -t ${quote(tagged)} -`,
-      `podman push --digestfile "$tmp" ${quote(tagged)}`,
+      `podman build -t ${quote(tagged)} - >&2`,
+      `podman push --digestfile "$tmp" ${quote(tagged)} >&2`,
       `cat "$tmp"`,
     ].join(" && ");
     const handle = yield* spawner
