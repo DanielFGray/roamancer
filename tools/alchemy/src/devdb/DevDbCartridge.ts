@@ -4,12 +4,11 @@
  * deployable cartridge and an image-less local one both decode. Deploy paths keep using
  * AppCartridge, which still requires image.
  */
-import * as Config from "effect/Config";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as S from "effect/Schema";
 import { AppName, PostgresEntry } from "../Cartridge.ts";
+import { OpsError } from "../Exec.ts";
 import {
   CartridgeEnvironmentEntry,
   CartridgeSecretReference,
@@ -54,21 +53,24 @@ export const isPostgresCredentials = (
   secret: CartridgeSecretReference,
 ): secret is typeof PostgresCredentialsDeclaration.Type => secret._tag === "PostgresCredentials";
 
-/** Read cartridge.json for ops dev db; excess keys (including image) are ignored. */
+/**
+ * Read cartridge.json for ops dev db; excess keys (including image) are ignored. Each
+ * failure is an operator mistake, so it is an OpsError: one line, no stack trace.
+ */
 export const decodeDevDbFile = Effect.fn("devdb.decodeDevDbFile")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem;
   const contents = yield* fs.readFileString(path).pipe(
     Effect.mapError(
-      (cause) =>
-        new Config.ConfigError(
-          new ConfigProvider.SourceError({
-            message: `Could not read Alchemy cartridge at '${path}'`,
-            cause,
-          }),
-        ),
+      (error) =>
+        new OpsError({
+          message:
+            error.reason._tag === "NotFound"
+              ? `no ${path}: run ops dev db in the directory of an app's cartridge.json`
+              : `could not read ${path}: ${error.message}`,
+        }),
     ),
   );
   return yield* S.decodeUnknownEffect(S.fromJsonString(DevDbCartridge))(contents).pipe(
-    Effect.mapError((cause) => new Config.ConfigError(cause)),
+    Effect.mapError((error) => new OpsError({ message: `${path}: ${error.message}` })),
   );
 });
