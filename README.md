@@ -69,17 +69,22 @@ jobs.
 ### Memory
 
 A job's `memoryMB` is both what Nomad reserves for it and its hard limit. Nomad places a job only
-on a node with that much unreserved memory, so the reservations set the minimum:
+on a node with that much unreserved memory. Each host's Nomad client also keeps a `reserved`
+amount for the host services (`nixos/<host>/nomad.nix`), which no job can take. Together they set
+the minimum:
 
-| | Platform jobs (`memoryMB`) | Host services, measured | Minimum |
+| | Platform jobs (`memoryMB`) | Host reserve | Minimum |
 | --- | --- | --- | --- |
-| Control host | Postgres 512, Valkey 512, collector 256: 1280 MB | about 400 MB (Nomad 190, OpenBao 55, job runner 60, journald 50, registry 20, Tailscale 16) | 2 GB plus the apps' `memoryMB` |
-| Ingress host | Traefik 256, OpenObserve 768, collector 256: 1280 MB | about 450 MB (Nomad 175, journald 140, Caddy 70, Tailscale 60) | 2 GB plus the apps' `memoryMB` |
+| Control host | Postgres 512, Valkey 128, collector 256: 896 MB | 768 MB (Nomad, OpenBao, job runner, registry, journald, Tailscale, kernel) | 2 GB plus the apps' `memoryMB` |
+| Ingress host | Traefik 256, OpenObserve 768, collector 256: 1280 MB | 512 MB (Nomad, journald, Caddy, Tailscale) | 2 GB plus the apps' `memoryMB` |
 
 The two-host layout therefore needs about 4 GB before any app; one host that runs everything needs
-about 3.5 GB. Nomad reserves no memory for the host services (no client `reserved` block), so on a
-host where the jobs reserve all its memory, those services use memory that the jobs do not
-actually use. Measured on 2026-11-01.
+about 3 GB. Valkey stops accepting writes at 48 MB (`maxmemory`, `noeviction`), so a log rewrite,
+which can briefly double its data, stays under its 128 MB limit. Measured on 2026-11-01.
+
+Nomad reads a host's memory when its agent starts. On a virtual machine with memory ballooning,
+the hypervisor can take memory back later, so give each host a guaranteed minimum (on Proxmox,
+Minimum memory) at least as large as what its jobs and reserve need.
 
 ## Configure your installation
 

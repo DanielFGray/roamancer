@@ -40,7 +40,7 @@
           "type": "tcp"
         },
         "cpu": 500,
-        "memoryMB": 512,
+        "memoryMB": 128,
         "networkMode": "bridge",
         "storage": {
           "volume": "valkey-data",
@@ -50,7 +50,7 @@
         "command": "sh",
         "args": [
           "-ec",
-          "if [ ! -s /data/users.acl ]; then printf 'user default on >%s ~* &* +@all\\n' \"$VALKEY_ADMIN_PASSWORD\" > /data/users.acl; fi; exec valkey-server --appendonly yes --aclfile /data/users.acl"
+          "if [ ! -s /data/users.acl ]; then printf 'user default on >%s ~* &* +@all\\n' \"$VALKEY_ADMIN_PASSWORD\" > /data/users.acl; fi; exec valkey-server --appendonly yes --aclfile /data/users.acl --maxmemory 48mb --maxmemory-policy noeviction"
         ],
         "connections": [],
         "secrets": []

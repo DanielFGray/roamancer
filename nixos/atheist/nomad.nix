@@ -56,6 +56,12 @@ in
     client {
       enabled = true
       servers = ["${cluster.lanAddress}:4647"]
+      # Measured on 2026-11-01: the host services (Nomad, journald, Caddy, Tailscale) use
+      # about 450 MB outside the containers. Nomad schedules only the rest, so the jobs
+      # cannot reserve it.
+      reserved {
+        memory = 512
+      }
       network_interface = "${cluster.lanInterface}"
       options = {
         "driver.raw_exec.enable" = "0"
