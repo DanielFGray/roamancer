@@ -56,6 +56,10 @@ in
       reserved {
         memory = 768
       }
+      # The hypervisor balloons this VM between its Minimum memory (4096 MB) and its maximum, and
+      # Nomad would otherwise count whatever the balloon allows when its agent starts. Schedule
+      # against the guarantee, so a later balloon cannot take memory that jobs reserve.
+      memory_total_mb = 4096
       network_interface = "${cluster.lanInterface}"
       options = {
         "driver.raw_exec.enable" = "0"
