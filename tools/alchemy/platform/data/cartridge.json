@@ -6,7 +6,7 @@
       "_tag": "PostgresServer",
       "service": {
         "name": "postgres",
-        "image": "registry.cluster:5000/platform-postgres@sha256:974c17eb156fe2a6c1ce0198d2753f62ddfd58f914101132a2fccc575a617ea2",
+        "image": "registry.cluster:5000/platform-postgres@sha256:33fc66a01536893076e5432932e9e62004b40ca7ea2bfd84d753cd0aa76d2d29",
         "hostPort": 5432,
         "containerPort": 5432,
         "healthCheck": {

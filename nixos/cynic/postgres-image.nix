@@ -53,7 +53,13 @@ let
       # pgsodium's event trigger reads this GUC; without shared_preload it is
       # unknown unless set at startup. off keeps key-as-argument mode usable
       # (migrations/DDL) while the trigger remains installed.
-      exec postgres -c listen_addresses='*' -c pgsodium.enable_event_trigger=off
+      #
+      # Apps hash passwords in SQL (pgsodium.crypto_pwhash_str) with the password as a
+      # bound parameter. A parameter length of 0 keeps bound values out of every
+      # statement the server logs, whatever log_statement or duration logging is set
+      # to; command-line settings outrank postgresql.conf and ALTER SYSTEM.
+      exec postgres -c listen_addresses='*' -c pgsodium.enable_event_trigger=off \
+        -c log_parameter_max_length=0 -c log_parameter_max_length_on_error=0
     '';
   };
 in
