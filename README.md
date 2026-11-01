@@ -45,8 +45,41 @@ Both paths pin the same `repository:commit@digest` in the cartridge.
   machines (SeaBIOS, virtio disks and network); change `nixos/modules/proxmox-vm.nix` and
   `disk-config.nix` for other hardware.
 - A workstation with `bun`, `docker`, `git`, and `ssh`. Docker runs the Nix builds, so the
-  workstation needs no Nix.
+  workstation needs no Nix. `ops dev db` also needs `psql` and a systemd user session, which
+  keeps its SSH tunnel.
 - SSH access to each machine, with host names set in `~/.ssh/config`.
+
+### What the stack runs
+
+NixOS installs and configures the host services. The platform cartridges run the rest as Nomad
+jobs.
+
+| Where | Component | Source |
+| --- | --- | --- |
+| Every host | Nomad client, rootless Podman, Tailscale, OpenSSH, git | `nixos/modules/base.nix`, `nomad-node.nix` |
+| Control host (cynic) | Nomad server, OpenBao, image registry (`registry.cluster:5000`), cluster CA, Alchemy job runner (`bun`), restic backups | `nixos/cynic/` |
+| Ingress host (atheist) | Caddy for static sites, restic backups | `nixos/atheist/`, `nixos/modules/static-sites.nix` |
+| Nomad job | PostgreSQL 17 (Nix-built image with pg_hashids, pgTAP, pgvector, pgsodium), Valkey | `tools/alchemy/platform/data` |
+| Nomad job | Traefik | `tools/alchemy/platform/ingress` |
+| Nomad job | OpenObserve, OpenTelemetry Collector (one per node) | `tools/alchemy/platform/observability` |
+
+`base.nix` also installs the operator's shell tools (ripgrep, fd, neovim and others) and
+`herdr.nix` installs herdr. The platform does not use them.
+
+### Memory
+
+A job's `memoryMB` is both what Nomad reserves for it and its hard limit. Nomad places a job only
+on a node with that much unreserved memory, so the reservations set the minimum:
+
+| | Platform jobs (`memoryMB`) | Host services, measured | Minimum |
+| --- | --- | --- | --- |
+| Control host | Postgres 512, Valkey 512, collector 256: 1280 MB | about 400 MB (Nomad 190, OpenBao 55, job runner 60, journald 50, registry 20, Tailscale 16) | 2 GB plus the apps' `memoryMB` |
+| Ingress host | Traefik 256, OpenObserve 768, collector 256: 1280 MB | about 450 MB (Nomad 175, journald 140, Caddy 70, Tailscale 60) | 2 GB plus the apps' `memoryMB` |
+
+The two-host layout therefore needs about 4 GB before any app; one host that runs everything needs
+about 3.5 GB. Nomad reserves no memory for the host services (no client `reserved` block), so on a
+host where the jobs reserve all its memory, those services use memory that the jobs do not
+actually use. Measured on 2026-11-01.
 
 ## Configure your installation
 
