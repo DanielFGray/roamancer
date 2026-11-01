@@ -39,6 +39,59 @@ cluster registry. By default that build runs on the workstation with Docker. Set
 Podman instead; the node receives the tree as a tar on ssh stdin and needs no app checkout.
 Both paths pin the same `repository:commit@digest` in the cartridge.
 
+## What you get
+
+Releases:
+
+- `ops release` builds the app repository's committed `HEAD`, pushes the image to the private
+  registry, pins it by digest, shows the plan, and deploys after you confirm.
+- Each deployment is recorded. `ops rollback <app> <n>` deploys an earlier one again, image and
+  job together.
+- `ops stage` runs a candidate at a tailnet-only preview address beside the live release.
+  `ops promote` releases that exact image, and `ops discard` removes it.
+- An update waits for the new container's health checks. Nomad is set to revert an update that
+  fails them.
+- A service's `migrate` step runs before the service starts, and a failed migration keeps the new
+  release from starting.
+
+Secrets:
+
+- Cartridges and Alchemy state hold secret references, never values.
+- Each job gets its own OpenBao role and policy, derived from its name. Nomad logs the job in with
+  a workload identity, so no secret token sits on disk.
+- Nomad restarts a task when a secret it reads changes.
+- `ops secret list` and `ops secret check` show which referenced keys are set, never their values.
+  A deploy fails early when a key is missing.
+
+Data:
+
+- An app that declares a `postgres` entry gets a database, owner and visitor roles, and
+  short-lived logins from OpenBao: one for migrations and one for the API. The API login uses
+  `SET ROLE` to the visitor role, so row-level security applies.
+- The platform creates the extensions an app lists before its migrations run. The image includes
+  pgvector, pgTAP, pgsodium and pg_hashids.
+- An app that declares `valkey` gets an ACL user that can reach only its own key prefix.
+- An app can reach only the databases, secrets, volumes and service names in its own namespace,
+  which comes from its name.
+
+Traffic and operations:
+
+- Traefik reads routes from Nomad service tags, so a route follows a container that moves to
+  another host. A route can also be on the tailnet only, through Tailscale Serve.
+- Every node runs an OpenTelemetry collector that sends traces, logs and metrics to OpenObserve.
+- `ops logs`, `ops status` and `ops dash` show task output, allocations, health, and each node's
+  memory and reservations.
+- `ops deploy` refuses a plan that is out of date, and the host runs only the runner code that the
+  last `ops rebuild` installed.
+
+Hosts and development:
+
+- Each host is a NixOS system built from this flake, with nixpkgs pinned. `ops rebuild` makes a
+  new system generation that you can roll back to, and `ops install` sets up a new machine.
+- Containers run under rootless Podman, and restic backs up each host.
+- `ops dev db` gives an app's local checkout its own dev, shadow and test databases on the
+  platform Postgres, through an SSH tunnel.
+
 ## What you need
 
 - Two or more x86_64 machines that run NixOS. The shared host modules assume Proxmox-style virtual
