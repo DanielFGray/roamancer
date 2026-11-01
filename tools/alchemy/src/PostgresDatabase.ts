@@ -476,6 +476,7 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
             }
             yield* ensureExtensions({
               database: target,
+              ownerRole,
               extensions: input.news.extensions,
             }).pipe(Effect.provide(adminLayer(target)), catchProvision);
             return false;
@@ -498,6 +499,7 @@ const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
             );
             yield* ensureExtensions({
               database: into,
+              ownerRole,
               extensions: input.news.extensions,
             }).pipe(Effect.provide(adminLayer(into)), catchProvision);
             yield* copyDatabase({

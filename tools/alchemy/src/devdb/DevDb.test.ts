@@ -123,6 +123,24 @@ describe("ops dev db host job", () => {
     await query(clientLayer(migration, "migration-two", "giglist_dev"), (sql) => sql`SELECT 1`);
   });
 
+  // pgsodium installs into its own schema and grants it to PUBLIC, as this setup does.
+  it("leaves an extension's own schema to the owner role", async () => {
+    await query(adminLayer("giglist_dev"), (sql) =>
+      sql`CREATE SCHEMA ext`.pipe(
+        Effect.andThen(sql`CREATE EXTENSION citext SCHEMA ext`),
+        Effect.andThen(sql`GRANT USAGE ON SCHEMA ext TO PUBLIC`),
+      ),
+    );
+    await run(await request({ api: "api-two", migration: "migration-two" }), { _tag: "Up" });
+    const usage = await query<{ readonly visitor: boolean; readonly owner: boolean }>(
+      adminLayer("giglist_dev"),
+      (sql) =>
+        sql`SELECT has_schema_privilege('giglist_dev_visitor', 'ext', 'USAGE') AS visitor,
+                   has_schema_privilege('giglist_dev_owner', 'ext', 'USAGE') AS owner`,
+    );
+    assert.deepEqual(usage, [{ visitor: false, owner: true }]);
+  });
+
   // graphile-migrate commit drops and recreates the shadow through ROOT_DATABASE_URL.
   it("takes back a shadow database that graphile-migrate recreated as the migration login", async () => {
     await query(clientLayer(migration, "migration-two", "postgres"), (sql) =>

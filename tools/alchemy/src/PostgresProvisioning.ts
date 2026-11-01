@@ -100,6 +100,7 @@ export const provisionPostgresDatabase = <E, R>(
       }).pipe(Effect.provide(adminLayer("postgres")));
       yield* ensureExtensions({
         database: declaration.name,
+        ownerRole: declaration.ownerRole,
         extensions: declaration.extensions,
       }).pipe(Effect.provide(adminLayer(declaration.name)));
       yield* ensureLoginRoles(declaration).pipe(Effect.provide(adminLayer("postgres")));
@@ -248,9 +249,19 @@ export const createDatabase = Effect.fn("PostgresProvisioning.createDatabase")(f
  * Runs as the admin, a superuser, so untrusted extensions work too. It checks every name before
  * it creates any, so an extension missing from the server image changes nothing. Ensured on every
  * run so a failed earlier install is repaired.
+ *
+ * An extension that installs into its own schema (pgsodium) can grant USAGE on it to PUBLIC, and
+ * an ALTER EXTENSION UPDATE can grant it again. The admin owns that schema, so the owner role
+ * cannot revoke it. Each run therefore makes every extension schema other than `public` usable
+ * by the owner role only; the visitor reaches extension functions through the owner's own
+ * functions.
  */
 export const ensureExtensions = Effect.fn("PostgresProvisioning.ensureExtensions")(
-  function* (input: { readonly database: string; readonly extensions: ReadonlyArray<string> }) {
+  function* (input: {
+    readonly database: string;
+    readonly ownerRole: string;
+    readonly extensions: ReadonlyArray<string>;
+  }) {
     if (input.extensions.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
     const available = yield* sql<{ readonly name: string }>`
@@ -282,6 +293,34 @@ export const ensureExtensions = Effect.fn("PostgresProvisioning.ensureExtensions
               new PostgresProvisioningError({
                 operation: "create extension",
                 target: extension,
+              }),
+          ),
+        ),
+      { discard: true },
+    );
+    const schemas = yield* sql<{ readonly name: string }>`
+      SELECT DISTINCT n.nspname AS name
+      FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+      WHERE n.nspname NOT IN ('public', 'pg_catalog')
+    `.pipe(
+      Effect.mapError(
+        () =>
+          new PostgresProvisioningError({
+            operation: "read extension schemas",
+            target: input.database,
+          }),
+      ),
+    );
+    yield* Effect.forEach(
+      schemas,
+      ({ name }) =>
+        sql`REVOKE ALL ON SCHEMA ${sql(name)} FROM PUBLIC`.pipe(
+          Effect.andThen(sql`GRANT USAGE ON SCHEMA ${sql(name)} TO ${sql(input.ownerRole)}`),
+          Effect.mapError(
+            () =>
+              new PostgresProvisioningError({
+                operation: "restrict extension schema",
+                target: `${input.database}.${name}`,
               }),
           ),
         ),
