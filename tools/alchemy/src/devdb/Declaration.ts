@@ -13,7 +13,7 @@
  * commit drops and recreates the shadow through it, so the dev migration login has CREATEDB.
  */
 import * as Arr from "effect/Array";
-import type * as Option from "effect/Option";
+import * as Option from "effect/Option";
 import * as S from "effect/Schema";
 import {
   AppName,
@@ -313,3 +313,48 @@ export const DevDbSubmit = S.Struct({
   action: DevDbAction,
 });
 export type DevDbSubmit = typeof DevDbSubmit.Type;
+
+/**
+ * An action on every app's dev databases, found by their markers. `Drop` removes an app's
+ * dev databases and their roles: all of them, or those of one cartridge database.
+ */
+export const DevDbClusterAction = S.Union([
+  S.TaggedStruct("Stale", {}),
+  S.TaggedStruct("Drop", { app: AppName, database: S.optionalKey(DatabaseName) }),
+]);
+export type DevDbClusterAction = typeof DevDbClusterAction.Type;
+
+/** dev-db-cluster: an action that needs no cartridge, so it may name an app that is gone. */
+export const DevDbClusterSubmit = S.Struct({
+  command: S.Literals(["dev-db-cluster"]),
+  action: DevDbClusterAction,
+});
+export type DevDbClusterSubmit = typeof DevDbClusterSubmit.Type;
+
+/**
+ * The comment `up` and `reset` write on each dev database: whose it is and when `up` last
+ * provisioned it. Postgres records no last-login time, so this date is what says a dev
+ * database is stale. Any role that owns a database can change its comment, so the host
+ * trusts a marker only when the database's name and owner are the ones it derives from it.
+ */
+export const DevDbMarker = S.Struct({
+  opsDevDb: S.Struct({ app: AppName, database: DatabaseName, lastUp: S.String }),
+});
+export type DevDbMarker = typeof DevDbMarker.Type;
+
+/**
+ * The dev database `name` with the roles that may own it, when the marker's app and
+ * database derive that name; none for a marker that claims a name it does not derive.
+ */
+export const markedDevDatabase = (name: string, marker: DevDbMarker) => {
+  const { app, database } = marker.opsDevDb;
+  const names = devDatabaseNames(app, database);
+  const derived =
+    postgresNamespaceIssues(app, [database]).length === 0 && Object.values(names).includes(name);
+  return derived
+    ? Option.some({
+        live: names.live,
+        owners: [postgresRoles(names.live).owner, postgresLoginRole(names.live, "migration")],
+      })
+    : Option.none();
+};

@@ -1,10 +1,12 @@
 /**
  * `ops dev db` subcommands: up, reset, list and psql, on the dev instances of the cartridge in
- * the current directory. The databases live on the app's Postgres server; a host job
- * provisions them (Host.ts) and an SSH tunnel brings them to 127.0.0.1:5417 (Tunnel.ts).
+ * the current directory, and stale and drop, on every app's dev databases. The databases live
+ * on the app's Postgres server; a host job provisions them (Host.ts) and an SSH tunnel brings
+ * them to 127.0.0.1:5417 (Tunnel.ts).
  */
 import { Console, Effect, FileSystem, Option } from "effect";
-import { Argument, Command } from "effect/cli";
+import { Argument, Command, Flag } from "effect/cli";
+import { confirm } from "../Jobs.ts";
 import * as Arr from "effect/Array";
 import * as Redacted from "effect/Redacted";
 import { postgresLoginRole } from "../Cartridge.ts";
@@ -105,10 +107,51 @@ const psql = Command.make(
   }),
 ).pipe(Command.withDescription("psql as the migration login, through the tunnel"));
 
+const stale = Command.make(
+  "stale",
+  {},
+  Effect.fn(function* () {
+    yield* (yield* Remote).run({ command: "dev-db-cluster", action: { _tag: "Stale" } });
+  }),
+).pipe(
+  Command.withDescription(
+    "List every app's dev databases on the server, the one `up` reached least recently first",
+  ),
+);
+
+const drop = Command.make(
+  "drop",
+  {
+    app: Argument.String("app").pipe(Argument.withDescription("The app's name, as in `stale`")),
+    database: Argument.String("database").pipe(
+      Argument.withDescription(
+        "One cartridge database of the app; without it, every dev database of the app",
+      ),
+      Argument.optional,
+    ),
+    yes: Flag.Boolean("yes").pipe(Flag.withDescription("Drop without asking")),
+  },
+  Effect.fn(function* ({ app, database, yes }) {
+    const what = Option.match(database, {
+      onNone: () => `every dev database of ${app}`,
+      onSome: (name) => `the dev databases of ${app}'s ${name}`,
+    });
+    yield* confirm(`Drop ${what}, with its data and logins?`, yes);
+    yield* (yield* Remote).run({
+      command: "dev-db-cluster",
+      action: { _tag: "Drop", app, database: Option.getOrUndefined(database) },
+    });
+  }),
+).pipe(
+  Command.withDescription(
+    "Drop an app's dev databases and their logins; needs no cartridge.json, so it works for an app that is gone",
+  ),
+);
+
 /** The `db` command under `ops dev`. */
 export const db = Command.make("db").pipe(
   Command.withDescription("Dev databases for cartridge apps on the server's Postgres"),
-  Command.withSubcommands([up, reset, list, psql]),
+  Command.withSubcommands([up, reset, list, psql, stale, drop]),
 );
 
 /** The `dev` command under `ops`. */
@@ -139,7 +182,7 @@ const runAction = Effect.fn("devdb.runAction")(function* (action: DevDbAction) {
     managedEnvValues(managedEnvKeys(cartridge), (role) => Redacted.value(passwords.forRole(role))),
   );
   yield* Console.log(
-    `${ownedDatabases(request).join(", ")} on ${tunnelHost}:${tunnelPort}; .env updated`,
+    `${ownedDatabases(request).length} dev databases on ${tunnelHost}:${tunnelPort}; .env updated`,
   );
 });
 

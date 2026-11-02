@@ -7,8 +7,9 @@ import * as S from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as PgClient from "@effect/sql-pg/PgClient";
 import { BunServices } from "@effect/platform-bun";
+import { TestConsole } from "effect/testing";
 import { DevDbRequest } from "./Declaration.ts";
-import { runDevDbAction } from "./Host.ts";
+import { runDevDbAction, runDevDbClusterAction } from "./Host.ts";
 import { scramVerifier } from "./Scram.ts";
 
 const PORT = 55418;
@@ -163,6 +164,70 @@ describe("ops dev db host job", () => {
       message: /'giglist' is not a dev database of this app/,
     });
     assert.deepEqual(await ownerOf("giglist"), ["postgres"]);
+  });
+
+  describe("eviction", () => {
+    const passwords = { api: "api-two", migration: "migration-two" };
+    // The request with a second cartridge database beside giglist.
+    const twoEntries = async () => {
+      const one = await request(passwords);
+      return S.decodeUnknownSync(DevDbRequest)({
+        ...one,
+        postgres: one.postgres.flatMap((entry) => [entry, { ...entry, database: "giglist_extra" }]),
+      });
+    };
+    // An action's console lines; a failed action rejects.
+    const output = (program: Effect.Effect<void, unknown>) =>
+      Effect.runPromise(
+        program.pipe(Effect.andThen(TestConsole.logLines), Effect.provide(TestConsole.layer)),
+      ).then((lines) => lines.map(String));
+    const up = (devRequest: typeof DevDbRequest.Type) =>
+      output(runDevDbAction(devRequest, { _tag: "Up" }, adminLayer));
+    const cluster = (action: Parameters<typeof runDevDbClusterAction>[0]) =>
+      output(runDevDbClusterAction(action, adminLayer));
+    const roleExists = async (role: string) =>
+      (
+        await query<{ readonly found: boolean }>(
+          adminLayer("postgres"),
+          (sql) => sql`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${role}) AS found`,
+        )
+      ).map((row) => row.found);
+
+    it("dates each app's dev databases, and stale lists the app", async () => {
+      await up(await twoEntries());
+      const lines = await cluster({ _tag: "Stale" });
+      assert.match(
+        lines.find((line) => line.includes("\tgiglist\t")) ?? "",
+        /\tgiglist\t6\t\d+ MB$/,
+      );
+    });
+
+    it("names a database the cartridge no longer declares, and drop removes it with its logins", async () => {
+      const lines = await up(await request(passwords));
+      assert.ok(lines.includes("  ops dev db drop giglist giglist_extra"), lines.join("\n"));
+      await cluster({ _tag: "Drop", app: "giglist", database: "giglist_extra" });
+      assert.deepEqual(await ownerOf("giglist_dev_extra"), []);
+      assert.deepEqual(await roleExists("giglist_dev_extra_owner"), [false]);
+      assert.deepEqual(await roleExists("alchemy_giglist_dev_extra_migration"), [false]);
+      assert.deepEqual(await ownerOf("giglist_dev"), ["giglist_dev_owner"]);
+    });
+
+    // A dev login owns its databases and may rewrite their comments, so a marker alone is no proof.
+    it("leaves a database whose marker names it but whose owner is no dev role", async () => {
+      await query(adminLayer("postgres"), (sql) =>
+        sql`DROP DATABASE giglist_dev_test`.pipe(
+          Effect.andThen(sql`CREATE DATABASE giglist_dev_test`),
+          Effect.andThen(
+            sql.unsafe(
+              `COMMENT ON DATABASE giglist_dev_test IS '{"opsDevDb":{"app":"giglist","database":"giglist","lastUp":"2026-01-01T00:00:00.000Z"}}'`,
+            ),
+          ),
+        ),
+      );
+      await cluster({ _tag: "Drop", app: "giglist" });
+      assert.deepEqual(await ownerOf("giglist_dev"), []);
+      assert.deepEqual(await ownerOf("giglist_dev_test"), ["postgres"]);
+    });
   });
 
   it("refuses a derived name that another role owns", async () => {

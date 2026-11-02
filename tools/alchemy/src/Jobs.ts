@@ -34,7 +34,7 @@ export const destroyStage = Effect.fn("Jobs.destroyStage")(function* (stage: str
 });
 
 /** Ask a yes/no question; fails on no, or with no terminal unless `yes`. */
-const confirm = Effect.fn("Jobs.confirm")(function* (message: string, yes: boolean) {
+export const confirm = Effect.fn("Jobs.confirm")(function* (message: string, yes: boolean) {
   if (yes) return;
   if (!(yield* (yield* Stdio.Stdio).stdinIsTerminal)) {
     return yield* new OpsError({ message: `${message} No terminal to ask on: pass --yes.` });

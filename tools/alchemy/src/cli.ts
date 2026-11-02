@@ -484,6 +484,8 @@ export const executeQueuedJob: QueueRun.Execute = (job: QueuedJob, env) =>
           return yield* StagelessJobs.dash();
         case "dev-db":
           return yield* DevDbHost.devDbJob(submit);
+        case "dev-db-cluster":
+          return yield* DevDbHost.devDbClusterJob(submit);
         default:
           return submit satisfies never;
       }
