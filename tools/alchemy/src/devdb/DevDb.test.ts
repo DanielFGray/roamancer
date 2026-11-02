@@ -43,6 +43,8 @@ const request = (passwords: { readonly api: string; readonly migration: string }
           {
             database: "giglist",
             extensions: ["pgcrypto"],
+            shadow: true,
+            test: true,
             logins: {
               api: yield* scramVerifier(Redacted.make(passwords.api)),
               migration: yield* scramVerifier(Redacted.make(passwords.migration)),
@@ -204,11 +206,45 @@ describe("ops dev db host job", () => {
 
     it("names a database the cartridge no longer declares, and drop removes it with its logins", async () => {
       const lines = await up(await request(passwords));
-      assert.ok(lines.includes("  ops dev db drop giglist giglist_extra"), lines.join("\n"));
-      await cluster({ _tag: "Drop", app: "giglist", database: "giglist_extra" });
+      assert.ok(
+        lines.includes(
+          "  ops dev db drop giglist giglist_dev_extra giglist_dev_extra_shadow giglist_dev_extra_test",
+        ),
+        lines.join("\n"),
+      );
+      await cluster({
+        _tag: "Drop",
+        app: "giglist",
+        databases: ["giglist_dev_extra", "giglist_dev_extra_shadow", "giglist_dev_extra_test"],
+      });
       assert.deepEqual(await ownerOf("giglist_dev_extra"), []);
       assert.deepEqual(await roleExists("giglist_dev_extra_owner"), [false]);
       assert.deepEqual(await roleExists("alchemy_giglist_dev_extra_migration"), [false]);
+      assert.deepEqual(await ownerOf("giglist_dev"), ["giglist_dev_owner"]);
+    });
+
+    // Dropping one copy must leave the dev database and the roles it still uses.
+    it("drops a shadow the entry turned off and keeps its dev database", async () => {
+      const one = await request(passwords);
+      const noShadow = S.decodeUnknownSync(DevDbRequest)({
+        ...one,
+        postgres: one.postgres.map((entry) => ({ ...entry, shadow: false })),
+      });
+      const lines = await up(noShadow);
+      assert.ok(lines.includes("  giglist_dev (with _test)"), lines.join("\n"));
+      assert.ok(lines.includes("  ops dev db drop giglist giglist_dev_shadow"), lines.join("\n"));
+      await cluster({ _tag: "Drop", app: "giglist", databases: ["giglist_dev_shadow"] });
+      assert.deepEqual(await ownerOf("giglist_dev_shadow"), []);
+      assert.deepEqual(await ownerOf("giglist_dev"), ["giglist_dev_owner"]);
+      assert.deepEqual(await roleExists("giglist_dev_owner"), [true]);
+      await query(clientLayer(migration, "migration-two", "giglist_dev"), (sql) => sql`SELECT 1`);
+    });
+
+    it("refuses a name that is no dev database of the app, and drops nothing", async () => {
+      await assert.rejects(
+        cluster({ _tag: "Drop", app: "giglist", databases: ["giglist_dev", "giglist"] }),
+        { message: /'giglist' is not a dev database of this app/ },
+      );
       assert.deepEqual(await ownerOf("giglist_dev"), ["giglist_dev_owner"]);
     });
 
@@ -224,7 +260,7 @@ describe("ops dev db host job", () => {
           ),
         ),
       );
-      await cluster({ _tag: "Drop", app: "giglist" });
+      await cluster({ _tag: "Drop", app: "giglist", databases: [] });
       assert.deepEqual(await ownerOf("giglist_dev"), []);
       assert.deepEqual(await ownerOf("giglist_dev_test"), ["postgres"]);
     });

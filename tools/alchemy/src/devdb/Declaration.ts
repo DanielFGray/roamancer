@@ -42,6 +42,9 @@ export const DevDbRequest = S.Struct({
     S.Struct({
       database: DatabaseName,
       extensions: S.Array(ExtensionName),
+      // Whether the dev database gets its shadow and test databases (PostgresEntry).
+      shadow: S.Boolean,
+      test: S.Boolean,
       // SCRAM verifiers of the dev database's two logins.
       logins: S.Struct({ api: Verifier, migration: Verifier }),
     }),
@@ -70,9 +73,25 @@ const withScratchDatabases = (live: string): Record<DevTarget, string> => ({
   test: `${live}_test`,
 });
 
-/** Every name the request owns: each entry's dev, shadow and test databases. */
+/** The databases one entry asks for: its dev database, then the shadow and test it enables. */
+const entryTargets = (entry: {
+  readonly shadow: boolean;
+  readonly test: boolean;
+}): ReadonlyArray<DevTarget> => [
+  "live",
+  ...(entry.shadow ? ["shadow" as const] : []),
+  ...(entry.test ? ["test" as const] : []),
+];
+
+/** The names of the databases one entry of the request asks for. */
+export const entryDatabases = (request: DevDbRequest, entry: DevDbRequest["postgres"][number]) => {
+  const names = devDatabaseNames(request.app, entry.database);
+  return entryTargets(entry).map((target) => names[target]);
+};
+
+/** Every name the request owns: each entry's dev database and the shadow and test it enables. */
 export const ownedDatabases = (request: DevDbRequest): ReadonlyArray<string> =>
-  request.postgres.flatMap((entry) => Object.values(devDatabaseNames(request.app, entry.database)));
+  request.postgres.flatMap((entry) => entryDatabases(request, entry));
 
 /** The two logins of one dev database, the API login first. */
 export const devLoginRoles = (devDatabase: string): ReadonlyArray<string> => [
@@ -126,16 +145,14 @@ const declarationsFor = (
   }));
 };
 
-/** Every dev database of the request, each followed by its shadow and test databases. */
+/** Every dev database of the request, each followed by the shadow and test it enables. */
 export const databaseDeclarations = (
   request: DevDbRequest,
 ): ReadonlyArray<PostgresDatabaseDeclaration> =>
-  request.postgres.flatMap((entry) =>
-    declarationsFor(request.app, entry, ["live", "shadow", "test"]),
-  );
+  request.postgres.flatMap((entry) => declarationsFor(request.app, entry, entryTargets(entry)));
 
 /**
- * What `reset <name>` provisions again: a dev database with its shadow and test databases,
+ * What `reset <name>` provisions again: a dev database with the shadow and test it enables,
  * or one shadow or test database alone. None when the request owns no database of that name.
  */
 export const declarationsForDatabase = (
@@ -145,14 +162,11 @@ export const declarationsForDatabase = (
   Arr.head(
     request.postgres.flatMap((entry) => {
       const names = devDatabaseNames(request.app, entry.database);
-      const targets: ReadonlyArray<DevTarget> =
-        names.live === name
-          ? ["live", "shadow", "test"]
-          : names.shadow === name
-            ? ["shadow"]
-            : names.test === name
-              ? ["test"]
-              : [];
+      const enabled = entryTargets(entry);
+      const targets = Arr.findFirst(enabled, (target) => names[target] === name).pipe(
+        Option.map((target): ReadonlyArray<DevTarget> => (target === "live" ? enabled : [target])),
+        Option.getOrElse((): ReadonlyArray<DevTarget> => []),
+      );
       return targets.length === 0 ? [] : [declarationsFor(request.app, entry, targets)];
     }),
   );
@@ -226,15 +240,17 @@ export const managedEnvKeys = (cartridge: DevDbCartridge): ReadonlyArray<Managed
       }
     }
   }
-  // One SHADOW_ / TEST_ / ROOT_ URL per cartridge database (graphile-migrate / vitest standard names).
+  // One SHADOW_ / TEST_ / ROOT_ URL per cartridge database (graphile-migrate / vitest standard
+  // names), for each copy the entry enables. graphile-migrate recreates the shadow through
+  // ROOT_DATABASE_URL, so the root URL comes with the shadow.
   for (const entry of cartridge.postgres) {
     const database = dev(entry.database);
-    for (const [kind, env] of [
-      ["shadowUrl", "SHADOW_DATABASE_URL"],
-      ["testUrl", "TEST_DATABASE_URL"],
-      ["rootUrl", "ROOT_DATABASE_URL"],
+    for (const [kind, env, enabled] of [
+      ["shadowUrl", "SHADOW_DATABASE_URL", entry.shadow],
+      ["testUrl", "TEST_DATABASE_URL", entry.test],
+      ["rootUrl", "ROOT_DATABASE_URL", entry.shadow],
     ] as const) {
-      byEnv.set(env, { kind, env, database, login: "migration" });
+      if (enabled) byEnv.set(env, { kind, env, database, login: "migration" });
     }
   }
   return [...byEnv.values()];
@@ -315,12 +331,12 @@ export const DevDbSubmit = S.Struct({
 export type DevDbSubmit = typeof DevDbSubmit.Type;
 
 /**
- * An action on every app's dev databases, found by their markers. `Drop` removes an app's
- * dev databases and their roles: all of them, or those of one cartridge database.
+ * An action on every app's dev databases, found by their markers. `Drop` removes the app's
+ * dev databases it names, or all of them when it names none.
  */
 export const DevDbClusterAction = S.Union([
   S.TaggedStruct("Stale", {}),
-  S.TaggedStruct("Drop", { app: AppName, database: S.optionalKey(DatabaseName) }),
+  S.TaggedStruct("Drop", { app: AppName, databases: S.Array(S.String) }),
 ]);
 export type DevDbClusterAction = typeof DevDbClusterAction.Type;
 

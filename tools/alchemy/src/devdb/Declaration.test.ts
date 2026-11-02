@@ -76,6 +76,19 @@ describe("managedEnvKeys", () => {
       },
     ]);
   });
+
+  it("writes no URL for a copy the entry turns off", () => {
+    const testOnly = S.decodeUnknownSync(DevDbCartridge)({
+      ...cartridge,
+      postgres: [{ database: "giglist", shadow: false }],
+    });
+    assert.deepEqual(
+      managedEnvKeys(testOnly)
+        .map((key) => key.env)
+        .filter((env) => !env.startsWith("AUTH_") && env !== "DATABASE_URL"),
+      ["TEST_DATABASE_URL"],
+    );
+  });
 });
 
 describe("declarationsForDatabase", () => {
@@ -83,7 +96,13 @@ describe("declarationsForDatabase", () => {
   const request = S.decodeUnknownSync(DevDbRequest)({
     app: "giglist",
     postgres: [
-      { database: "giglist", extensions: [], logins: { api: verifier, migration: verifier } },
+      {
+        database: "giglist",
+        extensions: [],
+        shadow: true,
+        test: false,
+        logins: { api: verifier, migration: verifier },
+      },
     ],
   });
   const names = (database: string) =>
@@ -91,19 +110,17 @@ describe("declarationsForDatabase", () => {
       declarations.map((declaration) => declaration.name),
     );
 
-  it("provisions a dev database again with its shadow and test databases", () => {
-    assert.deepEqual(
-      names("giglist_dev"),
-      Option.some(["giglist_dev", "giglist_dev_shadow", "giglist_dev_test"]),
-    );
+  it("provisions a dev database again with the copies its entry enables", () => {
+    assert.deepEqual(names("giglist_dev"), Option.some(["giglist_dev", "giglist_dev_shadow"]));
   });
 
-  it("provisions a shadow or test database alone", () => {
-    assert.deepEqual(names("giglist_dev_test"), Option.some(["giglist_dev_test"]));
+  it("provisions a shadow database alone", () => {
+    assert.deepEqual(names("giglist_dev_shadow"), Option.some(["giglist_dev_shadow"]));
   });
 
-  it("owns no live database", () => {
+  it("owns no live database, and no copy its entry turns off", () => {
     assert.deepEqual(names("giglist"), Option.none());
+    assert.deepEqual(names("giglist_dev_test"), Option.none());
   });
 });
 

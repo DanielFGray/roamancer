@@ -44,6 +44,7 @@ import {
   type DevDbRequest,
   devDatabaseNames,
   devLoginRoles,
+  entryDatabases,
   markedDevDatabase,
   ownedDatabases,
 } from "./Declaration.ts";
@@ -151,8 +152,15 @@ const provisionAll = Effect.fn("devdb.provisionAll")(function* <E, R>(
   yield* Effect.forEach(
     request.postgres.flatMap((entry) => {
       const derived = devDatabaseNames(request.app, entry.database);
-      const done = Object.values(derived).filter((name) => names.includes(name));
-      return done.length === 3 ? [`${derived.live} (with _shadow and _test)`] : done;
+      if (!names.includes(derived.live)) {
+        return Object.values(derived).filter((name) => names.includes(name));
+      }
+      const copies = (["shadow", "test"] as const)
+        .filter((target) => names.includes(derived[target]))
+        .map((target) => `_${target}`);
+      return [
+        copies.length === 0 ? derived.live : `${derived.live} (with ${copies.join(" and ")})`,
+      ];
     }),
     (line) => Console.log(`  ${line}`),
   );
@@ -161,9 +169,7 @@ const provisionAll = Effect.fn("devdb.provisionAll")(function* <E, R>(
 /** The request's entry that derives the dev database `database`. */
 const entryFor = (request: DevDbRequest, database: string) =>
   Option.match(
-    Arr.findFirst(request.postgres, (entry) =>
-      Object.values(devDatabaseNames(request.app, entry.database)).includes(database),
-    ),
+    Arr.findFirst(request.postgres, (entry) => entryDatabases(request, entry).includes(database)),
     {
       onNone: () =>
         Effect.fail(new DevDbUnknownDatabase({ database, owned: ownedDatabases(request) })),
@@ -306,9 +312,9 @@ const reportUndeclared = Effect.fn("devdb.reportUndeclared")(function* (request:
     (marked) => marked.app === request.app && !owned.includes(marked.name),
   );
   if (undeclared.length === 0) return;
-  yield* Console.log("not in cartridge.json any more; `ops dev db drop` removes each:");
-  yield* Effect.forEach(Arr.dedupe(undeclared.map((marked) => marked.database)), (database) =>
-    Console.log(`  ops dev db drop ${request.app} ${database}`),
+  yield* Console.log("not in cartridge.json any more; this drops them:");
+  yield* Console.log(
+    `  ops dev db drop ${request.app} ${undeclared.map((marked) => marked.name).join(" ")}`,
   );
 });
 
@@ -343,29 +349,40 @@ const listStale = Effect.fn("devdb.listStale")(function* () {
 });
 
 /**
- * Drops an app's marked dev databases, or those of one cartridge database, then the roles of
- * each: its two logins and its owner and visitor roles. Unmarked databases stay, so a role
- * that still owns one fails to drop and the error names it.
+ * Drops the app's marked dev databases that `drop` names, or all of them when it names none,
+ * then the roles of each dev database none of whose marked databases remain: its two logins
+ * and its owner and visitor roles. A name that is no marked dev database of the app fails
+ * the action before anything is dropped. An unmarked database still owned by a role makes
+ * that role's drop fail, and the error names it.
  */
 const dropMarked = Effect.fn("devdb.dropMarked")(function* (
   drop: Extract<DevDbClusterAction, { readonly _tag: "Drop" }>,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const only = Option.fromUndefinedOr(drop.database);
-  const targets = (yield* readMarked()).filter(
-    (marked) =>
-      marked.app === drop.app &&
-      Option.match(only, { onNone: () => true, onSome: (name) => marked.database === name }),
+  const marked = (yield* readMarked()).filter((database) => database.app === drop.app);
+  const names = marked.map((database) => database.name);
+  yield* Effect.forEach(drop.databases, (database) =>
+    names.includes(database)
+      ? Effect.void
+      : Effect.fail(new DevDbUnknownDatabase({ database, owned: names })),
   );
+  const targets =
+    drop.databases.length === 0
+      ? marked
+      : marked.filter((database) => drop.databases.includes(database.name));
   if (targets.length === 0) {
     return yield* Console.log(`No marked dev databases of '${drop.app}'.`);
   }
-  yield* Effect.forEach(targets, (marked) =>
-    sql`DROP DATABASE IF EXISTS ${sql(marked.name)} WITH (FORCE)`.pipe(
-      Effect.andThen(Console.log(`dropped ${marked.name}`)),
+  yield* Effect.forEach(targets, (target) =>
+    sql`DROP DATABASE IF EXISTS ${sql(target.name)} WITH (FORCE)`.pipe(
+      Effect.andThen(Console.log(`dropped ${target.name}`)),
     ),
   );
-  yield* Effect.forEach(Arr.dedupe(targets.map((marked) => marked.live)), (live) =>
+  const remaining = marked.filter((database) => !targets.includes(database));
+  const emptied = Arr.dedupe(targets.map((target) => target.live)).filter(
+    (live) => !remaining.some((database) => database.live === live),
+  );
+  yield* Effect.forEach(emptied, (live) =>
     Effect.forEach(
       [...devLoginRoles(live), postgresRoles(live).owner, postgresRoles(live).visitor],
       (role) => sql`DROP ROLE IF EXISTS ${sql(role)}`,

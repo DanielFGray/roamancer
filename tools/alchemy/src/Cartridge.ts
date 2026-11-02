@@ -43,6 +43,11 @@ export const PostgresEntry = S.Struct({
   // A live database this one is created as a copy of. The copy has its own owner and visitor
   // roles; expand derives them from the copy's own database name, never from this one.
   copyFrom: S.optional(DatabaseName),
+  // Only `ops dev db` reads these: whether the dev database gets a `_shadow` copy (with
+  // SHADOW_DATABASE_URL and ROOT_DATABASE_URL, for graphile-migrate) and a `_test` copy (with
+  // TEST_DATABASE_URL). A deploy creates neither.
+  shadow: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(true))),
+  test: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(true))),
 });
 export type PostgresEntry = typeof PostgresEntry.Type;
 

@@ -123,23 +123,20 @@ const drop = Command.make(
   "drop",
   {
     app: Argument.String("app").pipe(Argument.withDescription("The app's name, as in `stale`")),
-    database: Argument.String("database").pipe(
+    databases: Argument.String("database").pipe(
       Argument.withDescription(
-        "One cartridge database of the app; without it, every dev database of the app",
+        "Dev databases of the app to drop, such as giglist_dev_shadow; without any, every dev database of the app",
       ),
-      Argument.optional,
+      Argument.variadic(),
     ),
     yes: Flag.Boolean("yes").pipe(Flag.withDescription("Drop without asking")),
   },
-  Effect.fn(function* ({ app, database, yes }) {
-    const what = Option.match(database, {
-      onNone: () => `every dev database of ${app}`,
-      onSome: (name) => `the dev databases of ${app}'s ${name}`,
-    });
-    yield* confirm(`Drop ${what}, with its data and logins?`, yes);
+  Effect.fn(function* ({ app, databases, yes }) {
+    const what = databases.length === 0 ? `every dev database of ${app}` : databases.join(", ");
+    yield* confirm(`Drop ${what}, with the data?`, yes);
     yield* (yield* Remote).run({
       command: "dev-db-cluster",
-      action: { _tag: "Drop", app, database: Option.getOrUndefined(database) },
+      action: { _tag: "Drop", app, databases },
     });
   }),
 ).pipe(
@@ -211,6 +208,8 @@ const devDbRequest = Effect.fn("devdb.devDbRequest")(function* (
       return {
         database: entry.database,
         extensions: entry.extensions,
+        shadow: entry.shadow,
+        test: entry.test,
         logins: {
           api: yield* verifier(live, "api"),
           migration: yield* verifier(live, "migration"),
