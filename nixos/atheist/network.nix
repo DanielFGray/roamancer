@@ -12,6 +12,9 @@ let
   # on-link.
   publicGateway = host.publicGateway;
   publicTable = 100;
+  # Same uid as services.nomadNode.builder in nomad-node.nix. Rootless Podman's pasta
+  # helper leaves the host as this user, so OUTPUT owner match fences the build.
+  builderUid = 1002;
 in
 {
   networking.useDHCP = false;
@@ -88,6 +91,28 @@ in
     # call services placed here, such as OpenObserve, on Nomad's dynamic ports.
     extraCommands = ''
       iptables -A nixos-fw -i ${cluster.lanInterface} -s ${cluster.lanAddress} -p tcp -j nixos-fw-accept
+
+      # Builder egress: DNS, the cluster registry, and public HTTP(S) only. Drop the LAN
+      # (except the registry allow above), the tailnet, and everything else — including
+      # OpenBao 8200, Nomad 4646/4647 and Garage's admin port on cynic.
+      iptables -N builder-egress 2>/dev/null || true
+      iptables -F builder-egress
+      iptables -D OUTPUT -m owner --uid-owner ${toString builderUid} -j builder-egress 2>/dev/null || true
+      iptables -I OUTPUT -m owner --uid-owner ${toString builderUid} -j builder-egress
+      iptables -A builder-egress -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      iptables -A builder-egress -p udp --dport 53 -j ACCEPT
+      iptables -A builder-egress -p tcp --dport 53 -j ACCEPT
+      iptables -A builder-egress -d ${cluster.lanAddress} -p tcp --dport ${toString cluster.registryPort} -j ACCEPT
+      iptables -A builder-egress -d ${cluster.lanAddress}/${toString cluster.lanPrefixLength} -j DROP
+      iptables -A builder-egress -d 100.64.0.0/10 -j DROP
+      iptables -A builder-egress -p tcp --dport 80 -j ACCEPT
+      iptables -A builder-egress -p tcp --dport 443 -j ACCEPT
+      iptables -A builder-egress -j DROP
+    '';
+    extraStopCommands = ''
+      iptables -D OUTPUT -m owner --uid-owner ${toString builderUid} -j builder-egress 2>/dev/null || true
+      iptables -F builder-egress 2>/dev/null || true
+      iptables -X builder-egress 2>/dev/null || true
     '';
   };
 }
