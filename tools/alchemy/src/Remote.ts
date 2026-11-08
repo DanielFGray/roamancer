@@ -130,12 +130,10 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       readonly key: string;
     }) {
       yield* sameRevision;
-      const printed = (
-        yield* Exec.output("ssh", [
-          yield* site.host,
-          [runner, "image", "find", image.repository, image.key].map(Exec.quote).join(" "),
-        ])
-      ).trim();
+      const printed = (yield* Exec.output("ssh", [
+        yield* site.host,
+        [runner, "image", "find", image.repository, image.key].map(Exec.quote).join(" "),
+      ])).trim();
       if (printed === "") return Option.none<string>();
       if (!S.is(ImageDigest)(printed)) {
         return yield* new Exec.OpsError({
