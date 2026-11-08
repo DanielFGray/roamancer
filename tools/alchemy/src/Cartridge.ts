@@ -101,6 +101,12 @@ export const Cartridge = S.Struct({
         return result;
       });
     });
+    const valkeyPrefixIssues =
+      cartridge.valkey === undefined &&
+      allJobs.some((job) => job.environment.some((entry) => "valkey" in entry))
+        ? ["a Valkey key prefix entry requires `valkey`"]
+        : [];
+    issues.push(...valkeyPrefixIssues);
     const serverMigrateIssues = cartridge.servers
       .filter((server) => server.service.migrate !== undefined)
       .map(() => "server declarations may not declare `migrate`");
@@ -294,15 +300,19 @@ const mapSecret = (
 
 /**
  * The value one cartridge environment entry becomes in a rendered task: a literal value stands
- * as it is, and a database role resolves through the one role-name convention, so no cartridge
- * ever spells a role name.
+ * as it is, a database role resolves through the one role-name convention, and the Valkey key
+ * prefix is the one the cartridge's Valkey user may use, so no cartridge ever spells either.
+ * A route stays for Compose to resolve.
  */
-const environmentValue = (entry: CartridgeEnvironmentEntry) =>
-  "value" in entry
-    ? entry
-    : "database" in entry
-      ? { name: entry.name, value: postgresRoles(entry.database)[entry.role] }
+const environmentValue = (cartridge: Cartridge, entry: CartridgeEnvironmentEntry) =>
+  "database" in entry
+    ? { name: entry.name, value: postgresRoles(entry.database)[entry.role] }
+    : "valkey" in entry
+      ? { name: entry.name, value: `${valkeyKeyPrefix(cartridge)}:` }
       : entry;
+
+/** The prefix the cartridge's Valkey user may use: its keys match `<prefix>:*`. */
+const valkeyKeyPrefix = (cartridge: Cartridge) => cartridge.name;
 
 const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => {
   const secrets = job.secrets.map((secret) => mapSecret(cartridge, secret));
@@ -329,7 +339,7 @@ const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => 
     readOnlyMounts: job.readOnlyMounts,
     placement: job.placement,
     routes: job.routes,
-    environment: job.environment.map(environmentValue),
+    environment: job.environment.map((entry) => environmentValue(cartridge, entry)),
     command: job.command,
     args: job.args,
     connections: job.connections,
@@ -387,7 +397,7 @@ export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> =>
               resourceName: appIdentifier(cartridge.name),
               server: cartridge.valkey.server ?? "valkey",
               adminUsername: "default",
-              keyPrefix: cartridge.name,
+              keyPrefix: valkeyKeyPrefix(cartridge),
               access: cartridge.valkey.access ?? "read-write",
             },
           } as ExpandedResource,

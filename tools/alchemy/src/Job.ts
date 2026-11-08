@@ -140,9 +140,10 @@ export const cartridgeArray = <A extends S.Constraint>(schema: A) =>
   S.Array(schema).pipe(S.withDecodingDefaultKey(Effect.succeed([])));
 
 /**
- * One entry of a cartridge job's `environment`: a literal value, or a role of one of the
- * cartridge's databases. A cartridge never spells a role name; it names the database and the
- * role it wants, and `Cartridge.expand` resolves that to the role name of that instance.
+ * One entry of a cartridge job's `environment`: a literal value, a role of one of the
+ * cartridge's databases, a tailnet route, or the cartridge's Valkey key prefix. A cartridge never
+ * spells a role name or a key prefix; it names what it wants, and `Cartridge.expand` resolves
+ * that to the value of that instance, so a staged copy gets its own.
  */
 export const CartridgeEnvironmentEntry = S.Union([
   S.Struct({ name: EnvironmentVariable, value: S.String }),
@@ -152,6 +153,7 @@ export const CartridgeEnvironmentEntry = S.Union([
     role: S.Literals(["owner", "visitor"]),
   }),
   S.Struct({ name: EnvironmentVariable, route: ResourceName }),
+  S.Struct({ name: EnvironmentVariable, valkey: S.Literals(["keyPrefix"]) }),
 ]);
 export type CartridgeEnvironmentEntry = typeof CartridgeEnvironmentEntry.Type;
 

@@ -71,7 +71,9 @@ Data:
   `SET ROLE` to the visitor role, so row-level security applies.
 - The platform creates the extensions an app lists before its migrations run. The image includes
   pgvector, pgTAP, pgsodium and pg_hashids.
-- An app that declares `valkey` gets an ACL user that can reach only its own key prefix.
+- An app that declares `valkey` gets an ACL user that can reach only keys that start with its
+  own prefix. An environment entry `{ "name": "VALKEY_KEY_PREFIX", "valkey": "keyPrefix" }` gives
+  the app that prefix, such as `giglist:`, and a staged copy gets its own, `giglist-staged:`.
 - An app can reach only the databases, secrets, volumes and service names in its own namespace,
   which comes from its name.
 

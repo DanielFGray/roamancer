@@ -231,6 +231,31 @@ describe("cartridge v2", () => {
     );
   });
 
+  it("rejects a Valkey key prefix entry without valkey", () => {
+    assert.throws(
+      () =>
+        S.decodeUnknownSync(Cartridge)({
+          apiVersion: "server-ansible/v2",
+          name: "app-needs",
+          services: [
+            {
+              name: "svc",
+              image: "img",
+              hostPort: "dynamic",
+              containerPort: 80,
+              cpu: 100,
+              memoryMB: 128,
+              networkMode: "bridge",
+              environment: [{ name: "VALKEY_KEY_PREFIX", valkey: "keyPrefix" }],
+              connections: [],
+              secrets: [],
+            },
+          ],
+        }),
+      /a Valkey key prefix entry requires `valkey`/,
+    );
+  });
+
   it("rejects a secret with no env field", () => {
     assert.throws(() =>
       S.decodeUnknownSync(Cartridge)({

@@ -171,6 +171,34 @@ describe("staged cartridge", () => {
     );
   });
 
+  it("gives live and staged services the key prefix their own Valkey user may use", async () => {
+    const live = await load("../examples/apps/giglist/cartridge.json");
+    const withPrefix: Cartridge = {
+      ...live,
+      services: live.services.map((service) => ({
+        ...service,
+        environment: [...service.environment, { name: "VALKEY_KEY_PREFIX", valkey: "keyPrefix" }],
+      })),
+    };
+    const prefixes = (cartridge: Cartridge) =>
+      expand(cartridge).flatMap((resource) =>
+        resource._tag === "NomadService"
+          ? resource.service.environment.filter((entry) => entry.name === "VALKEY_KEY_PREFIX")
+          : [],
+      );
+
+    assert.deepEqual(
+      prefixes(withPrefix).map((entry) => ("value" in entry ? entry.value : undefined)),
+      ["giglist:", "giglist:"],
+    );
+    assert.deepEqual(
+      prefixes(await stage(withPrefix)).map((entry) =>
+        "value" in entry ? entry.value : undefined,
+      ),
+      ["giglist-staged:", "giglist-staged:"],
+    );
+  });
+
   it("stages postgres-garden's database, names and image", async () => {
     const live = await load("../examples/apps/postgres-garden/cartridge.json");
     const copy = await stage(live);

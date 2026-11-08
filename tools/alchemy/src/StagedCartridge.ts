@@ -171,11 +171,13 @@ const stagedMigrate = (
 /**
  * One environment entry of the copy. A database role entry follows its database's rename, so
  * the copy's services name their own roles; a literal value that names one of this cartridge's
- * databases is replaced by that database's staged name. Every other value names no database of
+ * databases is replaced by that database's staged name. A Valkey key prefix entry stands as it
+ * is: expansion resolves it from the copy's own name. Every other value names no database of
  * this cartridge and stands as it is.
  */
 const stagedEnvironment = (entry: CartridgeEnvironmentEntry, derived: DerivedNames) => {
   if ("database" in entry) return { ...entry, database: derived.database(entry.database) };
+  if ("valkey" in entry) return entry;
   if ("route" in entry) {
     return derived.ownServices.has(entry.route)
       ? { ...entry, route: `${entry.route}${stagedSuffix}` }
