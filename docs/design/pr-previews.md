@@ -86,6 +86,8 @@ The site folder holds the policy, beside `site.toml`. An app repository never ho
 
 ## Build order
 
+Steps 1 and 4, for `live` only, ship first as continuous deployment (`continuous-deployment.md`).
+
 1. Tag images by tree hash, and release an existing image by its key.
 2. Named refs in the staged copy, in place of the fixed `staged` instance.
 3. The `ops preview` commands.
