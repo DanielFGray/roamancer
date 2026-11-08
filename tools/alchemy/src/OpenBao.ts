@@ -8,6 +8,12 @@ const KvValue = S.Struct({
     metadata: S.Struct({ version: S.Number }),
   }),
 });
+// KV v2 metadata for a path: current_version is the CAS base when the latest data version is soft-deleted.
+const KvMetadata = S.Struct({
+  data: S.Struct({
+    current_version: S.Number,
+  }),
+});
 const CreatedToken = S.Struct({ auth: S.Struct({ client_token: S.String }) });
 const DatabaseConfig = S.Struct({
   data: S.Struct({
@@ -460,9 +466,27 @@ export class OpenBao extends Context.Service<
         value: Redacted.Redacted<string>,
       ) {
         const entry = yield* readKvEntry(path);
-        const current = Option.match(entry, {
-          onNone: () => ({ data: {}, version: 0 }),
-          onSome: (found) => ({ data: found.data, version: found.metadata.version }),
+        // Soft-deleted latest versions answer GET data with 404 while metadata still has a
+        // current_version above 0. cas:0 then fails; read metadata for the real base, and treat
+        // soft-deleted keys as absent so the write is only the key being set.
+        const current = yield* Option.match(entry, {
+          onSome: (found) => Effect.succeed({ data: found.data, version: found.metadata.version }),
+          onNone: () =>
+            Effect.gen(function* () {
+              const metadataPath = path.replace("/data/", "/metadata/");
+              const found = yield* getOptional("read secret metadata", metadataPath);
+              if (Option.isNone(found)) return { data: {}, version: 0 };
+              const meta = yield* HttpClientResponse.schemaBodyJson(KvMetadata)(found.value).pipe(
+                Effect.mapError(
+                  () =>
+                    new OpenBaoError({
+                      operation: "decode secret metadata",
+                      target: metadataPath,
+                    }),
+                ),
+              );
+              return { data: {}, version: meta.data.current_version };
+            }),
         });
         yield* request("write secret", path, "POST", path, {
           options: { cas: current.version },
