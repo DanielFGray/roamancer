@@ -45,10 +45,11 @@ const stage = Command.make(
     const image = yield* buildAndPush(folder, tree);
     const stageName = `${image.name}-staged`;
     const cartridge = yield* (yield* FileSystem.FileSystem).readFileString(cartridgePath(tree));
-    // A staged deploy is not a release: it sends no origin, so the host records nothing.
+    // A staged deploy is not a release: it sends no origin, so the host records nothing. Its
+    // revision still reaches the tasks as GIT_COMMIT.
     yield* deployStage(
       stageName,
-      { cartridge, origin: "", revision: "", stagedImage: image.tagged },
+      { cartridge, origin: "", revision: image.commit, stagedImage: image.tagged },
       yes,
     );
     yield* Console.log(`Staged ${image.tagged}`);

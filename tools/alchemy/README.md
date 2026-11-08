@@ -230,6 +230,8 @@ Nomad's node and allocation metrics are available for a scraper. The endpoint do
 
 Every Nomad task that Alchemy renders gets `OTEL_EXPORTER_OTLP_ENDPOINT=http://host.containers.internal:4318`. Inside a rootless Podman container the node's LAN address is the container's own address, so only `host.containers.internal` reaches the collector on the host. The value stays the same when the collector restarts, and no task restarts with it. A task's own `environment` entry of the same name replaces it. An app exports a signal only when its cartridge also sets that signal's exporter, for example `OTEL_TRACES_EXPORTER=otlp` and `OTEL_LOGS_EXPORTER=otlp`.
 
+Every task of an app that `ops release`, `ops stage`, `ops promote` or `ops rollback` deploys also gets `GIT_COMMIT`, the short commit that deploy runs, so a health endpoint can report it. The commit comes from the deploy, not from a Docker build argument, because one image can serve every commit with the same tree (`../../docs/design/pr-previews.md`). Platform cartridges get none. A task's own `environment` entry of the same name replaces it.
+
 Plan it in its own stage, named after the cartridge. The stage separates its resources from the platform-data and app resources in local state:
 
 ```sh

@@ -24,11 +24,13 @@ const stack = Alchemy.Stack(
     // of the form `giglist-staged` deploys a staged instance of giglist instead: the same services
     // under suffixed names, on the candidate image, with no public route.
     const stage = yield* Alchemy.Stage;
+    // The app commit this deploy runs, sent by ops release, stage, promote and rollback.
+    const revision = yield* Config.option(Config.String("REVISION"));
     const resources = yield* Option.match(StagedCartridge.baseName(stage), {
       onNone: () =>
         Effect.gen(function* () {
           const cartridge = yield* Cartridge.resolve(Package.root, stage);
-          return Cartridge.expand(cartridge);
+          return Cartridge.expand(cartridge, revision);
         }),
       onSome: (base) =>
         Effect.gen(function* () {
@@ -47,7 +49,7 @@ const stack = Alchemy.Stack(
                 ),
             ),
           );
-          return Cartridge.expand(staged);
+          return Cartridge.expand(staged, revision);
         }),
     }).pipe(
       Effect.provide(Deployments.layer()),

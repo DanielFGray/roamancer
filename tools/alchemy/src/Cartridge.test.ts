@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
 import {
@@ -229,6 +230,27 @@ describe("cartridge v2", () => {
         ],
       }),
     );
+  });
+
+  it("gives every task the deployed commit as GIT_COMMIT, and none without a revision", async () => {
+    const cartridge = await Effect.runPromise(
+      decodeFile(
+        fileURLToPath(new URL("../examples/apps/giglist/cartridge.json", import.meta.url)),
+        AppCartridge,
+      ).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    const commits = (revision: Option.Option<string>) =>
+      expand(cartridge, revision).flatMap((resource) =>
+        resource._tag === "NomadService"
+          ? resource.service.environment.filter((entry) => entry.name === "GIT_COMMIT")
+          : [],
+      );
+
+    assert.deepEqual(commits(Option.some("abc1234")), [
+      { name: "GIT_COMMIT", value: "abc1234" },
+      { name: "GIT_COMMIT", value: "abc1234" },
+    ]);
+    assert.deepEqual(commits(Option.none()), []);
   });
 
   it("rejects a Valkey key prefix entry without valkey", () => {

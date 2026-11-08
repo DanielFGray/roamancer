@@ -314,7 +314,11 @@ const environmentValue = (cartridge: Cartridge, entry: CartridgeEnvironmentEntry
 /** The prefix the cartridge's Valkey user may use: its keys match `<prefix>:*`. */
 const valkeyKeyPrefix = (cartridge: Cartridge) => cartridge.name;
 
-const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => {
+const toRenderedJob = (
+  cartridge: Cartridge,
+  job: CartridgeJob,
+  revision: Option.Option<string>,
+): ExpandedJob => {
   const secrets = job.secrets.map((secret) => mapSecret(cartridge, secret));
   const migrateSecrets = (job.migrate?.secrets ?? []).map((secret) => mapSecret(cartridge, secret));
   const migrate =
@@ -339,7 +343,11 @@ const toRenderedJob = (cartridge: Cartridge, job: CartridgeJob): ExpandedJob => 
     readOnlyMounts: job.readOnlyMounts,
     placement: job.placement,
     routes: job.routes,
-    environment: job.environment.map((entry) => environmentValue(cartridge, entry)),
+    // The cartridge's own GIT_COMMIT entry comes later, so it wins.
+    environment: [
+      ...Option.toArray(Option.map(revision, (commit) => ({ name: "GIT_COMMIT", value: commit }))),
+      ...job.environment.map((entry) => environmentValue(cartridge, entry)),
+    ],
     command: job.command,
     args: job.args,
     connections: job.connections,
@@ -367,7 +375,16 @@ export const postgresAdmin = (entry: Pick<PostgresEntry, "server">) => {
   };
 };
 
-export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> => {
+/**
+ * The resources that deploy `cartridge`. `revision` is the app commit a release, promote, stage
+ * or rollback deploys; every task then gets it as GIT_COMMIT, so an app can report the commit
+ * it runs. The commit comes from the deploy, not the image, because one image can serve every
+ * commit with the same tree (docs/design/pr-previews.md). A platform cartridge has none.
+ */
+export const expand = (
+  cartridge: Cartridge,
+  revision: Option.Option<string> = Option.none(),
+): ReadonlyArray<ExpandedResource> => {
   const databaseResources = cartridge.postgres.map((entry) => {
     const database = entry.database;
     const roles = postgresRoles(database);
@@ -403,7 +420,7 @@ export const expand = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> =>
           } as ExpandedResource,
         ];
 
-  return [...databaseResources, ...valkeyResource, ...orderedJobResources(cartridge)];
+  return [...databaseResources, ...valkeyResource, ...orderedJobResources(cartridge, revision)];
 };
 
 /**
@@ -525,12 +542,15 @@ const configError = (message: unknown, cause?: unknown) =>
  * job only to services declared before it, so each job must come after every job
  * it connects to.
  */
-const orderedJobResources = (cartridge: Cartridge): ReadonlyArray<ExpandedResource> => {
+const orderedJobResources = (
+  cartridge: Cartridge,
+  revision: Option.Option<string>,
+): ReadonlyArray<ExpandedResource> => {
   const jobs = declaredJobs(cartridge);
   const order = Graph.topo(buildJobGraph(jobs.map(({ job }) => job)));
   return [...Graph.values(order)].flatMap((index) => {
     const { _tag, job } = jobs[index];
-    const service = toRenderedJob(cartridge, job);
+    const service = toRenderedJob(cartridge, job, revision);
     const serveResources: ReadonlyArray<ExpandedResource> = job.routes.some(
       (route) => route.access === "tailnet",
     )
