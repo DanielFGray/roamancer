@@ -4,7 +4,7 @@
  * the view keeps updating while a deploy runs.
  */
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
-import { Snapshot } from "../FleetStatus.ts";
+import { Snapshot } from "./Snapshot.ts";
 
 /** The loopback port the fleet service listens on. nixos/modules/alchemy-runner.nix publishes it on the tailnet. */
 export const port = 8780;

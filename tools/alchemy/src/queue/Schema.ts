@@ -4,33 +4,7 @@
  */
 import { Option, Schema as S } from "effect";
 import { DevDbClusterSubmit, DevDbSubmit } from "../devdb/Declaration.ts";
-
-export const JobCommand = S.Literals([
-  "plan",
-  "deploy",
-  "destroy",
-  "rollback",
-  "drift",
-  "state",
-  "deployment",
-  "status",
-  "stage-image",
-  "place-queued",
-  "dev-db",
-  "dev-db-cluster",
-]);
-export type JobCommand = typeof JobCommand.Type;
-
-export const JobState = S.Literals([
-  "queued",
-  "starting",
-  "running",
-  "succeeded",
-  "failed",
-  "interrupted",
-  "canceled",
-]);
-export type JobState = typeof JobState.Type;
+import { JobState } from "./Kinds.ts";
 
 /**
  * plan | destroy | drift: one stage, the cartridge `ops` sent (null: the recorded one), the

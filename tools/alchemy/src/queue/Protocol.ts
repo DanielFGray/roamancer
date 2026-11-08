@@ -3,7 +3,8 @@
  * with Schema before the store or starter runs. Submit carries command-specific data only.
  */
 import { Schema as S } from "effect";
-import { Job, JobState, JobSubmit } from "./Schema.ts";
+import { JobState } from "./Kinds.ts";
+import { Job, JobSubmit } from "./Schema.ts";
 
 /** A submit is a job payload under the `submit` tag; the front end stores it as sent. */
 export const Submit = S.Union(

@@ -16,13 +16,11 @@ import {
   JobNotStarting,
   PlanStale,
 } from "./Errors.ts";
+import { JobCommand, JobState, type JobState as JobStateT } from "./Kinds.ts";
 import {
-  JobCommand,
-  JobState,
   JobSubmit,
   type DeploySubmit,
   type Job as JobT,
-  type JobState as JobStateT,
   type JobSubmit as JobSubmitT,
   recoveryStage,
 } from "./Schema.ts";
