@@ -10,11 +10,19 @@
 import { Context, Effect, Layer, Option, Schema as S, Stdio } from "effect";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
-import { ImageDigest } from "./queue/Protocol.ts";
+import { ImageDigest, SignoffRecord } from "./queue/Protocol.ts";
 import type { JobSubmit } from "./queue/Schema.ts";
 import { Site } from "./Site.ts";
 
 const runner = "alchemy-runner";
+
+export type SignoffSend = {
+  readonly app: string;
+  readonly tree: string;
+  readonly commit: string;
+  readonly summary: string;
+  readonly logSha256: string;
+};
 
 export class Remote extends Context.Service<Remote>()("ops/Remote", {
   make: Effect.gen(function* () {
@@ -38,6 +46,38 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       return yield* S.decodeUnknownEffect(S.NumberFromString)(printed.trim()).pipe(
         Effect.mapError(
           () => new Exec.OpsError({ message: `submit printed no job id: ${printed}` }),
+        ),
+      );
+    });
+
+    /**
+     * Record a local-test signoff on the host (not a job) and return its id. Keeps the same
+     * runner revision check as submit.
+     */
+    const signoff = Effect.fn("Remote.signoff")(function* (record: SignoffSend) {
+      yield* sameRevision;
+      const host = yield* site.host;
+      const printed = yield* Exec.output(
+        "ssh",
+        [host, `${runner} signoff`],
+        JSON.stringify({ _tag: "signoff", ...record }),
+      );
+      return yield* S.decodeUnknownEffect(S.NumberFromString)(printed.trim()).pipe(
+        Effect.mapError(() => new Exec.OpsError({ message: `signoff printed no id: ${printed}` })),
+      );
+    });
+
+    /** The app's signoffs on the host, newest first. */
+    const listSignoffs = Effect.fn("Remote.listSignoffs")(function* (app: string) {
+      yield* sameRevision;
+      const host = yield* site.host;
+      const printed = yield* Exec.output("ssh", [host, `${runner} signoffs`, app]);
+      return yield* S.decodeUnknownEffect(S.fromJsonString(S.Array(SignoffRecord)))(
+        printed.trim() === "" ? "[]" : printed.trim(),
+      ).pipe(
+        Effect.mapError(
+          (error) =>
+            new Exec.OpsError({ message: `signoffs printed invalid JSON: ${error.message}` }),
         ),
       );
     });
@@ -90,10 +130,12 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       readonly key: string;
     }) {
       yield* sameRevision;
-      const printed = (yield* Exec.output("ssh", [
-        yield* site.host,
-        [runner, "image", "find", image.repository, image.key].map(Exec.quote).join(" "),
-      ])).trim();
+      const printed = (
+        yield* Exec.output("ssh", [
+          yield* site.host,
+          [runner, "image", "find", image.repository, image.key].map(Exec.quote).join(" "),
+        ])
+      ).trim();
       if (printed === "") return Option.none<string>();
       if (!S.is(ImageDigest)(printed)) {
         return yield* new Exec.OpsError({
@@ -103,7 +145,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       return Option.some(printed);
     });
 
-    return { submit, run, direct, recordImage, findImage };
+    return { submit, signoff, listSignoffs, run, direct, recordImage, findImage };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);

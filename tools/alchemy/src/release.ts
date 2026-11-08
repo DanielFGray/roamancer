@@ -12,6 +12,7 @@ import * as Git from "./Git.ts";
 import { deployStage, destroyStage } from "./Jobs.ts";
 import { Remote } from "./Remote.ts";
 import { imageDigest } from "./ReleaseImage.ts";
+import { commands as signoffCommands } from "./Signoff.ts";
 
 const folder = Argument.String("folder").pipe(
   Argument.withDescription(
@@ -89,7 +90,7 @@ const discard = Command.make(
 ).pipe(Command.withDescription("Destroy a staged instance"));
 
 /** The release commands, to register under `ops`. */
-export const commands = [release, stage, promote, discard];
+export const commands = [release, stage, promote, discard, ...signoffCommands];
 
 const cartridgePath = (folder: string) => `${folder}/cartridge.json`;
 
