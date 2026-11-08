@@ -45,49 +45,78 @@ const poll = Effect.gen(function* () {
 }).pipe(Effect.provide(FetchHttpClient.layer));
 
 const App = () => (
-  <main>
-    <header>
-      <h1>Fleet</h1>
-      <span class="muted">
-        {snapshot() === null ? "loading" : `as of ${clock(snapshot()!.takenAt)}`}
-      </span>
-      <Show when={failure()}>
-        {(message) => <span class="bad">cannot reach the fleet service: {message()}</span>}
-      </Show>
-      <Show when={snapshot()}>{(taken) => <Dashboards section={taken().dashboards} />}</Show>
+  <>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <h1>
+          <span class="mark" aria-hidden="true" />
+          Fleet
+        </h1>
+        <span class={`live ${failure() === null ? "" : "lost"}`}>
+          <span class="pulse" aria-hidden="true" />
+          {snapshot() === null
+            ? "loading"
+            : failure() === null
+              ? `live · ${clock(snapshot()!.takenAt)}`
+              : `stale · ${clock(snapshot()!.takenAt)}`}
+        </span>
+        <Show when={snapshot()}>{(taken) => <Dashboards section={taken().dashboards} />}</Show>
+      </div>
     </header>
-    <Show when={snapshot()}>
-      {(taken) => (
-        <>
-          <Summary snapshot={taken()} />
-          <Section title="Nodes" section={taken().nodes} key={(node) => node.name} grid>
-            {(node) => <NodeCard node={node()} />}
-          </Section>
-          <Section title="Jobs" section={taken().jobs} key={(job) => job.name}>
-            {(job) => (
-              <JobRow
-                job={job()}
-                dashboards={available(taken().dashboards)}
-                endpoints={available(taken().endpoints)}
-              />
-            )}
-          </Section>
-          <Section title="Runner jobs" section={taken().runner} key={(job) => job.id}>
-            {(job) => <RunnerRow job={job()} />}
-          </Section>
-          <Section
-            title="Apps"
-            section={mapSection(taken().apps, (releases) =>
-              appRows(releases, available(taken().endpoints)),
-            )}
-            key={(app) => app.name}
-          >
-            {(app) => <AppRow app={app()} />}
-          </Section>
-        </>
-      )}
-    </Show>
-  </main>
+    <main>
+      <Show when={failure()}>
+        {(message) => <p class="banner bad">Cannot reach the fleet service: {message()}</p>}
+      </Show>
+      <Show when={snapshot()}>
+        {(taken) => (
+          <>
+            <Summary snapshot={taken()} />
+            <div class="columns">
+              <div class="column">
+                <Section
+                  title="Apps"
+                  section={mapSection(taken().apps, (releases) =>
+                    appRows(releases, available(taken().endpoints)),
+                  )}
+                  key={(app) => app.name}
+                  layout="cards"
+                >
+                  {(app) => <AppCard app={app()} />}
+                </Section>
+                <Section title="Jobs" section={taken().jobs} key={(job) => job.name} layout="rows">
+                  {(job) => (
+                    <JobRow
+                      job={job()}
+                      dashboards={available(taken().dashboards)}
+                      endpoints={available(taken().endpoints)}
+                    />
+                  )}
+                </Section>
+              </div>
+              <aside class="column">
+                <Section
+                  title="Nodes"
+                  section={taken().nodes}
+                  key={(node) => node.name}
+                  layout="stack"
+                >
+                  {(node) => <NodeCard node={node()} />}
+                </Section>
+                <Section
+                  title="Runner jobs"
+                  section={taken().runner}
+                  key={(job) => job.id}
+                  layout="rows"
+                >
+                  {(job) => <RunnerRow job={job()} />}
+                </Section>
+              </aside>
+            </div>
+          </>
+        )}
+      </Show>
+    </main>
+  </>
 );
 
 /** Counts that say at a glance whether anything needs a look. */
@@ -114,7 +143,7 @@ const Summary = (props: { snapshot: Snapshot }) => {
 
 /** A count, coloured only when it is above zero. */
 const Stat = (props: { label: string; value: number; tone: string }) => (
-  <div class={`stat ${props.value > 0 ? props.tone : "muted"}`}>
+  <div class={`stat ${props.value > 0 ? props.tone : "quiet"}`}>
     <strong>{props.value}</strong>
     <span>{props.label}</span>
   </div>
@@ -133,7 +162,8 @@ const Dashboards = (props: { section: SnapshotSection<DashboardLink> }) => (
     >
       <For each={available(props.section)} keyed={(dashboard) => dashboard.name}>
         {(dashboard) => (
-          <a href={dashboard().url} target="_blank" rel="noreferrer">
+          <a class="button" href={dashboard().url} target="_blank" rel="noreferrer">
+            <ChartIcon />
             {dashboard().title}
           </a>
         )}
@@ -146,66 +176,185 @@ type SnapshotSection<A> =
   | { readonly _tag: "Available"; readonly items: ReadonlyArray<A> }
   | { readonly _tag: "Unavailable"; readonly reason: string };
 
-/** A snapshot section: one row per item, or why its source did not answer. */
+/**
+ * A snapshot section: its items, or why its source did not answer. `rows` joins the items
+ * in one panel; `cards` and `stack` give each item its own panel, in a grid or a column.
+ */
 const Section = <A,>(props: {
   title: string;
   section: SnapshotSection<A>;
   key: (item: A) => string | number;
-  grid?: boolean;
+  layout: "rows" | "cards" | "stack";
   children: (item: Accessor<A>) => JSX.Element;
 }) => (
-  <section>
-    <h2>{props.title}</h2>
+  <section class="section">
+    <h2>
+      {props.title}
+      <Show when={props.section._tag === "Available"}>
+        <span class="count">{available(props.section).length}</span>
+      </Show>
+    </h2>
     <Show
       when={props.section._tag === "Unavailable" ? props.section.reason : null}
       fallback={
-        <div class={props.grid ? "grid" : "rows"}>
+        <div class={props.layout}>
           <For
             each={available(props.section)}
             keyed={props.key}
-            fallback={<p class="muted">none</p>}
+            fallback={<p class="empty">none</p>}
           >
             {(item) => props.children(item)}
           </For>
         </div>
       }
     >
-      {(reason) => <p class="bad">unavailable: {reason()}</p>}
+      {(reason) => <p class="banner bad">unavailable: {reason()}</p>}
     </Show>
   </section>
 );
 
-const NodeCard = (props: { node: NodeStatus }) => (
-  <article class="card">
-    <h3>
-      {props.node.name}{" "}
-      <span class={props.node.status === "ready" ? "good" : "bad"}>{props.node.status}</span>
-      <Show when={!props.node.eligible}>
-        <span class="warn"> ineligible</span>
+const AppCard = (props: { app: AppRowItem }) => (
+  <article class="panel app">
+    <div class="app-head">
+      <h3>{props.app.name}</h3>
+      <Show when={props.app.release} fallback={<span class="pill quiet">not released</span>}>
+        {(release) => (
+          <span class="release">
+            <span class="pill">#{release().deployment}</span>
+            <code>{release().revision.slice(0, 8)}</code>
+            <span class="muted">{ago(release().deployedAt)}</span>
+          </span>
+        )}
       </Show>
-    </h3>
+    </div>
+    <Show when={props.app.live.urls.length > 0}>
+      <div class="links">
+        <Links urls={props.app.live.urls} />
+      </div>
+    </Show>
+    <Show when={props.app.release}>
+      {(release) => <p class="jobs muted">{release().jobs.join(" · ")}</p>}
+    </Show>
+    <For each={props.app.previews}>
+      {(preview) => (
+        <div class="preview">
+          <span class="pill accent">staged</span>
+          <span class="muted">{preview.stage}</span>
+          <Show when={preview.revision}>{(revision) => <code>{revision().slice(0, 8)}</code>}</Show>
+          <Links urls={preview.urls} />
+        </div>
+      )}
+    </For>
+  </article>
+);
+
+const JobRow = (props: {
+  job: JobStatus;
+  dashboards: ReadonlyArray<DashboardLink>;
+  endpoints: ReadonlyArray<Endpoint>;
+}) => (
+  <article class="job">
+    <div class="job-head">
+      <span class={`dot ${healthTone[props.job.health]}`} title={props.job.health} />
+      <strong class="name">{props.job.name}</strong>
+      <span class="pill quiet">{props.job.type}</span>
+      <span class="muted">{counts(props.job)}</span>
+      <Show when={props.job.version !== null}>
+        <span class="muted">v{props.job.version}</span>
+      </Show>
+      <span class="actions">
+        <Links
+          urls={props.endpoints
+            .filter((endpoint) => endpoint.job === props.job.name)
+            .map((endpoint) => endpoint.url)}
+        />
+        <Show when={jobDashboardUrl(props.dashboards, props.job.name)}>
+          {(url) => (
+            <a class="chip" href={url()} target="_blank" rel="noreferrer" title="OpenObserve">
+              <ChartIcon />
+              metrics
+            </a>
+          )}
+        </Show>
+      </span>
+    </div>
+    <code class="image" title={props.job.images.join("\n")}>
+      {props.job.images.map(shortImage).join(" ")}
+    </code>
+    <For each={props.job.blockedBy}>{(reason) => <p class="note warn">waiting: {reason}</p>}</For>
+    <For each={props.job.checks.filter((check) => check.status !== "success")}>
+      {(check) => (
+        <p class="note bad">
+          check {check.service}: {check.status}
+        </p>
+      )}
+    </For>
+    <div class="allocs">
+      <For each={props.job.allocations} keyed={(allocation) => allocation.id}>
+        {(allocation) => <AllocationRows allocation={allocation()} />}
+      </For>
+    </div>
+  </article>
+);
+
+/** One line per task of a live allocation: where it runs, since when, and its newest event. */
+const AllocationRows = (props: { allocation: AllocationStatus }) => (
+  <For each={props.allocation.tasks} keyed={(task) => task.name}>
+    {(task) => (
+      <div class="alloc">
+        <code class="muted">{props.allocation.id.slice(0, 8)}</code>
+        <span>{props.allocation.node}</span>
+        <span>{task().name}</span>
+        <span class={`pill ${task().state === "running" ? "good" : "warn"}`}>{task().state}</span>
+        <span class="muted">{ago(task().startedAt ?? props.allocation.createdAt)}</span>
+        <span class="warn">
+          {task().restarts === 0
+            ? ""
+            : task().restarts === 1
+              ? "1 restart"
+              : `${task().restarts} restarts`}
+        </span>
+        <span class="muted event">
+          <Show when={task().lastEvent}>{(event) => event().message || event().type}</Show>
+        </span>
+      </div>
+    )}
+  </For>
+);
+
+const NodeCard = (props: { node: NodeStatus }) => (
+  <article class="panel node">
+    <div class="node-head">
+      <h3>{props.node.name}</h3>
+      <span class={`pill ${props.node.status === "ready" ? "good" : "bad"}`}>
+        {props.node.status}
+      </span>
+      <Show when={!props.node.eligible}>
+        <span class="pill warn">ineligible</span>
+      </Show>
+    </div>
     <Meter
-      label="cpu used"
+      label="CPU used"
       fraction={props.node.cpuPercent === null ? null : props.node.cpuPercent / 100}
     />
-    <Show when={props.node.memoryBytes} fallback={<Meter label="memory used" fraction={null} />}>
+    <Show when={props.node.memoryBytes} fallback={<Meter label="Memory used" fraction={null} />}>
       {(memory) => (
         <Meter
-          label="memory used"
+          label="Memory used"
           fraction={memory().used / memory().total}
-          detail={`${gib(memory().used)} of ${gib(memory().total)}`}
+          detail={`${gib(memory().used)} / ${gib(memory().total)}`}
         />
       )}
     </Show>
     <Meter
-      label="memory reserved"
-      fraction={props.node.reservedMemoryMB.used / props.node.reservedMemoryMB.total}
-      detail={`${props.node.reservedMemoryMB.used} of ${props.node.reservedMemoryMB.total} MB`}
+      label="CPU reserved"
+      fraction={props.node.reservedCpuShares.used / props.node.reservedCpuShares.total}
+      detail={`${props.node.reservedCpuShares.used} / ${props.node.reservedCpuShares.total} MHz`}
     />
     <Meter
-      label="cpu reserved"
-      fraction={props.node.reservedCpuShares.used / props.node.reservedCpuShares.total}
-      detail={`${props.node.reservedCpuShares.used} of ${props.node.reservedCpuShares.total} MHz`}
+      label="Memory reserved"
+      fraction={props.node.reservedMemoryMB.used / props.node.reservedMemoryMB.total}
+      detail={`${props.node.reservedMemoryMB.used} / ${props.node.reservedMemoryMB.total} MB`}
     />
     <For
       each={props.node.disks.filter((disk) => disk.mount !== "/nix/store")}
@@ -213,9 +362,9 @@ const NodeCard = (props: { node: NodeStatus }) => (
     >
       {(disk) => (
         <Meter
-          label={`disk ${disk().mount}`}
+          label={`Disk ${disk().mount}`}
           fraction={disk().bytes.used / disk().bytes.total}
-          detail={`${gib(disk().bytes.used)} of ${gib(disk().bytes.total)}`}
+          detail={`${gib(disk().bytes.used)} / ${gib(disk().bytes.total)}`}
         />
       )}
     </For>
@@ -227,133 +376,61 @@ const Meter = (props: { label: string; fraction: number | null; detail?: string 
   const percent = () => (props.fraction === null ? null : Math.round(props.fraction * 100));
   return (
     <div class="meter">
-      <span>{props.label}</span>
+      <span class="label">{props.label}</span>
+      <span class="muted detail">{props.detail ?? ""}</span>
+      <span class={`num ${level(percent())}`}>{percent() === null ? "?" : `${percent()}%`}</span>
       <div class="bar">
         <div class={`fill ${level(percent())}`} style={{ width: `${percent() ?? 0}%` }} />
       </div>
-      <span class="num">{percent() === null ? "?" : `${percent()}%`}</span>
-      <span class="muted detail">{props.detail ?? ""}</span>
     </div>
   );
 };
 
-const JobRow = (props: {
-  job: JobStatus;
-  dashboards: ReadonlyArray<DashboardLink>;
-  endpoints: ReadonlyArray<Endpoint>;
-}) => (
-  <article class="job">
-    <div class="line">
-      <span class={`dot ${healthTone[props.job.health]}`} title={props.job.health} />
-      <strong>{props.job.name}</strong>
-      <span class="muted">{props.job.type}</span>
-      <span>{counts(props.job)}</span>
-      <span class="muted">{props.job.version === null ? "" : `v${props.job.version}`}</span>
-      <span class="image muted" title={props.job.images.join("\n")}>
-        {props.job.images.map(shortImage).join(" ")}
-      </span>
-      <Links
-        urls={props.endpoints
-          .filter((endpoint) => endpoint.job === props.job.name)
-          .map((endpoint) => endpoint.url)}
-      />
-      <Show when={jobDashboardUrl(props.dashboards, props.job.name)}>
-        {(url) => (
-          <a href={url()} target="_blank" rel="noreferrer">
-            metrics
-          </a>
-        )}
-      </Show>
-    </div>
-    <For each={props.job.blockedBy}>{(reason) => <p class="warn indent">waiting: {reason}</p>}</For>
-    <For each={props.job.checks.filter((check) => check.status !== "success")}>
-      {(check) => (
-        <p class="bad indent">
-          check {check.service}: {check.status}
-        </p>
-      )}
-    </For>
-    <For each={props.job.allocations} keyed={(allocation) => allocation.id}>
-      {(allocation) => <AllocationRows allocation={allocation()} />}
-    </For>
-  </article>
-);
-
-/** One line per task of a live allocation: where it runs, since when, and its newest event. */
-const AllocationRows = (props: { allocation: AllocationStatus }) => (
-  <For each={props.allocation.tasks} keyed={(task) => task.name}>
-    {(task) => (
-      <div class="alloc indent">
-        <code>{props.allocation.id.slice(0, 8)}</code>
-        <span>{props.allocation.node}</span>
-        <span class="muted">v{props.allocation.version}</span>
-        <span>{task().name}</span>
-        <span class={task().state === "running" ? "good" : "warn"}>{task().state}</span>
-        <span class="muted">since {ago(task().startedAt ?? props.allocation.createdAt)}</span>
-        <span class={task().restarts > 0 ? "warn" : "muted"}>
-          {task().restarts === 1 ? "1 restart" : `${task().restarts} restarts`}
-        </span>
-        <Show when={task().lastEvent}>
-          {(event) => (
-            <span class="muted event">
-              {event().message || event().type} ({ago(event().at)})
-            </span>
-          )}
-        </Show>
-      </div>
-    )}
-  </For>
-);
-
 const RunnerRow = (props: { job: RunnerJob }) => (
   <div class="runner">
-    <code>#{props.job.id}</code>
-    <span class={stateTone[props.job.state]}>{props.job.state}</span>
+    <span class={`dot ${stateTone[props.job.state]}`} title={props.job.state} />
     <strong>{props.job.command}</strong>
-    <span>{props.job.subject ?? ""}</span>
-    <span class="muted">{ago(props.job.createdAt)}</span>
-    <span class="muted">{duration(props.job)}</span>
-    <Show when={props.job.exitCode !== null && props.job.exitCode !== 0}>
-      <span class="bad">exit {props.job.exitCode}</span>
-    </Show>
+    <span class="subject" title={props.job.subject ?? ""}>
+      {props.job.subject ?? ""}
+    </span>
+    <span class="when muted">
+      <Show when={props.job.exitCode !== null && props.job.exitCode !== 0}>
+        <span class="bad">exit {props.job.exitCode} · </span>
+      </Show>
+      {ago(props.job.createdAt)}
+      <Show when={duration(props.job)}>{(took) => ` · ${took()}`}</Show>
+    </span>
   </div>
 );
 
-const AppRow = (props: { app: AppRowItem }) => (
-  <div class="app">
-    <strong>{props.app.name}</strong>
-    <Show when={props.app.release} fallback={<span class="muted">not released</span>}>
-      {(release) => (
-        <>
-          <span class="muted">#{release().deployment}</span>
-          <code>{release().revision.slice(0, 8)}</code>
-          <span class="muted">{ago(release().deployedAt)}</span>
-          <span>{release().jobs.join(", ")}</span>
-        </>
-      )}
-    </Show>
-    <Links urls={props.app.live.urls} />
-    <For each={props.app.previews}>
-      {(preview) => (
-        <span class="preview">
-          <span class="muted">{preview.stage}</span>
-          <Show when={preview.revision}>{(revision) => <code>{revision().slice(0, 8)}</code>}</Show>
-          <Links urls={preview.urls} />
-        </span>
-      )}
-    </For>
-  </div>
-);
-
-/** One link per address, named by its host: a tailnet address differs from another by port. */
+/** One chip per address. Its full URL is the chip's tooltip. */
 const Links = (props: { urls: ReadonlyArray<string> }) => (
   <For each={props.urls}>
     {(url) => (
-      <a href={url} target="_blank" rel="noreferrer">
-        {new URL(url).host}
+      <a class="chip" href={url} target="_blank" rel="noreferrer" title={url}>
+        {linkLabel(url)}
+        <ExternalIcon />
       </a>
     )}
   </For>
+);
+
+// Tailnet addresses share the control host's Serve name and differ only by port.
+const linkLabel = (url: string) => {
+  const parsed = new URL(url);
+  return parsed.hostname.endsWith(".ts.net") ? `tailnet :${parsed.port || "443"}` : parsed.host;
+};
+
+const ExternalIcon = () => (
+  <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+    <path d="M6 3h7v7M13 3 4 12" />
+  </svg>
+);
+
+const ChartIcon = () => (
+  <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+    <path d="M2 13h12M4 10l3-3 2 2 4-5" />
+  </svg>
 );
 
 const mapSection = <A, B>(
@@ -375,7 +452,7 @@ const healthTone: Record<JobStatus["health"], string> = {
   healthy: "good",
   degraded: "warn",
   down: "bad",
-  stopped: "muted",
+  stopped: "quiet",
 };
 
 const stateTone: Record<RunnerJob["state"], string> = {
@@ -385,14 +462,14 @@ const stateTone: Record<RunnerJob["state"], string> = {
   succeeded: "good",
   failed: "bad",
   interrupted: "bad",
-  canceled: "muted",
+  canceled: "quiet",
 };
 
 const finished = new Set<RunnerJob["state"]>(["succeeded", "failed", "interrupted", "canceled"]);
 
 // Bars turn amber at 75% and red at 90%.
 const level = (percent: number | null) =>
-  percent === null ? "muted" : percent >= 90 ? "bad" : percent >= 75 ? "warn" : "good";
+  percent === null ? "quiet" : percent >= 90 ? "bad" : percent >= 75 ? "warn" : "good";
 
 const counts = (job: JobStatus) =>
   [

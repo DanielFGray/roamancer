@@ -37,7 +37,7 @@ The secret commands read the `cartridge.json` in the given folder, default the c
 
 ## The fleet page
 
-The fleet service also serves a page with the same snapshot, at `https://<control host>.<tailnet>.ts.net/` on the tailnet. It reads the snapshot again every 5 seconds. Each job row links to the job's addresses and its metrics. Each app row links to the live app's public hosts and lists each staged copy (`<app>-staged`) with the commit it runs and its tailnet address. The addresses come from Alchemy's state, so a resource gets its link when its deploy finishes. The page is a Solid app in `web/`, built with Vite (`bun run build:web` writes `web/dist`). Nix builds it as the `fleet-page` package, and the runner's wrapper gives the fleet service its path as `FLEET_WEB_ROOT`. To work on it, forward the service's port and run Vite's dev server, which forwards `/api` to it:
+The fleet service also serves a page with the same snapshot, at `https://<control host>.<tailnet>.ts.net/` on the tailnet. It reads the snapshot again every 5 seconds. Each job row links to the job's addresses and its metrics. Each app card links to the live app's public hosts and lists each staged copy (`<app>-staged`) with the commit it runs and its tailnet address. The addresses come from Alchemy's state, so a resource gets its link when its deploy finishes. The page is a Solid app in `web/`, built with Vite (`bun run build:web` writes `web/dist`). Nix builds it as the `fleet-page` package, and the runner's wrapper gives the fleet service its path as `FLEET_WEB_ROOT`. To work on it, forward the service's port and run Vite's dev server, which forwards `/api` to it:
 
 ```sh
 ssh -L 8780:127.0.0.1:8780 cynic
