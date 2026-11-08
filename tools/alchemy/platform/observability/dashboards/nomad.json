@@ -459,9 +459,9 @@
         },
         {
           "id": "job-restarts",
-          "type": "line",
-          "title": "Task restarts",
-          "description": "Task restarts per job that Nomad has counted. Nomad drops the count of an allocation 24 hours after its last restart.",
+          "type": "area-stacked",
+          "title": "Restarted allocations",
+          "description": "Allocations of each job with a task restart in the hour before each point. Nomad keeps a restart count for 24 hours after the restart.",
           "config": {
             "show_legends": true,
             "legends_position": null,
@@ -481,7 +481,7 @@
           "queryType": "promql",
           "queries": [
             {
-              "query": "sum by (exported_job) (nomad_client_allocs_restart)",
+              "query": "count by (exported_job) (max_over_time(nomad_client_allocs_restart[1h]))",
               "vrlFunctionQuery": "",
               "customQuery": true,
               "fields": {
@@ -523,7 +523,7 @@
           "id": "job-failures",
           "type": "bar",
           "title": "Failed allocations",
-          "description": "Allocations that failed per job in the hour before each point.",
+          "description": "Allocations that failed per job in the hour before each bar. No bars means that no allocation failed.",
           "config": {
             "show_legends": true,
             "legends_position": null,
@@ -543,7 +543,7 @@
           "queryType": "promql",
           "queries": [
             {
-              "query": "sum by (exported_job) (increase(nomad_nomad_job_summary_failed[1h]))",
+              "query": "sum by (exported_job) (increase(nomad_nomad_job_summary_failed[1h])) > 0",
               "vrlFunctionQuery": "",
               "customQuery": true,
               "fields": {

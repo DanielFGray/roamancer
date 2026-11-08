@@ -211,7 +211,7 @@
           "id": "latency",
           "type": "line",
           "title": "p95 latency",
-          "description": "The 95th percentile of server span duration per service.",
+          "description": "The 95th percentile of server span duration per service. A dot is one time bucket; most buckets have few requests.",
           "config": {
             "show_legends": true,
             "legends_position": null,
@@ -226,7 +226,8 @@
             "drilldown": [],
             "mark_line": [],
             "override_config": [],
-            "mappings": []
+            "mappings": [],
+            "show_symbol": true
           },
           "queryType": "sql",
           "queries": [
@@ -758,7 +759,7 @@
           "id": "warnings",
           "type": "table",
           "title": "Warnings and errors",
-          "description": "The newest 100 log lines at severity WARN or above. Times are UTC.",
+          "description": "The newest 100 log lines at severity WARN or above. No rows means that nothing logged a warning. Times are UTC.",
           "config": {
             "show_legends": true,
             "legends_position": null,
@@ -778,7 +779,7 @@
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT to_char(to_timestamp_micros(_timestamp), '%Y-%m-%d %H:%M:%S') AS \"time\", service_name AS \"service\", severity AS \"severity\", body AS \"message\", exception_type AS \"exception\", exception_message AS \"detail\" FROM \"default\" WHERE severity_number >= 13 ORDER BY _timestamp DESC LIMIT 100",
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp), '%Y-%m-%d %H:%M:%S') AS \"time\", service_name AS \"service\", severity AS \"severity\", coalesce(nullif(body, ''), log_error, exception_type || ': ' || exception_message) AS \"message\", exception_type AS \"exception\", exception_message AS \"detail\" FROM \"default\" WHERE severity_number >= 13 ORDER BY _timestamp DESC LIMIT 100",
               "vrlFunctionQuery": "",
               "customQuery": true,
               "fields": {
@@ -901,7 +902,7 @@
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT to_char(to_timestamp_micros(_timestamp), '%Y-%m-%d %H:%M:%S') AS \"time\", service_name AS \"service\", severity AS \"severity\", body AS \"message\" FROM \"default\" WHERE coalesce(body, '') <> 'Sent HTTP response' ORDER BY _timestamp DESC LIMIT 100",
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp), '%Y-%m-%d %H:%M:%S') AS \"time\", service_name AS \"service\", severity AS \"severity\", coalesce(nullif(body, ''), log_error, exception_type || ': ' || exception_message) AS \"message\" FROM \"default\" WHERE coalesce(body, '') <> 'Sent HTTP response' ORDER BY _timestamp DESC LIMIT 100",
               "vrlFunctionQuery": "",
               "customQuery": true,
               "fields": {
