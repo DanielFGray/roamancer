@@ -1,0 +1,13 @@
+#!/usr/bin/env bun
+// How foreman decides server-ansible works: it runs this in the proving ground
+// on each side of a landing, so it checks the merged tree, not only a branch.
+//
+// The NixOS host configurations are not evaluated here: the workstation has no
+// Nix, and `ops rebuild` evaluates each host's configuration on that host.
+import { $ } from "bun";
+
+$.cwd(`${import.meta.dir}/../tools/alchemy`);
+await $`bun run typecheck`;
+await $`bun run format`;
+await $`bun run lint`;
+await $`bun run test`;
