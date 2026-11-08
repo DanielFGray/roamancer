@@ -29,11 +29,7 @@ export interface GeneratedSecret extends Alchemy.Resource<
   { id: string; path: string }
 > {}
 
-// Platform-data state names its three admin passwords by the type's former name; each row
-// takes the new name on its next write.
-export const GeneratedSecret = Alchemy.Resource<GeneratedSecret>("Generated.Secret", {
-  aliases: ["Admin.Credential"],
-});
+export const GeneratedSecret = Alchemy.Resource<GeneratedSecret>("Generated.Secret");
 
 /** Where a server keeps its admin password, under the key `password`. */
 export const adminCredentialPath = (engine: "postgres" | "valkey" | "garage", server: string) =>
