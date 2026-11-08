@@ -55,6 +55,34 @@
         "connections": [],
         "secrets": []
       }
+    },
+    {
+      "_tag": "GarageServer",
+      "service": {
+        "name": "garage",
+        "image": "The push refers to repository [registry.cluster:5000/platform-garage]\n8e5a8085a03d: Preparing\n625f20f465a9: Preparing\nf7f15304d9b8: Preparing\n7c224968827a: Preparing\ne373ab6375ac: Preparing\n1b0a4c1656bc: Preparing\n99e6204d78fa: Preparing\n0bac51678998: Preparing\n6b4c77d13eaf: Preparing\neadae3f32514: Preparing\nc0fac13354c5: Preparing\n1686b11fc2f9: Preparing\ne45301fd64c5: Preparing\n3332994856dd: Preparing\n15ae3c8cc89e: Preparing\n1f28b9b82de4: Preparing\ne8efdf75437e: Preparing\ne75a646dd3ca: Preparing\n4a169bd3900c: Preparing\nba4356a409ae: Preparing\nad5162bf0d0f: Preparing\nc0fac13354c5: Waiting\n1686b11fc2f9: Waiting\ne45301fd64c5: Waiting\n3332994856dd: Waiting\n1b0a4c1656bc: Waiting\n15ae3c8cc89e: Waiting\n99e6204d78fa: Waiting\n1f28b9b82de4: Waiting\nba4356a409ae: Waiting\ne8efdf75437e: Waiting\ne75a646dd3ca: Waiting\nad5162bf0d0f: Waiting\n4a169bd3900c: Waiting\n0bac51678998: Waiting\n6b4c77d13eaf: Waiting\neadae3f32514: Waiting\ne373ab6375ac: Mounted from probe\n7c224968827a: Mounted from probe\n625f20f465a9: Pushed\n8e5a8085a03d: Pushed\n1b0a4c1656bc: Mounted from probe\n99e6204d78fa: Mounted from probe\n0bac51678998: Mounted from probe\neadae3f32514: Mounted from probe\nc0fac13354c5: Mounted from probe\n1686b11fc2f9: Mounted from probe\ne45301fd64c5: Mounted from probe\n3332994856dd: Mounted from probe\n15ae3c8cc89e: Mounted from probe\n1f28b9b82de4: Mounted from probe\ne8efdf75437e: Mounted from probe\ne75a646dd3ca: Mounted from probe\n4a169bd3900c: Mounted from probe\nba4356a409ae: Mounted from probe\nad5162bf0d0f: Mounted from probe\n6b4c77d13eaf: Pushed\nf7f15304d9b8: Pushed\n2.4.1: digest: sha256:aa1532f2f595012592463171b3288eeceec219987c8405df9f148ac702f98ac7 size: 4724\nregistry.cluster:5000/platform-garage@sha256:aa1532f2f595012592463171b3288eeceec219987c8405df9f148ac702f98ac7",
+        "hostPort": "dynamic",
+        "containerPort": 3900,
+        "ports": [
+          {
+            "name": "admin",
+            "containerPort": 3903
+          }
+        ],
+        "healthCheck": {
+          "type": "tcp"
+        },
+        "cpu": 200,
+        "memoryMB": 256,
+        "networkMode": "bridge",
+        "storage": {
+          "volume": "garage-data",
+          "mountPath": "/var/lib/garage"
+        },
+        "environment": [],
+        "connections": [],
+        "secrets": []
+      }
     }
   ],
   "services": []

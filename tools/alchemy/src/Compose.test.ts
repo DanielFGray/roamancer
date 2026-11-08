@@ -354,26 +354,23 @@ describe("Compose", () => {
 
   it("gives platform/data server jobs one admin KvSecret each", async () => {
     const cartridge = readCartridge("../platform/data/cartridge.json");
-    const resources = expand(cartridge);
     const { constructors, nomadJobCalls } = makeConstructors();
 
-    await Effect.runPromise(compose(resources, constructors));
+    await Effect.runPromise(compose(expand(cartridge), constructors));
 
-    const pgJob = nomadJobCalls.find((call) => call.id === "postgres");
-    assert.ok(pgJob);
-    assert.equal((pgJob.props.secrets ?? []).length, 1);
-    const pgSecret = (pgJob.props.secrets ?? [])[0];
-    assert.equal(pgSecret._tag, "KvSecret");
-    assert.equal(pgSecret.env, "POSTGRES_PASSWORD");
-    assert.equal(pgSecret.path, "secret/data/postgres/servers/postgres");
-
-    const vkJob = nomadJobCalls.find((call) => call.id === "valkey");
-    assert.ok(vkJob);
-    assert.equal((vkJob.props.secrets ?? []).length, 1);
-    const vkSecret = (vkJob.props.secrets ?? [])[0];
-    assert.equal(vkSecret._tag, "KvSecret");
-    assert.equal(vkSecret.env, "VALKEY_ADMIN_PASSWORD");
-    assert.equal(vkSecret.path, "secret/data/valkey/servers/valkey");
+    // Each image reads its admin credential from this variable.
+    for (const [job, env, path] of [
+      ["postgres", "POSTGRES_PASSWORD", "secret/data/postgres/servers/postgres"],
+      ["valkey", "VALKEY_ADMIN_PASSWORD", "secret/data/valkey/servers/valkey"],
+      ["garage", "GARAGE_ADMIN_TOKEN", "secret/data/garage/servers/garage"],
+    ]) {
+      const secrets = nomadJobCalls.find((call) => call.id === job)?.props.secrets;
+      assert.deepEqual(
+        secrets?.map((secret) => (secret._tag === "KvSecret" ? [secret.env, secret.path] : [])),
+        [[env, path]],
+        job,
+      );
+    }
   });
 
   it("resolves otel-collector connection to openobserve resource id", async () => {
