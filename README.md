@@ -26,7 +26,8 @@ Around those:
 - **PostgreSQL and Valkey** run once, as a shared `platform-data` cartridge. An app asks for a
   database or a key prefix, and the platform creates the login.
 - **Staged releases** run a candidate beside the live release at a preview address. You promote it
-  or roll back by changing which release is selected. Only stateless services are supported.
+  or roll back by changing which release is selected. The staged copy gets its own databases and
+  refuses a service that writes a host volume.
 - **Tailscale Serve** can publish a route on your tailnet only, with no public DNS.
 
 A **cartridge** is a versioned JSON file that lists an app's services, images, ports, volumes,
@@ -238,8 +239,8 @@ Open work:
   had about 5.7 seconds of failed HTTP probes during replacement.
 - Avoid in-place changes to a selected release's Nomad job settings during a rollout; they can
   replace the running allocation.
-- Add traffic splitting for A/B tests. Candidate preview, promotion, and rollback work for stateless
-  services only.
+- Add traffic splitting for A/B tests. Candidate preview, promotion, and rollback work for services
+  that write no host volume.
 - Prove migrations and dependency provisioning end to end. Migration tasks and dependency ordering
   exist; stateful updates and data-safe rollback are open.
 - Build and publish immutable application images from the platform.
