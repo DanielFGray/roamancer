@@ -55,6 +55,24 @@ export const leasePort = (portsInUse: ReadonlyArray<number>): Option.Option<numb
   );
 };
 
+/**
+ * Where a Serve resource forwards and whether Serve must be told: the recorded port stays this
+ * resource's lease, whatever it serves now; a new resource takes the lowest free port. None
+ * means the lease range is exhausted.
+ */
+export const planServe = (
+  status: ServeStatus,
+  recordedPort: Option.Option<number>,
+  target: string,
+): Option.Option<{ readonly port: number; readonly serve: boolean }> =>
+  Option.map(
+    Option.orElse(recordedPort, () => leasePort(Object.keys(status.TCP).map(Number))),
+    (port) => ({
+      port,
+      serve: Option.getOrUndefined(servedTarget(status.Web, port)) !== target,
+    }),
+  );
+
 export const TailscaleServeProps = S.Struct({
   // The path before each request, which tells Traefik the job (Job.tailnetPath).
   path: S.String,
@@ -64,7 +82,7 @@ export type TailscaleServeProps = typeof TailscaleServeProps.Type;
 export interface TailscaleServe extends Alchemy.Resource<
   "Tailscale.Serve",
   TailscaleServeProps,
-  { id: string; port: number; url: string; target: string }
+  { id: string; port: number; url: string }
 > {}
 export const TailscaleServe = Alchemy.Resource<TailscaleServe>("Tailscale.Serve");
 
@@ -134,22 +152,6 @@ export const TailscaleServeProvider = Provider.effect(
       stables: ["id"],
       reconcile: Effect.fn(function* ({ news, output, fqn }) {
         const status = yield* decodeCommand(ServeStatus, ["serve", "status", "--json"]);
-        // A recorded port stays this resource's lease, whatever it serves now.
-        const port = yield* Option.match(
-          output === undefined
-            ? leasePort(Object.keys(status.TCP).map(Number))
-            : Option.some(output.port),
-          {
-            onNone: () =>
-              Effect.fail(
-                new TailscaleServeError({
-                  operation: "lease",
-                  detail: "ports 9000-9099 are all in use",
-                }),
-              ),
-            onSome: Effect.succeed,
-          },
-        );
         const ingress = yield* firstServiceLocation(
           ingressService,
           nomad.service(ingressService),
@@ -161,17 +163,29 @@ export const TailscaleServeProvider = Provider.effect(
           ),
         );
         const target = `http://${ingress.Address}:${tailnetEntrypoint.port}${news.path}`;
+        const plan = yield* Option.match(
+          planServe(status, Option.fromNullishOr(output?.port), target),
+          {
+            onNone: () =>
+              Effect.fail(
+                new TailscaleServeError({
+                  operation: "lease",
+                  detail: "ports 9000-9099 are all in use",
+                }),
+              ),
+            onSome: Effect.succeed,
+          },
+        );
         const hostname = yield* decodeCommand(TailscaleStatus, ["status", "--json"]).pipe(
           Effect.map((value) => value.Self.DNSName.replace(/\.$/, "")),
         );
-        if (Option.getOrUndefined(servedTarget(status.Web, port)) !== target) {
-          yield* ensureServed(port, target);
-        }
-        return { id: fqn, port, url: `https://${hostname}:${port}`, target };
+        if (plan.serve) yield* ensureServed(plan.port, target);
+        return { id: fqn, port: plan.port, url: `https://${hostname}:${plan.port}` };
       }),
       delete: Effect.fn(function* ({ output }) {
         const status = yield* decodeCommand(ServeStatus, ["serve", "status", "--json"]);
-        if (Option.getOrUndefined(servedTarget(status.Web, output.port)) === output.target) {
+        // The recorded port is this resource's lease, so it goes off whatever it serves now.
+        if (Option.isSome(servedTarget(status.Web, output.port))) {
           yield* commandOutput(["serve", `--https=${output.port}`, "off"]);
         }
       }),

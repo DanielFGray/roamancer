@@ -291,11 +291,7 @@ const hostNetworkPorts = S.makeFilter(
     hostPort: string | number;
     containerPort: number;
     ports?: ReadonlyArray<NamedPort>;
-    routes?: ReadonlyArray<Route>;
   }) => {
-    if (job.networkMode === "host" && job.routes?.some((route) => route.access === "tailnet")) {
-      return "tailnet routes require bridge or pasta networking";
-    }
     if (job.networkMode === "host" && (job.ports?.length ?? 0) > 0) {
       return "named ports require bridge or pasta networking";
     }

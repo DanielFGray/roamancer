@@ -2,7 +2,13 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Option from "effect/Option";
 import * as S from "effect/Schema";
-import { leasePort, ServeStatus, TailscaleStatus, servedTarget } from "./TailscaleServe.ts";
+import {
+  leasePort,
+  planServe,
+  ServeStatus,
+  TailscaleStatus,
+  servedTarget,
+} from "./TailscaleServe.ts";
 
 describe("Tailscale Serve port lease", () => {
   it("chooses the lowest unused port in the lease range", () => {
@@ -69,5 +75,36 @@ describe("Tailscale Serve target", () => {
   it("reads none for a port that serves nothing", () => {
     assert.deepEqual(servedTarget({}, 9000), Option.none());
     assert.deepEqual(servedTarget(web, 9001), Option.none());
+  });
+});
+
+describe("Tailscale Serve plan", () => {
+  const target = "http://10.13.37.83:18081/_tailnet/openobserve/";
+  const serving = (port: number, proxy: string) => ({
+    TCP: { [port]: { HTTPS: true } },
+    Web: { [`cynic.tail.example:${port}`]: { Handlers: { "/": { Proxy: proxy } } } },
+  });
+
+  it("leases the lowest free port for a new resource and serves it", () => {
+    const status = serving(9000, "http://other/");
+    assert.deepEqual(
+      planServe(status, Option.none(), target),
+      Option.some({ port: 9001, serve: true }),
+    );
+  });
+
+  it("keeps the recorded port and serves it again when it proxies an old target", () => {
+    const status = serving(9000, "http://127.0.0.1:10000");
+    assert.deepEqual(
+      planServe(status, Option.some(9000), target),
+      Option.some({ port: 9000, serve: true }),
+    );
+  });
+
+  it("leaves Serve alone when the recorded port already proxies the target", () => {
+    assert.deepEqual(
+      planServe(serving(9000, target), Option.some(9000), target),
+      Option.some({ port: 9000, serve: false }),
+    );
   });
 });

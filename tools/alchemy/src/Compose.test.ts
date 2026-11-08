@@ -66,7 +66,6 @@ const makeConstructors = () => {
         id: `${id}-ts`,
         port: 9000,
         url: `https://cynic.tail.example:9000`,
-        target: `http://10.13.37.83:18081${props.path}`,
       });
     },
     AdminCredential: (id: string, props: AdminCredentialProps) => {

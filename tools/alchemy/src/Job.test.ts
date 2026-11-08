@@ -12,25 +12,6 @@ describe("Nomad workload rendering", () => {
     assert.deepEqual(S.decodeUnknownSync(Route)({ access: "tailnet" }), { access: "tailnet" });
   });
 
-  it("rejects tailnet routes on host networking with a specific reason", () => {
-    assert.throws(
-      () =>
-        S.decodeUnknownSync(Job)({
-          name: "preview",
-          image: "image",
-          hostPort: 80,
-          containerPort: 80,
-          cpu: 100,
-          memoryMB: 128,
-          networkMode: "host",
-          environment: [],
-          connections: [],
-          routes: [{ access: "tailnet" }],
-        }),
-      /tailnet routes require bridge or pasta networking/,
-    );
-  });
-
   it("rejects a job with two tailnet routes", () => {
     assert.equal(
       S.decodeUnknownOption(Job)({
