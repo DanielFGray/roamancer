@@ -3,8 +3,8 @@
 # The Nomad listeners are bound to loopback, so only local processes can reach
 # the API. Loopback is not an identity: a workload that can reach the host
 # loopback can call the API. This module turns on Nomad's ACL enforcement and
-# gives the staged Alchemy commands a narrow token, the operator a read-only
-# token, and the ingress job a narrow policy.
+# gives the staged Alchemy commands a narrow token, the operator and the fleet
+# service read-only tokens, and the ingress job a narrow policy.
 #
 # Credentials never enter the Nix store. The store holds the ACL policy and
 # the operator scripts; the tokens live in root-owned runtime files under
@@ -28,11 +28,6 @@ let
         "submit-job",
         "read-logs",
       ]
-    }
-
-    # ops dash: the node list and each node's measured use.
-    node {
-      policy = "read"
     }
 
     host_volume "noneuclid-data" {
@@ -176,7 +171,8 @@ let
   # readerUser: owner-only files (0400) for the human operator.
   # The credential directory (tmpfiles, 0711 root) lets each reader traverse to the
   # file it may read; every file carries its own owner and mode.
-  issueScript = { command, policyName, file, readerGroup ? null, readerUser ? null }:
+  # tokenName: the name `nomad acl token list` shows; the policy name unless set.
+  issueScript = { command, policyName, file, tokenName ? policyName, readerGroup ? null, readerUser ? null }:
     pkgs.writeShellScriptBin command (''
       set -euo pipefail
 
@@ -184,7 +180,8 @@ let
       bootstrap="$dir/bootstrap.token"
       token="$dir/${file}.token"
       env_file="$dir/${file}.env"
-      name=${policyName}
+      name=${tokenName}
+      policy=${policyName}
 
       if [ ! -s "$bootstrap" ]; then
         echo "No bootstrap token at $bootstrap." >&2
@@ -203,7 +200,7 @@ let
       nomad acl token create \
         -name="$name" \
         -type=client \
-        -policy="$name" \
+        -policy="$policy" \
         -t '{{ .SecretID }}' > "$tmp"
 
       unset NOMAD_TOKEN
@@ -253,6 +250,16 @@ let
     policyName = "alchemy-operator";
     file = "operator";
     readerUser = operatorName;
+  };
+
+  # The fleet service (alchemy-fleet, as the runner user) reads what the operator
+  # reads, with a token of its own so either can be revoked alone.
+  issueFleet = issueScript {
+    command = "nomad-acl-issue-fleet";
+    tokenName = "alchemy-fleet";
+    policyName = "alchemy-operator";
+    file = "fleet";
+    readerUser = "alchemy";
   };
 in
 {
@@ -307,5 +314,6 @@ in
     applyCluster
     issueController
     issueOperator
+    issueFleet
   ];
 }

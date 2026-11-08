@@ -103,6 +103,13 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       yield* sql`INSERT INTO schema_migrations (version) VALUES (2)`;
     }
 
+    // `dash` was a job until the fleet service took the snapshot out of the queue. Its rows
+    // record one-time reads, and the schema can no longer decode them.
+    if (!applied.has(3)) {
+      yield* sql`DELETE FROM jobs WHERE command = 'dash'`;
+      yield* sql`INSERT INTO schema_migrations (version) VALUES (3)`;
+    }
+
     const selectJob = SqlSchema.findOne({
       Request: S.Number,
       Result: JobRow,

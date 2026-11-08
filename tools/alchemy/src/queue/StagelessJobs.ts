@@ -107,11 +107,6 @@ export const stageImage = Effect.fn("queue.stageImage")(function* (
   yield* Console.log(image);
 });
 
-/** The fleet dashboard, once. */
-export const dash = Effect.fn("queue.dash")(function* () {
-  yield* Console.log(FleetStatus.render(yield* FleetStatus.snapshot()));
-});
-
 /**
  * Nomad does not retry a queued allocation when a node gains a host volume or memory,
  * so a rebuild that adds either leaves jobs queued until something asks again.

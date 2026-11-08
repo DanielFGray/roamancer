@@ -175,9 +175,13 @@ const dash = Command.make(
   "dash",
   {},
   Effect.fn(function* () {
-    yield* (yield* Remote).run({ command: "dash" });
+    yield* (yield* Remote).direct(["dash"]);
   }),
-).pipe(Command.withDescription("Every job's health and each node's load, once"));
+).pipe(
+  Command.withDescription(
+    "Each job and its containers, each node, each app release and the newest runner jobs, once",
+  ),
+);
 
 const placeQueued = Command.make(
   "place-queued",

@@ -153,6 +153,24 @@ files without listing the directory or reading `controller.env`. Rotate the
 same way as the controller token: list accessors, run
 `sudo nomad-acl-issue-operator`, then `nomad acl token delete <old-accessor-id>`.
 
+## The fleet service token
+
+The fleet service (`alchemy-fleet`, which `ops dash` and the fleet page read)
+runs as the `alchemy` user and reads the cluster with the `alchemy-operator`
+policy, through a token of its own named `alchemy-fleet`. Issue it once after
+the rebuild that adds the service:
+
+```sh
+sudo nomad-acl-issue-fleet
+```
+
+It writes `/var/lib/nomad-acl/fleet.token` and `fleet.env`, mode 0400, owned by
+`alchemy`. Until they exist the service fails and retries every 30 seconds.
+Rotate it like the operator token. Its reads are the operator policy's, plus
+`GET /v1/allocations?resources=true`, `GET /v1/job/:id/evaluations`,
+`GET /v1/allocation/:id/checks`, `GET /v1/nodes?resources=true` and
+`GET /v1/client/stats?node_id=`, which `read-job` and `node` `read` cover.
+
 ## The Traefik policy
 
 The ingress job reads Nomad services to build its routes. Its workload identity
@@ -167,7 +185,7 @@ else. The job needs no token file.
 | list and inspect jobs and allocations | `list-jobs`, `read-job` |
 | allocation logs | `read-logs` |
 | list namespaces | any namespace capability (granted by the above on `default`) |
-| node list and stats (`ops dash`) | `node` `read` |
+| node list and stats (the fleet service) | `node` `read` |
 
 The policy grants none of `submit-job`, `dispatch-job`, `alloc-exec`, or
 `alloc-node-exec`.
@@ -190,16 +208,12 @@ each one.
 | `DELETE /v1/job/:id?purge=true` | `submit-job` | `nomad/job_endpoint.go:798` |
 | `GET /v1/job/:id/allocations` | `read-job` | `nomad/job_endpoint.go:1514` |
 | `GET /v1/client/fs/logs/:alloc` | `read-logs` | `client/fs_endpoint.go:385` |
-| `GET /v1/allocations?resources=true` | `read-job` | not traced |
-| `GET /v1/job/:id/evaluations` | `read-job` | not traced |
-| `GET /v1/nodes?resources=true` | `node` `read` | not traced |
-| `GET /v1/client/stats?node_id=` | `node` `read` | not traced |
 | job with a `host` volume | `mount-readwrite` on that volume | `nomad/job_endpoint.go:168` |
 
-The policy grants nothing else. The token can read nodes for `ops dash`, but
-cannot drain or change them. It cannot read operator state, cannot read
-allocations of other namespaces, and cannot reach the `default` namespace
-outside the three job capabilities.
+The policy grants nothing else. The token cannot read, drain or change nodes,
+cannot read operator state, cannot read allocations of other namespaces, and
+cannot reach the `default` namespace outside the three job capabilities. The
+fleet snapshot reads nodes with its own token (below), not this one.
 
 The `host_volume` rules are not decoration. A token with the namespace
 capabilities but without them is refused when it registers a job that mounts a

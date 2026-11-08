@@ -75,6 +75,31 @@ in
       };
     };
 
+    # The fleet service: the snapshot `ops dash` prints and the fleet page polls. It reads
+    # outside the job queue, so it keeps answering while a deploy runs. It runs as alchemy,
+    # the only user that can read the queue and the deployment record, with the read-only
+    # token that `sudo nomad-acl-issue-fleet` writes once; until then it fails and retries.
+    systemd.services.alchemy-fleet = {
+      description = "Alchemy fleet snapshot service";
+      after = [ "network-online.target" "nomad.service" ];
+      wants = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "simple";
+        User = "alchemy";
+        Group = "alchemy";
+        ExecStart = "${cfg.package}/bin/alchemy-runner fleet serve";
+        # HTTPS 443 on this host's MagicDNS name, to the loopback port in
+        # tools/alchemy/src/fleet/Api.ts. Alchemy leases 9000-9099 for app routes, so the
+        # two never meet. Tailscale keeps the setting, so repeating it is harmless. "-": a
+        # host that is not logged in to Tailscale (the testground) still serves on loopback.
+        ExecStartPost = "-${config.services.tailscale.package}/bin/tailscale serve --bg --https=443 http://127.0.0.1:8780";
+        Restart = "on-failure";
+        RestartSec = 30;
+        WorkingDirectory = "/var/lib/alchemy";
+      };
+    };
+
     # Jobs run TailscaleServe's `tailscale serve`, which needs root or the Tailscale
     # operator. Tailscale has one operator, so it is the account that deploys.
     services.tailscale.extraSetFlags = [ "--operator=alchemy" ];

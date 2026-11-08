@@ -68,7 +68,10 @@ describe("Remote", () => {
   it("checks the runner revision once, submits JSON on stdin, then waits", async () => {
     const { log, inputs } = await execute(
       Effect.flatMap(Remote, (remote) =>
-        Effect.andThen(remote.run({ command: "dash" }), remote.run({ command: "place-queued" })),
+        Effect.andThen(
+          remote.run({ command: "status", name: "giglist" }),
+          remote.run({ command: "place-queued" }),
+        ),
       ),
       { output: host },
     );
@@ -84,7 +87,7 @@ describe("Remote", () => {
     assert.deepEqual(
       inputs.map((input) => JSON.parse(input)),
       [
-        { _tag: "submit", command: "dash" },
+        { _tag: "submit", command: "status", name: "giglist" },
         { _tag: "submit", command: "place-queued" },
       ],
     );
@@ -92,7 +95,7 @@ describe("Remote", () => {
 
   it("refuses every job when tools/alchemy differs from the runner's revision", async () => {
     const { log, error } = await execute(
-      Effect.flatMap(Remote, (remote) => remote.run({ command: "dash" })),
+      Effect.flatMap(Remote, (remote) => remote.run({ command: "place-queued" })),
       { output: host, reply: (line) => (line.includes(" diff ") ? 1 : 0) },
     );
     assert.ok(error instanceof OpsError);
@@ -102,7 +105,7 @@ describe("Remote", () => {
 
   it("names a runner revision this checkout lacks, rather than calling it a difference", async () => {
     const { error } = await execute(
-      Effect.flatMap(Remote, (remote) => remote.run({ command: "dash" })),
+      Effect.flatMap(Remote, (remote) => remote.run({ command: "place-queued" })),
       { output: host, reply: (line) => (line.includes(" cat-file ") ? 1 : 0) },
     );
     assert.ok(error instanceof OpsError);

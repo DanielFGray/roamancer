@@ -28,7 +28,11 @@ import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import type { PlatformError } from "effect/PlatformError";
 import * as path from "node:path";
 import * as Cartridge from "./Cartridge.ts";
+import { HttpApiClient } from "effect/http-api";
 import * as Deployments from "./Deployments.ts";
+import * as FleetApi from "./fleet/Api.ts";
+import * as FleetServer from "./fleet/Server.ts";
+import * as FleetStatus from "./FleetStatus.ts";
 import * as NomadLive from "./Nomad.ts";
 import * as Package from "./Package.ts";
 import { Nomad } from "./Nomad.ts";
@@ -70,9 +74,13 @@ export class AlchemyFailed extends S.TaggedError<AlchemyFailed>()("AlchemyFailed
   }
 }
 
-/** Nomad tokens `nomad-acl-issue-<name>` writes: read-write for jobs, read-only for the operator. */
+/**
+ * Nomad tokens `nomad-acl-issue-<name>` writes: read-write for jobs, read-only for the
+ * operator and for the fleet service.
+ */
 const controllerEnvPath = "/var/lib/nomad-acl/controller.env";
 const operatorEnvPath = "/var/lib/nomad-acl/operator.env";
+const fleetEnvPath = "/var/lib/nomad-acl/fleet.env";
 const openBaoAddr = "http://127.0.0.1:8200";
 
 /**
@@ -112,19 +120,20 @@ export const loadNomadEnvironment = Effect.fn("loadNomadEnvironment")(function* 
   } as Record<string, string>;
 });
 
-/** Nomad with the operator's read-only token, for `logs`. */
-const operatorLayer = Layer.unwrap(
-  Effect.map(loadNomadEnvironment(operatorEnvPath), (env) =>
-    NomadLive.layer().pipe(
-      Layer.provideMerge(FetchHttpClient.layer),
-      Layer.provideMerge(
-        ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(env), {
-          asPrimary: true,
-        }),
+/** Nomad with the read-only token an env file holds: the operator's, or the fleet service's. */
+const readOnlyNomad = (file: string) =>
+  Layer.unwrap(
+    Effect.map(loadNomadEnvironment(file), (env) =>
+      NomadLive.layer().pipe(
+        Layer.provideMerge(FetchHttpClient.layer),
+        Layer.provideMerge(
+          ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(env), {
+            asPrimary: true,
+          }),
+        ),
       ),
     ),
-  ),
-);
+  );
 
 /** OpenBao, Nomad and Deployments over `env`, for a job's body. */
 const jobServices = (env: Record<string, string>) =>
@@ -143,7 +152,7 @@ const makeCli = () =>
     Command.withDescription(
       "Submit Alchemy jobs, log in to OpenBao for them, set their KV secrets, and read the fleet's Nomad health and logs",
     ),
-    Command.withSubcommands([submit, wait, version, login, secret, logs, queue, job]),
+    Command.withSubcommands([submit, wait, version, login, secret, logs, dash, fleet, queue, job]),
   );
 
 const submit = Command.make(
@@ -287,36 +296,81 @@ const logs = Command.make(
       Flag.withDescription("How many past lines to print"),
     ),
   },
-  Effect.fn(function* ({ job, tail, lines }) {
-    const nomad = yield* Nomad;
-    const newest = Arr.head(Arr.sort(yield* nomad.allocations(job), TaskLog.newestFirst));
-    if (Option.isNone(newest)) {
-      return yield* new CliError({
-        message: `Nomad has no allocations for job '${job}'.`,
-      });
-    }
-    const allocation = newest.value;
-    // A job that never started has no output; its task events say why, such as a
-    // template blocked on a missing secret or a failed image pull.
-    if (allocation.ClientStatus !== "running") {
-      return yield* Console.log(
-        [
-          `${job}: newest allocation ${allocation.ID.slice(0, 8)} is ${allocation.ClientStatus}`,
-          ...Object.entries(allocation.TaskStates ?? {}).flatMap(([task, state]) =>
-            (state.Events ?? []).map(
-              (event) =>
-                `${new Date(event.Time / 1e6).toISOString()} ${task} ${event.Type}: ${event.DisplayMessage}`,
+  Effect.fn(
+    function* ({ job, tail, lines }) {
+      const nomad = yield* Nomad;
+      const newest = Arr.head(Arr.sort(yield* nomad.allocations(job), TaskLog.newestFirst));
+      if (Option.isNone(newest)) {
+        return yield* new CliError({
+          message: `Nomad has no allocations for job '${job}'.`,
+        });
+      }
+      const allocation = newest.value;
+      // A job that never started has no output; its task events say why, such as a
+      // template blocked on a missing secret or a failed image pull.
+      if (allocation.ClientStatus !== "running") {
+        return yield* Console.log(
+          [
+            `${job}: newest allocation ${allocation.ID.slice(0, 8)} is ${allocation.ClientStatus}`,
+            ...Object.entries(allocation.TaskStates ?? {}).flatMap(([task, state]) =>
+              (state.Events ?? []).map(
+                (event) =>
+                  `${new Date(event.Time / 1e6).toISOString()} ${task} ${event.Type}: ${event.DisplayMessage}`,
+              ),
             ),
-          ),
-        ].join("\n"),
-      );
-    }
-    const show = (line: { readonly timestamp: Date; readonly message: string }) =>
-      Console.log(`${line.timestamp.toISOString()} ${line.message}`);
-    yield* Effect.forEach(yield* TaskLog.recent(nomad, job, { limit: lines }), show);
-    if (tail) yield* Stream.runForEach(TaskLog.follow(nomad, job), show);
-  }, Effect.provide(operatorLayer)),
+          ].join("\n"),
+        );
+      }
+      const show = (line: { readonly timestamp: Date; readonly message: string }) =>
+        Console.log(`${line.timestamp.toISOString()} ${line.message}`);
+      yield* Effect.forEach(yield* TaskLog.recent(nomad, job, { limit: lines }), show);
+      if (tail) yield* Stream.runForEach(TaskLog.follow(nomad, job), show);
+    },
+    Effect.provide(readOnlyNomad(operatorEnvPath)),
+  ),
 ).pipe(Command.withDescription("Print a Nomad job's recent output, or why it is not running"));
+
+const fleetUrl = `http://127.0.0.1:${FleetApi.port}`;
+
+const dash = Command.make(
+  "dash",
+  {},
+  Effect.fn(function* () {
+    const client = yield* HttpApiClient.make(FleetApi.FleetApi, { baseUrl: fleetUrl });
+    const snapshot = yield* client.fleet.snapshot().pipe(
+      Effect.mapError(
+        (error) =>
+          new CliError({
+            message: `the fleet service did not answer at ${fleetUrl} (${error.message}). See systemctl status alchemy-fleet.`,
+          }),
+      ),
+    );
+    yield* Console.log(FleetStatus.render(snapshot));
+  }, Effect.provide(FetchHttpClient.layer)),
+).pipe(Command.withDescription("Print the fleet service's snapshot once"));
+
+const fleetServe = Command.make(
+  "serve",
+  {},
+  Effect.fn(function* () {
+    // The built fleet page; without it the service answers only the API.
+    const webRoot = yield* Config.option(Config.String("FLEET_WEB_ROOT"));
+    yield* Layer.launch(FleetServer.layer({ webRoot })).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          readOnlyNomad(fleetEnvPath),
+          Deployments.layer(),
+          queueStoreLayer(QueuePaths.production.database),
+        ).pipe(Layer.provideMerge(BunServices.layer)),
+      ),
+    );
+  }),
+).pipe(Command.withDescription("Serve the fleet snapshot API and page on loopback"));
+
+const fleet = Command.make("fleet").pipe(
+  Command.withDescription("The fleet service: one read-only snapshot for `dash` and the page"),
+  Command.withSubcommands([fleetServe]),
+);
 
 /**
  * The root token from the terminal's prompt, or from a piped stdin, such as
@@ -480,8 +534,6 @@ export const executeQueuedJob: QueueRun.Execute = (job: QueuedJob, env) =>
           return yield* StagelessJobs.stageImage(submit.name, submit.stable, submit.expect);
         case "place-queued":
           return yield* StagelessJobs.placeQueued();
-        case "dash":
-          return yield* StagelessJobs.dash();
         case "dev-db":
           return yield* DevDbHost.devDbJob(submit);
         case "dev-db-cluster":

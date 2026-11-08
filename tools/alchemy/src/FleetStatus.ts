@@ -1,7 +1,8 @@
 /**
- * One read-only picture of the cluster: each Nomad job's health and why its waiting
- * allocations cannot be placed, and each node's measured use beside what the scheduler
- * has reserved on it. `ops dash` prints it; the fleet web UI serves the same value.
+ * One read-only picture of the cluster: each Nomad job's health, its live containers and
+ * why its waiting allocations cannot be placed; each node's measured use beside what the
+ * scheduler has reserved on it; each app's newest release; and the newest runner jobs.
+ * The fleet service (fleet/Server.ts) serves it; `ops dash` and the fleet page read it there.
  *
  * Each section is read on its own. A section whose source fails is Unavailable with the
  * reason, so a failing node-stats read still shows the jobs.
@@ -13,14 +14,47 @@ import * as Order from "effect/Order";
 import * as S from "effect/Schema";
 import { type Deployment, Deployments } from "./Deployments.ts";
 import { Nomad, type NomadError } from "./Nomad.ts";
-import type { Evaluation, JobListItem, Node, NodeStats, PlacedAllocation } from "./Nomad.ts";
+import type {
+  Evaluation,
+  JobListItem,
+  JobSnapshot,
+  Node,
+  NodeStats,
+  PlacedAllocation,
+} from "./Nomad.ts";
+import { JobCommand, JobState, type Job, subject } from "./queue/Schema.ts";
+import { Store } from "./queue/Store.ts";
 
 export const Health = S.Literals(["healthy", "degraded", "down", "stopped"]);
 export type Health = typeof Health.Type;
 
+const TaskStatus = S.Struct({
+  name: S.String,
+  state: S.String,
+  restarts: S.Number,
+  startedAt: S.NullOr(S.String),
+  // The newest task event: why a task restarted, waits, or failed.
+  lastEvent: S.NullOr(S.Struct({ type: S.String, message: S.String, at: S.String })),
+});
+
+/** One live allocation of a job: a container group on one node. */
+export const AllocationStatus = S.Struct({
+  id: S.String,
+  node: S.String,
+  status: S.String,
+  // The job version it runs; older than the job's while a deployment rolls out.
+  version: S.Number,
+  createdAt: S.String,
+  tasks: S.Array(TaskStatus),
+});
+export type AllocationStatus = typeof AllocationStatus.Type;
+
 export const JobStatus = S.Struct({
   name: S.String,
   type: S.String,
+  // Null when the job was deregistered between the list and the spec read.
+  version: S.NullOr(S.Number),
+  images: S.Array(S.String),
   health: Health,
   running: S.Number,
   starting: S.Number,
@@ -28,6 +62,7 @@ export const JobStatus = S.Struct({
   // Why the scheduler cannot place the queued allocations, one entry per reason.
   blockedBy: S.Array(S.String),
   checks: S.Array(S.Struct({ service: S.String, status: S.String })),
+  allocations: S.Array(AllocationStatus),
 });
 export type JobStatus = typeof JobStatus.Type;
 
@@ -64,30 +99,89 @@ export const AppRelease = S.Struct({
 });
 export type AppRelease = typeof AppRelease.Type;
 
+/** One job of the Alchemy runner queue: an `ops` command on the control host. */
+export const RunnerJob = S.Struct({
+  id: S.Number,
+  command: JobCommand,
+  subject: S.NullOr(S.String),
+  state: JobState,
+  exitCode: S.NullOr(S.Number),
+  createdAt: S.String,
+  startedAt: S.NullOr(S.String),
+  finishedAt: S.NullOr(S.String),
+});
+export type RunnerJob = typeof RunnerJob.Type;
+
 export const Snapshot = S.Struct({
   takenAt: S.String,
   jobs: section(JobStatus),
   nodes: section(NodeStatus),
   // The newest recorded release of each app that `ops release` deployed.
   apps: section(AppRelease),
+  // The newest runner jobs, newest first: what is running, waiting, and what just ended.
+  runner: section(RunnerJob),
 });
 export type Snapshot = typeof Snapshot.Type;
+
+const runnerJobs = 20;
 
 export const snapshot = Effect.fn("FleetStatus.snapshot")(function* () {
   const nomad = yield* Nomad;
   // Both sections place allocations: on a job, and on a node.
   const allocations = yield* Effect.cached(nomad.placedAllocations());
   const deployments = yield* Deployments;
-  const [jobs, nodes, apps] = yield* Effect.all(
+  const store = yield* Store;
+  const [jobs, nodes, apps, runner] = yield* Effect.all(
     [
       available(readJobs(nomad, allocations)),
       available(readNodes(nomad, allocations)),
       available(deployments.newest().pipe(Effect.flatMap(Effect.forEach(appRelease)))),
+      available(store.list({ limit: runnerJobs }).pipe(Effect.map(Arr.map(runnerJob)))),
     ],
     { concurrency: "unbounded" },
   );
-  return { takenAt: new Date().toISOString(), jobs, nodes, apps } satisfies Snapshot;
+  return { takenAt: new Date().toISOString(), jobs, nodes, apps, runner } satisfies Snapshot;
 });
+
+/** A runner job as the snapshot shows it; the payload is reduced to what it acts on. */
+export const runnerJob = (job: Job): RunnerJob => ({
+  id: job.id,
+  command: job.submit.command,
+  subject: subject(job.submit),
+  state: job.state,
+  exitCode: job.exitCode,
+  createdAt: job.createdAt,
+  startedAt: job.startedAt,
+  finishedAt: job.finishedAt,
+});
+
+/** A live allocation as the snapshot shows it, its tasks in name order. */
+export const allocationStatus = (allocation: PlacedAllocation): AllocationStatus => ({
+  id: allocation.ID,
+  node: allocation.NodeName,
+  status: allocation.ClientStatus,
+  version: allocation.JobVersion,
+  createdAt: fromNanos(allocation.CreateTime),
+  tasks: Arr.sort(
+    Object.entries(allocation.TaskStates ?? {}),
+    Order.mapInput(Order.String, ([name]: readonly [string, unknown]) => name),
+  ).map(([name, task]) => ({
+    name,
+    state: task.State,
+    restarts: task.Restarts,
+    startedAt: task.StartedAt ?? null,
+    lastEvent: Arr.last(task.Events ?? []).pipe(
+      Option.map((event) => ({
+        type: event.Type,
+        message: event.DisplayMessage,
+        at: fromNanos(event.Time),
+      })),
+      Option.getOrNull,
+    ),
+  })),
+});
+
+const fromNanos = (nanos: number) => new Date(nanos / 1e6).toISOString();
 
 /**
  * Nomad calls a job "running" while it is registered, even with no allocation placed, so
@@ -205,12 +299,16 @@ const readJob = Effect.fn("FleetStatus.readJob")(function* (
   job: JobListItem,
   allocations: ReadonlyArray<PlacedAllocation>,
 ) {
-  const running = allocations.filter(
-    (allocation) => allocation.JobID === job.ID && allocation.ClientStatus === "running",
+  const live = allocations.filter(
+    (allocation) =>
+      allocation.JobID === job.ID &&
+      (allocation.ClientStatus === "running" || allocation.ClientStatus === "pending"),
   );
-  const found = yield* Effect.forEach(running, (allocation) =>
-    nomad.allocationChecks(allocation.ID),
-  );
+  const running = live.filter((allocation) => allocation.ClientStatus === "running");
+  const [found, spec] = yield* Effect.all([
+    Effect.forEach(running, (allocation) => nomad.allocationChecks(allocation.ID)),
+    nomad.job(job.ID),
+  ]);
   const checks = found.flatMap((checks) =>
     Option.match(checks, {
       onNone: () => [],
@@ -226,10 +324,13 @@ const readJob = Effect.fn("FleetStatus.readJob")(function* (
   return {
     name: job.ID,
     type: job.Type,
+    version: Option.match(spec, { onNone: () => null, onSome: (spec) => spec.Version }),
+    images: Option.match(spec, { onNone: () => [], onSome: images }),
     health: health({ status: job.Status, type: job.Type, checks, ...counts }),
     ...counts,
     blockedBy: counts.queued > 0 ? blockedBy(yield* nomad.evaluations(job.ID)) : [],
     checks,
+    allocations: live.map(allocationStatus),
   } satisfies JobStatus;
 });
 
@@ -251,6 +352,13 @@ const readNodes = Effect.fn("FleetStatus.readNodes")(function* (
     { concurrency: "unbounded" },
   );
 });
+
+/** The distinct images a job's tasks run, in task order. */
+const images = (spec: JobSnapshot): ReadonlyArray<string> => [
+  ...new Set(
+    spec.TaskGroups.flatMap((group) => group.Tasks.flatMap((task) => task.Config.image ?? [])),
+  ),
+];
 
 /** Allocations of the job that wait for a node. */
 export const queued = (job: JobListItem) => count(job, "Queued");
@@ -279,16 +387,34 @@ export const render = (snapshot: Snapshot): string =>
         ...(job.queued > 0 ? [`${job.queued} queued`] : []),
       ].join(", ");
       const failing = job.checks.filter((check) => check.status !== "success");
+      const version = job.version === null ? "" : `  v${job.version}`;
       return [
-        `  ${job.health.padEnd(8)} ${job.name.padEnd(24)} ${job.type.padEnd(7)} ${counts}`,
+        `  ${job.health.padEnd(8)} ${job.name.padEnd(24)} ${job.type.padEnd(7)} ${counts}${version}  ${job.images.join(" ")}`,
         ...job.blockedBy.map((reason) => `           waiting: ${reason}`),
         ...failing.map((check) => `           check ${check.service}: ${check.status}`),
+        ...job.allocations.flatMap((allocation) =>
+          allocation.tasks.map(
+            (task) =>
+              `           ${allocation.id.slice(0, 8)} ${allocation.node.padEnd(10)} v${allocation.version} ${task.name} ${task.state}` +
+              ` since ${minute(task.startedAt ?? allocation.createdAt)}` +
+              (task.restarts > 0 ? `  ${task.restarts} restarts` : "") +
+              (task.lastEvent === null
+                ? ""
+                : `  last: ${task.lastEvent.message || task.lastEvent.type}`),
+          ),
+        ),
       ];
     }),
     ``,
+    `runner`,
+    ...renderSection(snapshot.runner, (job) => [
+      `  #${String(job.id).padEnd(5)} ${job.state.padEnd(11)} ${job.command.padEnd(14)} ${(job.subject ?? "").padEnd(24)} ${minute(job.createdAt)}` +
+        (job.exitCode === null || job.exitCode === 0 ? "" : `  exit ${job.exitCode}`),
+    ]),
+    ``,
     `apps`,
     ...renderSection(snapshot.apps, (app) => [
-      `  ${app.name.padEnd(24)} #${app.deployment} ${app.revision.slice(0, 8)} ${app.deployedAt.slice(0, 16).replace("T", " ")}  ${app.jobs.join(", ")}`,
+      `  ${app.name.padEnd(24)} #${app.deployment} ${app.revision.slice(0, 8)} ${minute(app.deployedAt)}  ${app.jobs.join(", ")}`,
     ]),
     ``,
     `nodes`,
@@ -320,3 +446,6 @@ const usage = (
   `${unit(value.used)}/${unit(value.total)} (${value.total === 0 ? 0 : Math.round((100 * value.used) / value.total)}%)`;
 
 const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)}G`;
+
+// An ISO time to the minute, UTC: "2026-11-07 14:03".
+const minute = (iso: string) => iso.slice(0, 16).replace("T", " ");

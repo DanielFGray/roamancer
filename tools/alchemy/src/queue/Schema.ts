@@ -16,7 +16,6 @@ export const JobCommand = S.Literals([
   "status",
   "stage-image",
   "place-queued",
-  "dash",
   "dev-db",
   "dev-db-cluster",
 ]);
@@ -105,11 +104,6 @@ export const StageImageSubmit = S.Struct({
   expect: S.NullOr(S.NonEmptyString),
 });
 
-/** dash: each job's health, each node's load, and each app's newest release. */
-export const DashSubmit = S.Struct({
-  command: S.Literals(["dash"]),
-});
-
 /** place-queued: ask Nomad to place every job with queued allocations again. */
 export const PlaceQueuedSubmit = S.Struct({
   command: S.Literals(["place-queued"]),
@@ -122,7 +116,6 @@ export const StagelessSubmit = S.Union([
   StatusSubmit,
   StageImageSubmit,
   PlaceQueuedSubmit,
-  DashSubmit,
   DevDbSubmit,
   DevDbClusterSubmit,
 ]);
@@ -150,6 +143,30 @@ export type Job = typeof Job.Type;
 
 /** systemd template unit that runs one job. */
 export const unitName = (id: number) => `alchemy-job@${id}.service`;
+
+/** The stage, app or state path a job acts on, for a person reading the queue. */
+export const subject = (submit: JobSubmit): string | null => {
+  switch (submit.command) {
+    case "plan":
+    case "deploy":
+    case "destroy":
+    case "drift":
+      return submit.stage;
+    case "rollback":
+    case "deployment":
+    case "status":
+    case "stage-image":
+      return submit.name;
+    case "state":
+      return submit.path;
+    case "dev-db":
+      return submit.request.app;
+    case "dev-db-cluster":
+      return submit.action._tag === "Drop" ? submit.action.app : null;
+    case "place-queued":
+      return null;
+  }
+};
 
 /** The stage crash recovery plans again after this job; none for a stageless job. */
 export const recoveryStage = (submit: JobSubmit): Option.Option<string> => {

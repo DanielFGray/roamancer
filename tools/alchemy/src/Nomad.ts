@@ -112,6 +112,8 @@ const TaskState = S.Struct({
   State: S.String,
   Failed: S.Boolean,
   Restarts: S.Number,
+  // RFC 3339; null before the task first starts.
+  StartedAt: S.optionalKey(S.NullOr(S.String)),
   // Why a task is not running: a blocked template, a failed pull, a restart.
   Events: S.NullOr(S.Array(TaskEvent)),
 });
@@ -124,6 +126,7 @@ export const AllocationSummarySchema = S.Struct({
   JobVersion: S.Number,
   // Nanoseconds since the Unix epoch.
   CreateTime: S.Number,
+  // Null until the client starts the allocation's tasks.
   TaskStates: S.NullOr(S.Record(S.String, TaskState)),
 });
 export type AllocationSummary = typeof AllocationSummarySchema.Type;
@@ -134,11 +137,11 @@ const Reservation = S.Struct({
   Memory: S.Struct({ MemoryMB: S.Number }),
 });
 
+/** An allocation in the cluster-wide list: a job's summary plus where it runs and its reservation. */
 export const PlacedAllocationSchema = S.Struct({
-  ID: S.String,
+  ...AllocationSummarySchema.fields,
   JobID: S.String,
   NodeName: S.String,
-  ClientStatus: S.String,
   AllocatedResources: S.NullOr(
     S.Struct({
       Tasks: S.Record(

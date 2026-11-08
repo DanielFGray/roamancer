@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as S from "effect/Schema";
-import { blockedBy, health, nodeStatus } from "./FleetStatus.ts";
+import { allocationStatus, blockedBy, health, nodeStatus, runnerJob } from "./FleetStatus.ts";
 import { NodeSchema, NodeStatsSchema, PlacedAllocationSchema } from "./Nomad.ts";
+import type { Job } from "./queue/Schema.ts";
 
 const job = { status: "running", type: "service", running: 1, starting: 0, queued: 0, checks: [] };
 
@@ -78,8 +79,13 @@ const allocation = (NodeName: string, ClientStatus: string, MemoryMB: number) =>
   S.decodeUnknownSync(PlacedAllocationSchema)({
     ID: "a",
     JobID: "postgres",
+    TaskGroup: "service",
     NodeName,
+    DesiredStatus: "run",
     ClientStatus,
+    JobVersion: 2,
+    CreateTime: 1792860002551104000,
+    TaskStates: null,
     AllocatedResources: {
       Shared: {},
       Tasks: { server: { Cpu: { CpuShares: 500 }, Memory: { MemoryMB, MemoryMaxMB: 0 } } },
@@ -110,5 +116,92 @@ describe("nodeStatus", () => {
     assert.equal(status.cpuPercent, null);
     assert.equal(status.memoryBytes, null);
     assert.deepEqual(status.disks, []);
+  });
+});
+
+describe("allocationStatus", () => {
+  // Trimmed from a valkey allocation on cynic, 2026-11-07.
+  const restarted = S.decodeUnknownSync(PlacedAllocationSchema)({
+    ID: "7dc5b18f-2d61-e4dd-1d82-27d16d1b619e",
+    JobID: "valkey",
+    TaskGroup: "service",
+    NodeName: "cynic",
+    DesiredStatus: "run",
+    ClientStatus: "running",
+    JobVersion: 2,
+    CreateTime: 1792860002551104000,
+    TaskStates: {
+      server: {
+        State: "running",
+        Failed: false,
+        Restarts: 1,
+        StartedAt: "2026-11-01T20:40:07.703298733Z",
+        Events: [
+          {
+            Type: "Restarting",
+            DisplayMessage: "Task restarting in 0s",
+            Time: 1793565607462922240,
+          },
+          { Type: "Started", DisplayMessage: "Task started by client", Time: 1793565607703256320 },
+        ],
+      },
+    },
+    AllocatedResources: null,
+  });
+
+  it("gives each task its restarts and newest event, with Nomad's nanosecond times as ISO", () => {
+    const status = allocationStatus(restarted);
+    assert.equal(status.createdAt, "2026-10-24T16:40:02.551Z");
+    assert.deepEqual(status.tasks, [
+      {
+        name: "server",
+        state: "running",
+        restarts: 1,
+        startedAt: "2026-11-01T20:40:07.703298733Z",
+        lastEvent: {
+          type: "Started",
+          message: "Task started by client",
+          at: "2026-11-01T20:40:07.703Z",
+        },
+      },
+    ]);
+  });
+
+  it("lists no tasks before the client starts them", () => {
+    assert.deepEqual(allocationStatus(allocation("dev", "pending", 64)).tasks, []);
+  });
+});
+
+describe("runnerJob", () => {
+  const job = (submit: Job["submit"]): Job => ({
+    id: 4,
+    submit,
+    state: "succeeded",
+    exitCode: 0,
+    runnerRevision: "abc",
+    createdAt: "2026-11-07T10:00:00.000Z",
+    startedAt: null,
+    finishedAt: null,
+  });
+
+  it("names the stage, app or nothing a job acts on, never its payload", () => {
+    const deploy = runnerJob(
+      job({
+        command: "deploy",
+        stage: "giglist",
+        cartridge: "{}",
+        origin: "o",
+        revision: "r",
+        stagedImage: null,
+        planJobId: 3,
+      }),
+    );
+    assert.equal(deploy.subject, "giglist");
+    assert.ok(!("cartridge" in deploy));
+    assert.equal(
+      runnerJob(job({ command: "rollback", name: "giglist", deploymentId: 2 })).subject,
+      "giglist",
+    );
+    assert.equal(runnerJob(job({ command: "place-queued" })).subject, null);
   });
 });
