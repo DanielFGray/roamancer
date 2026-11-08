@@ -49,10 +49,10 @@ const stage = Command.make(
     // revision still reaches the tasks as GIT_COMMIT.
     yield* deployStage(
       stageName,
-      { cartridge, origin: "", revision: image.commit, stagedImage: image.tagged },
+      { cartridge, origin: "", revision: image.commit, stagedImage: image.pinned },
       yes,
     );
-    yield* Console.log(`Staged ${image.tagged}`);
+    yield* Console.log(`Staged ${image.pinned} (commit ${image.commit})`);
   }, Effect.scoped),
 ).pipe(Command.withDescription("Build and deploy a tailnet-only staged instance"));
 
@@ -67,7 +67,7 @@ const promote = Command.make(
       command: "stage-image",
       name: image.name,
       stable: true,
-      expect: image.tagged,
+      expect: image.pinned,
     });
     yield* deployPinned(folder, tree, image, yes);
     yield* destroyStage(`${image.name}-staged`, yes);
@@ -96,7 +96,10 @@ const committedTree = Effect.fn("committedTree")(function* (folder: string) {
   return tree;
 });
 
-/** Build the exported commit, push it, and retain both the mutable tag and pushed digest. */
+/**
+ * Build the exported commit and push it. Jobs name the image by digest alone: Nomad's Podman
+ * driver refuses a reference that carries both a tag and a digest.
+ */
 const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string, tree: string) {
   const cartridge = yield* Cartridge.decodeFile(cartridgePath(tree), Cartridge.AppCartridge);
   const repository = yield* oneRepository(cartridge, cartridgePath(tree));
@@ -111,7 +114,7 @@ const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string, tree: 
       ),
     onSome: Effect.succeed,
   });
-  return { name: cartridge.name, commit, pinned: `${repository}@${digest}`, tagged: pinnedRef };
+  return { name: cartridge.name, commit, pinned: `${repository}@${digest}` };
 });
 
 /**

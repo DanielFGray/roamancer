@@ -46,7 +46,7 @@ export class WritableStorage extends S.TaggedError<WritableStorage>()("WritableS
 
 /**
  * The staged copy of `cartridge`: every name it derives carries the suffix, every service
- * runs the tagged `image`, and each route is available only from the tailnet. The cartridge
+ * runs `image`, and each route is available only from the tailnet. The cartridge
  * passed in is not touched.
  *
  * An environment entry that names one of the cartridge's databases is replaced by that
