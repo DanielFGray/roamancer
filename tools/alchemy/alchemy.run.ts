@@ -7,7 +7,7 @@ import { providers } from "./src/StackProviders.ts";
 import { NomadJob } from "./src/NomadJob.ts";
 import { PostgresDatabase } from "./src/PostgresDatabase.ts";
 import { ValkeyAccess } from "./src/ValkeyAccess.ts";
-import { AdminCredential } from "./src/AdminCredential.ts";
+import { GeneratedSecret } from "./src/GeneratedSecret.ts";
 import { TailscaleServe } from "./src/TailscaleServe.ts";
 import { OpenObserveDashboard } from "./src/OpenObserveDashboard.ts";
 import { GarageBucket } from "./src/GarageBucket.ts";
@@ -28,7 +28,7 @@ const stack = Alchemy.Stack(
     const stage = yield* Alchemy.Stage;
     // The app commit this deploy runs, sent by ops release, stage, promote and rollback.
     const revision = yield* Config.option(Config.String("REVISION"));
-    const resources = yield* Option.match(StagedCartridge.baseName(stage), {
+    const resources = yield* Option.match(Cartridge.baseName(stage), {
       onNone: () =>
         Effect.gen(function* () {
           const cartridge = yield* Cartridge.resolve(Package.root, stage);
@@ -95,7 +95,7 @@ const stack = Alchemy.Stack(
       | Alchemy.Provider<NomadJob>
       | Alchemy.Provider<PostgresDatabase>
       | Alchemy.Provider<ValkeyAccess>
-      | Alchemy.Provider<AdminCredential>
+      | Alchemy.Provider<GeneratedSecret>
       | Alchemy.Provider<TailscaleServe>
       | Alchemy.Provider<OpenObserveDashboard>
       | Alchemy.Provider<GarageBucket>
@@ -103,7 +103,7 @@ const stack = Alchemy.Stack(
       NomadJob,
       PostgresDatabase,
       ValkeyAccess,
-      AdminCredential,
+      GeneratedSecret,
       TailscaleServe,
       OpenObserveDashboard,
       GarageBucket,

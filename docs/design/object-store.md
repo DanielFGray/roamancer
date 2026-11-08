@@ -28,7 +28,7 @@ MinIO's community edition went into maintenance mode in December 2025, and its r
 - `db_engine = "lmdb"`, the default.
 - The S3 API on port 3900, the RPC port on 127.0.0.1:3901, and the admin API on port 3903.
 
-The admin token comes from OpenBao as `GARAGE_ADMIN_TOKEN`, which Garage reads in place of the config file value. It is the server's admin credential, made by `AdminCredential` like the Postgres and Valkey passwords.
+The admin token comes from OpenBao as `GARAGE_ADMIN_TOKEN`, which Garage reads in place of the config file value. It is the server's admin credential, made by `Generated.Secret` like the Postgres and Valkey passwords.
 
 The RPC secret authenticates one Garage node to another. With one node, only the server and the `garage` command inside the same container use it, over 127.0.0.1. So the start script makes a new random 32-byte secret at each start and writes it to a file in the container that `garage.toml` names. It never leaves the container, and OpenBao does not store it. A second node would need a shared secret in OpenBao.
 

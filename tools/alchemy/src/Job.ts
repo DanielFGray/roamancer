@@ -3,11 +3,17 @@ import * as Match from "effect/Match";
 
 export const ResourceName = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
 const EnvironmentVariable = S.String.check(S.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/));
-const SecretPath = S.String.check(
+export const SecretPath = S.String.check(
   S.isPattern(/^secret\/data\/[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)*$/),
 );
 const DatabaseCredentialPath = S.String.check(S.isPattern(/^database\/creds\/[A-Za-z0-9_.-]+$/));
-const SecretKey = S.String.check(S.isPattern(/^[A-Za-z0-9_-]+$/));
+export const SecretKey = S.String.check(S.isPattern(/^[A-Za-z0-9_-]+$/));
+// At least 32 bytes, as the platform's own admin passwords; 512 is far above any framework's need.
+export const GeneratedBytes = S.Number.check(
+  S.isInt(),
+  S.isGreaterThanOrEqualTo(32),
+  S.isLessThanOrEqualTo(512),
+);
 // An image reference has no spaces or line breaks; a reference pasted with command output does.
 const ImageReference = S.String.check(S.isPattern(/^\S+$/));
 export const DatabaseIdentifier = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
@@ -132,11 +138,22 @@ export const PostgresCredentialsDeclaration = S.TaggedStruct("PostgresCredential
   passwordEnv: S.optionalKey(EnvironmentVariable),
   urlEnv: S.optionalKey(EnvironmentVariable),
 }).check(atLeastOneEnvironmentVariable);
+/**
+ * A random value the platform makes on the first deploy and keeps in OpenBao at
+ * `secret/data/<app>/generated`, for a key such as a session signing secret. The value is the hex
+ * text of `bytes` random bytes, so it has twice as many characters.
+ */
+export const GeneratedSecretDeclaration = S.TaggedStruct("GeneratedSecret", {
+  key: SecretKey,
+  env: EnvironmentVariable,
+  bytes: GeneratedBytes,
+});
 export const CartridgeSecretReference = S.Union([
   KvSecretReference,
   PostgresCredentialsDeclaration,
   ValkeyCredentialsDeclaration,
   ObjectStoreCredentialsDeclaration,
+  GeneratedSecretDeclaration,
 ]);
 export type CartridgeSecretReference = typeof CartridgeSecretReference.Type;
 
@@ -260,11 +277,18 @@ export const ExpandedObjectStoreCredentials = S.TaggedStruct("ObjectStoreCredent
   access: ResourceName,
   ...objectStoreEnvFields(),
 });
+/** A generated key at the path one `Generated.Secret` resource owns; Compose reads it there as a KvSecret. */
+export const ExpandedGeneratedSecret = S.TaggedStruct("GeneratedSecret", {
+  path: SecretPath,
+  key: SecretKey,
+  env: EnvironmentVariable,
+});
 export const ExpandedSecretReference = S.Union([
   KvSecretReference,
   ExpandedPostgresCredentials,
   ExpandedValkeyCredentials,
   ExpandedObjectStoreCredentials,
+  ExpandedGeneratedSecret,
 ]);
 export type ExpandedSecretReference = typeof ExpandedSecretReference.Type;
 

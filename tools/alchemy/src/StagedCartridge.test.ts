@@ -5,8 +5,8 @@ import * as Option from "effect/Option";
 import * as S from "effect/Schema";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
-import { AppCartridge, Cartridge, decodeFile, expand } from "./Cartridge.ts";
-import { ImagesNotShared, WritableStorage, baseName, staged } from "./StagedCartridge.ts";
+import { AppCartridge, Cartridge, baseName, decodeFile, expand } from "./Cartridge.ts";
+import { ImagesNotShared, WritableStorage, staged } from "./StagedCartridge.ts";
 import { routeTags, tailnetPath } from "./Job.ts";
 
 const candidate = "registry.cluster:5000/candidate:abc123@sha256:staged";
@@ -236,6 +236,35 @@ describe("staged cartridge", () => {
     assert.deepEqual(buckets(await stage(live)), [
       { server: "garage", bucket: "giglist", key: "giglist-staged" },
     ]);
+  });
+
+  it("reads the live app's generated secrets, so it can read data the live app stored", async () => {
+    const base = await load("../examples/apps/giglist/cartridge.json");
+    const live: Cartridge = {
+      ...base,
+      services: base.services.map((service) => ({
+        ...service,
+        secrets: [
+          ...service.secrets,
+          { _tag: "GeneratedSecret", key: "session_secret", env: "SESSION_SECRET", bytes: 32 },
+        ],
+      })),
+    };
+    const paths = (cartridge: Cartridge) =>
+      expand(cartridge).flatMap((resource) =>
+        resource._tag === "GeneratedSecret"
+          ? [resource.secret.path]
+          : resource._tag === "NomadService"
+            ? (resource.service.secrets ?? []).flatMap((secret) =>
+                secret._tag === "GeneratedSecret" ? [secret.path] : [],
+              )
+            : [],
+      );
+
+    const livePaths = paths(live);
+    assert.ok(livePaths.length > 1);
+    assert.deepEqual(paths(await stage(live)), livePaths);
+    assert.deepEqual([...new Set(livePaths)], ["secret/data/giglist/generated"]);
   });
 
   it("stages postgres-garden's database, names and image", async () => {

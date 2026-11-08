@@ -9,7 +9,7 @@ import { compose } from "./Compose.ts";
 import { Job } from "./Job.ts";
 import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
-import { AdminCredentialProps } from "./AdminCredential.ts";
+import { GeneratedSecretProps } from "./GeneratedSecret.ts";
 import { TailscaleServeProps } from "./TailscaleServe.ts";
 import type { OpenObserveDashboardProps } from "./OpenObserveDashboard.ts";
 import type { GarageBucketProps } from "./GarageBucket.ts";
@@ -24,7 +24,7 @@ const makeConstructors = () => {
   const nomadJobCalls: Array<{ id: string; props: Job }> = [];
   const postgresDatabaseCalls: Array<{ id: string; props: PostgresDatabaseProps }> = [];
   const valkeyAccessCalls: Array<{ id: string; props: ValkeyAccessConfig }> = [];
-  const adminCredentialCalls: Array<{ id: string; props: AdminCredentialProps }> = [];
+  const generatedSecretCalls: Array<{ id: string; props: GeneratedSecretProps }> = [];
   const tailscaleServeCalls: Array<{ id: string; props: TailscaleServeProps }> = [];
   const dashboardCalls: Array<{ id: string; props: OpenObserveDashboardProps }> = [];
   const garageBucketCalls: Array<{ id: string; props: GarageBucketProps }> = [];
@@ -68,12 +68,9 @@ const makeConstructors = () => {
         url: `https://cynic.tail.example:9000`,
       });
     },
-    AdminCredential: (id: string, props: AdminCredentialProps) => {
-      adminCredentialCalls.push({ id, props });
-      return declare(id, {
-        id: `${id}-ac`,
-        path: `secret/data/${props.engine}/servers/${props.server}`,
-      });
+    GeneratedSecret: (id: string, props: GeneratedSecretProps) => {
+      generatedSecretCalls.push({ id, props });
+      return declare(id, { id: `${id}-gs`, path: props.path });
     },
     GarageBucket: (id: string, props: GarageBucketProps) => {
       garageBucketCalls.push({ id, props });
@@ -94,7 +91,7 @@ const makeConstructors = () => {
     nomadJobCalls,
     postgresDatabaseCalls,
     valkeyAccessCalls,
-    adminCredentialCalls,
+    generatedSecretCalls,
     tailscaleServeCalls,
     dashboardCalls,
     garageBucketCalls,
@@ -218,6 +215,46 @@ describe("Compose", () => {
         },
       ],
     );
+  });
+
+  it("reads a generated secret at its resource's path, in the service and its migration", async () => {
+    const source = readCartridge("../examples/app-needs/cartridge.json");
+    const secret = {
+      _tag: "GeneratedSecret" as const,
+      key: "secret_key_base",
+      env: "SECRET_KEY_BASE",
+      bytes: 64,
+    };
+    const cartridge: Cartridge = {
+      ...source,
+      services: source.services.map((job) => ({
+        ...job,
+        secrets: [...job.secrets, secret],
+        migrate: { command: "migrate", args: [], secrets: [secret] },
+      })),
+    };
+    const { constructors, nomadJobCalls, generatedSecretCalls } = makeConstructors();
+
+    await Effect.runPromise(compose(expand(cartridge), constructors));
+
+    assert.deepEqual(generatedSecretCalls, [
+      {
+        id: "generated-secret-app-needs",
+        props: {
+          path: "secret/data/app-needs/generated",
+          keys: [{ key: "secret_key_base", bytes: 64 }],
+        },
+      },
+    ]);
+    const job = nomadJobCalls.find((call) => call.id === "app-needs")?.props;
+    const read = {
+      _tag: "KvSecret",
+      path: "secret/data/app-needs/generated",
+      key: "secret_key_base",
+      env: "SECRET_KEY_BASE",
+    };
+    assert.deepEqual(job?.secrets?.at(-1), read);
+    assert.deepEqual(job?.migrate?.secrets, [read]);
   });
 
   it("routes migration and api logins to their credential paths", async () => {
@@ -356,7 +393,7 @@ describe("Compose", () => {
 
   it("gives platform/data server jobs one admin KvSecret each", async () => {
     const cartridge = readCartridge("../platform/data/cartridge.json");
-    const { constructors, nomadJobCalls } = makeConstructors();
+    const { constructors, nomadJobCalls, generatedSecretCalls } = makeConstructors();
 
     await Effect.runPromise(compose(expand(cartridge), constructors));
 
@@ -366,6 +403,12 @@ describe("Compose", () => {
       ["valkey", "VALKEY_ADMIN_PASSWORD", "secret/data/valkey/servers/valkey"],
       ["garage", "GARAGE_ADMIN_TOKEN", "secret/data/garage/servers/garage"],
     ]) {
+      // Deployed state holds each password resource under this id, so the id must not change.
+      assert.deepEqual(
+        generatedSecretCalls.find((call) => call.id === `${job}-admin-credential`)?.props,
+        { path, keys: [{ key: "password", bytes: 32 }] },
+        job,
+      );
       const secrets = nomadJobCalls.find((call) => call.id === job)?.props.secrets;
       assert.deepEqual(
         secrets?.map((secret) => (secret._tag === "KvSecret" ? [secret.env, secret.path] : [])),

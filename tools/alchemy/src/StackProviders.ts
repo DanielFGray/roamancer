@@ -5,7 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { NomadJobProvider } from "./NomadJob.ts";
 import { PostgresDatabaseProvider } from "./PostgresDatabase.ts";
 import { ValkeyAccessProvider } from "./ValkeyAccess.ts";
-import { AdminCredentialProvider } from "./AdminCredential.ts";
+import { GeneratedSecretProvider } from "./GeneratedSecret.ts";
 import { TailscaleServeProvider } from "./TailscaleServe.ts";
 import { OpenObserveDashboardProvider } from "./OpenObserveDashboard.ts";
 import { GarageBucketProvider } from "./GarageBucket.ts";
@@ -18,7 +18,7 @@ export const providers = Layer.mergeAll(
   NomadJobProvider(),
   PostgresDatabaseProvider(),
   ValkeyAccessProvider(),
-  AdminCredentialProvider(),
+  GeneratedSecretProvider(),
   TailscaleServeProvider,
   OpenObserveDashboardProvider(),
   GarageBucketProvider(),

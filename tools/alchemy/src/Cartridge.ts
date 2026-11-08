@@ -20,7 +20,11 @@ import { DashboardDocument, OpenObserveDashboardProps } from "./OpenObserveDashb
 import { ExtensionName, postgresRoles, PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { GarageBucketProps } from "./GarageBucket.ts";
-import { adminCredentialPath } from "./AdminCredential.ts";
+import {
+  adminCredentialPath,
+  generatedSecretPath,
+  GeneratedSecretProps,
+} from "./GeneratedSecret.ts";
 import { Deployments } from "./Deployments.ts";
 
 export const AppName = S.String.check(
@@ -150,6 +154,7 @@ export const Cartridge = S.Struct({
       .filter((server) => server.service.migrate !== undefined)
       .map(() => "server declarations may not declare `migrate`");
     issues.push(...secretIssues);
+    issues.push(...generatedSecretIssues(cartridge));
     issues.push(...serverMigrateIssues);
     const declaredJobNames = new Set(allJobs.map((job) => job.name));
     const undeclaredIssues = allJobs.flatMap((job) =>
@@ -205,6 +210,65 @@ export const Cartridge = S.Struct({
 export type Cartridge = typeof Cartridge.Type;
 
 /**
+ * Why the cartridge's generated secrets cannot share one path: one key asked for with two sizes
+ * has no single value, and a KvSecret at the generated path would mix the keys an operator sets
+ * with the keys the platform makes.
+ */
+const generatedSecretIssues = (cartridge: Cartridge): ReadonlyArray<string> => {
+  const references = declaredJobs(cartridge).flatMap(({ job }) => [
+    ...job.secrets,
+    ...(job.migrate?.secrets ?? []),
+  ]);
+  const path = generatedSecretPath(liveName(cartridge.name));
+  const sizes = generatedKeys(cartridge).flatMap(({ key }) => {
+    const found = new Set(
+      references.flatMap((secret) =>
+        secret._tag === "GeneratedSecret" && secret.key === key ? [secret.bytes] : [],
+      ),
+    );
+    return found.size === 1
+      ? []
+      : [`Generated secret '${key}' is declared with ${[...found].join(" and ")} bytes`];
+  });
+  const shared = references.some((secret) => secret._tag === "KvSecret" && secret.path === path)
+    ? [`KV path '${path}' holds generated secrets; use a GeneratedSecret reference`]
+    : [];
+  return [...sizes, ...shared];
+};
+
+/** Each key the cartridge's GeneratedSecret references name, once, with the first size declared. */
+const generatedKeys = (cartridge: Pick<Cartridge, "servers" | "services">) => {
+  const keys = new Map<string, number>();
+  for (const { job } of declaredJobs(cartridge)) {
+    for (const secret of [...job.secrets, ...(job.migrate?.secrets ?? [])]) {
+      if (secret._tag === "GeneratedSecret" && !keys.has(secret.key)) {
+        keys.set(secret.key, secret.bytes);
+      }
+    }
+  }
+  return [...keys].map(([key, bytes]) => ({ key, bytes }));
+};
+
+/**
+ * The suffix every derived name of a staged instance carries, its cartridge name included.
+ * namespaceIssues keeps the segment out of app names, so a name with it is always a copy.
+ */
+export const stagedSuffix = "-staged";
+
+/** The base cartridge name of a stage, none when the stage is not `<name>-staged`. */
+export const baseName = (stage: string): Option.Option<string> =>
+  stage.endsWith(stagedSuffix)
+    ? Option.filter(Option.some(stage.slice(0, -stagedSuffix.length)), (base) => base.length > 0)
+    : Option.none();
+
+/**
+ * The app a cartridge or stage is an instance of: its own name, or for a staged copy the live
+ * app's. A staged copy reads the live app's secrets, generated ones included, because it runs
+ * on a copy of the live database, whose stored data those secrets signed or encrypted.
+ */
+export const liveName = (name: string) => Option.getOrElse(baseName(name), () => name);
+
+/**
  * A cartridge that comes from an app's own repository. Every identity it declares that
  * grants access (Nomad job, and through it the OpenBao role `alchemy-<job>`; database
  * and its roles; KV path; host volume) must lie in the app's namespace, so the `name`
@@ -257,7 +321,7 @@ export const postgresNamespaceIssues = (
 };
 
 const namespaceIssues = (cartridge: Cartridge): ReadonlyArray<string> => {
-  const app = cartridge.name;
+  const app = liveName(cartridge.name);
   const jobs = declaredJobs(cartridge).map(({ job }) => job);
   const kvPaths = jobs.flatMap((job) =>
     [...job.secrets, ...(job.migrate?.secrets ?? [])].flatMap((secret) =>
@@ -299,6 +363,11 @@ export type ExpandedResource =
   | { readonly _tag: "PostgresDatabase"; readonly database: PostgresDatabaseProps }
   | { readonly _tag: "ValkeyAccess"; readonly access: ValkeyAccessConfig }
   | { readonly _tag: "GarageBucket"; readonly bucket: GarageBucketProps }
+  | {
+      readonly _tag: "GeneratedSecret";
+      readonly app: string;
+      readonly secret: GeneratedSecretProps;
+    }
   | { readonly _tag: "TailscaleServe"; readonly serviceName: string }
   | {
       readonly _tag: "OpenObserveDashboard";
@@ -353,6 +422,10 @@ const mapSecret = (
   if (secret._tag === "ObjectStoreCredentials") {
     const { _tag, ...envs } = secret;
     return { _tag, access: cartridge.name, ...envs };
+  }
+  if (secret._tag === "GeneratedSecret") {
+    const { _tag, key, env } = secret;
+    return { _tag, path: generatedSecretPath(liveName(cartridge.name)), key, env };
   }
   // ValkeyCredentials
   const appUnderscore = appIdentifier(cartridge.name);
@@ -503,10 +576,18 @@ export const expand = (
           },
         ];
 
+  const keys = generatedKeys(cartridge);
+  const app = liveName(cartridge.name);
+  const generatedResource: ReadonlyArray<ExpandedResource> =
+    keys.length === 0
+      ? []
+      : [{ _tag: "GeneratedSecret", app, secret: { path: generatedSecretPath(app), keys } }];
+
   return [
     ...databaseResources,
     ...valkeyResource,
     ...objectStoreResource,
+    ...generatedResource,
     ...orderedJobResources(cartridge, revision),
   ];
 };

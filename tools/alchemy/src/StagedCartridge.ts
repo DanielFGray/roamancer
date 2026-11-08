@@ -2,7 +2,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as S from "effect/Schema";
-import { type Cartridge, instanceDatabaseName } from "./Cartridge.ts";
+import { type Cartridge, instanceDatabaseName, stagedSuffix } from "./Cartridge.ts";
 import {
   type CartridgeEnvironmentEntry,
   type CartridgeJob,
@@ -17,8 +17,6 @@ import {
  * routes nothing the live instance owns.
  */
 
-/** The suffix every derived name of a staged instance carries. */
-export const stagedSuffix = "-staged";
 const stagedTailnetRoute: Route = { access: "tailnet" };
 
 /** Refused when the cartridge's services do not all run one image. */
@@ -45,12 +43,6 @@ export class WritableStorage extends S.TaggedError<WritableStorage>()("WritableS
     return `service '${this.service}' of cartridge '${this.cartridge}' writes host volume '${this.volume}'; a staged copy would write the live host volume`;
   }
 }
-
-/** The base cartridge name of a stage, none when the stage is not `<name>-staged`. */
-export const baseName = (stage: string): Option.Option<string> =>
-  stage.endsWith(stagedSuffix)
-    ? Option.filter(Option.some(stage.slice(0, -stagedSuffix.length)), (base) => base.length > 0)
-    : Option.none();
 
 /**
  * The staged copy of `cartridge`: every name it derives carries the suffix, every service

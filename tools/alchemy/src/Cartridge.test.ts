@@ -286,6 +286,93 @@ describe("cartridge v2", () => {
     );
   });
 
+  describe("generated secrets", () => {
+    const generated = (key: string, env: string, bytes: number) => ({
+      _tag: "GeneratedSecret",
+      key,
+      env,
+      bytes,
+    });
+    const chat = (secrets: ReadonlyArray<unknown>, migrate: ReadonlyArray<unknown> = []) => ({
+      apiVersion: "server-ansible/v2",
+      name: "chat",
+      services: [
+        {
+          name: "chat",
+          image: "img",
+          hostPort: "dynamic",
+          containerPort: 80,
+          cpu: 100,
+          memoryMB: 128,
+          networkMode: "bridge",
+          environment: [],
+          connections: [],
+          secrets,
+          migrate: { command: "m", args: [], secrets: migrate },
+        },
+      ],
+    });
+
+    it("expands to one resource at the app's generated path, each key once, before the job", () => {
+      const cartridge = S.decodeUnknownSync(AppCartridge)(
+        chat(
+          [generated("secret_key_base", "SECRET_KEY_BASE", 64), generated("pepper", "PEPPER", 32)],
+          [generated("secret_key_base", "SECRET_KEY_BASE", 64)],
+        ),
+      );
+      const resources = expand(cartridge);
+
+      assert.deepEqual(
+        resources.map((resource) => resource._tag),
+        ["GeneratedSecret", "NomadService"],
+      );
+      assert.deepEqual(resources[0], {
+        _tag: "GeneratedSecret",
+        app: "chat",
+        secret: {
+          path: "secret/data/chat/generated",
+          keys: [
+            { key: "secret_key_base", bytes: 64 },
+            { key: "pepper", bytes: 32 },
+          ],
+        },
+      });
+      const job = resources[1]._tag === "NomadService" ? resources[1].service : undefined;
+      assert.deepEqual(job?.migrate?.secrets, [
+        {
+          _tag: "GeneratedSecret",
+          path: "secret/data/chat/generated",
+          key: "secret_key_base",
+          env: "SECRET_KEY_BASE",
+        },
+      ]);
+      // The platform makes these keys, so the plan-time check of operator-set keys skips them.
+      assert.deepEqual(kvKeys(cartridge), new Map());
+    });
+
+    for (const [what, secrets, message] of [
+      [
+        "a key asked for with two sizes",
+        [generated("k", "A", 32), generated("k", "B", 64)],
+        /Generated secret 'k' is declared with 32 and 64 bytes/,
+      ],
+      [
+        "a KvSecret at the generated path",
+        [{ _tag: "KvSecret", path: "secret/data/chat/generated", key: "k", env: "K" }],
+        /KV path 'secret\/data\/chat\/generated' holds generated secrets/,
+      ],
+      [
+        "fewer than 32 bytes",
+        [generated("k", "K", 16)],
+        /greater than or equal to 32\n  at \["services"\]\[0\]\["secrets"\]\[0\]\["bytes"\]/,
+      ],
+    ] as const) {
+      it(`rejects ${what}`, () => {
+        assert.throws(() => S.decodeUnknownSync(AppCartridge)(chat(secrets)), { message });
+      });
+    }
+  });
+
   it("gives every task the deployed commit as GIT_COMMIT, and none without a revision", async () => {
     const cartridge = await Effect.runPromise(
       decodeFile(

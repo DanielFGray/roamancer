@@ -2,7 +2,7 @@ import * as Alchemy from "alchemy";
 import * as Provider from "alchemy/Provider";
 import { Effect, Option, Redacted, Schema as S } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
-import { adminCredentialPath } from "./AdminCredential.ts";
+import { adminCredentialPath } from "./GeneratedSecret.ts";
 import { portServiceName, ResourceName } from "./Job.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";

@@ -9,7 +9,6 @@ import * as FleetStatus from "../FleetStatus.ts";
 import { Nomad } from "../Nomad.ts";
 import * as Package from "../Package.ts";
 import { sameImageDigest } from "../ReleaseImage.ts";
-import * as StagedCartridge from "../StagedCartridge.ts";
 import * as TaskLog from "../TaskLog.ts";
 import { JobCommandError } from "./Run.ts";
 
@@ -67,9 +66,7 @@ export const stageImage = Effect.fn("queue.stageImage")(function* (
   const cartridge = yield* Cartridge.resolve(Package.root, name);
   const nomad = yield* Nomad;
   // Only application services run the candidate image; a server keeps its own.
-  const jobs = cartridge.services.map(
-    (service) => `${service.name}${StagedCartridge.stagedSuffix}`,
-  );
+  const jobs = cartridge.services.map((service) => `${service.name}${Cartridge.stagedSuffix}`);
   // A staged deploy can stop after registering some jobs, so the jobs Nomad has are enough.
   const snapshots = (yield* Effect.forEach(jobs, (job) => nomad.job(job))).flatMap(Option.toArray);
   if (snapshots.length === 0) {

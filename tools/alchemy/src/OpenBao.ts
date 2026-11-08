@@ -142,10 +142,6 @@ export class OpenBao extends Context.Service<
     readonly readAdminCredential: (
       path: string,
     ) => Effect.Effect<Option.Option<Redacted.Redacted<string>>, OpenBaoError>;
-    readonly writeAdminCredential: (
-      path: string,
-      password: Redacted.Redacted<string>,
-    ) => Effect.Effect<void, OpenBaoError>;
     readonly writeValkeyCredentials: (
       path: string,
       credentials: typeof ValkeyCredentials.Type,
@@ -346,15 +342,6 @@ export class OpenBao extends Context.Service<
         return Option.some(Redacted.make(credential.password));
       });
 
-      const writeAdminCredential = Effect.fn("OpenBao.writeAdminCredential")(function* (
-        path: string,
-        password: Redacted.Redacted<string>,
-      ) {
-        yield* request("write admin credential", path, "PUT", path, {
-          data: { password: Redacted.value(password) },
-        });
-      });
-
       const readKv = Effect.fn("OpenBao.readKv")(function* (path: string, key: string) {
         const response = yield* request("read secret", path, "GET", path);
         const decoded = yield* HttpClientResponse.schemaBodyJson(KvValue)(response).pipe(
@@ -507,7 +494,6 @@ export class OpenBao extends Context.Service<
         readValkeyCredentials,
         writeValkeyCredentials,
         readAdminCredential,
-        writeAdminCredential,
         readPostgresConnectionUrl,
         configurePostgres,
         configureWorkloadRole,

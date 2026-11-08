@@ -264,7 +264,6 @@ const record = (options: {
         readValkeyCredentials: unused,
         writeValkeyCredentials: unused,
         readAdminCredential: unused,
-        writeAdminCredential: unused,
         readPostgresConnectionUrl: unused,
         configurePostgres: unused,
         configureWorkloadRole: unused,

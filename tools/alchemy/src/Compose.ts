@@ -8,7 +8,11 @@ import { Job, ExpandedJob, ExpandedSecretReference, SecretReference, tailnetPath
 import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import type { GarageBucketProps } from "./GarageBucket.ts";
-import { AdminCredentialProps } from "./AdminCredential.ts";
+import {
+  adminCredentialPath,
+  adminPasswordBytes,
+  GeneratedSecretProps,
+} from "./GeneratedSecret.ts";
 import { TailscaleServeProps } from "./TailscaleServe.ts";
 import type { DashboardAttributes, OpenObserveDashboardProps } from "./OpenObserveDashboard.ts";
 
@@ -40,8 +44,13 @@ type DeployedGarageBucket = {
   readonly resource: GarageBucketOutput;
 };
 
-type AdminCredentialOutput = {
+type GeneratedSecretOutput = {
   readonly path: string;
+};
+
+type DeployedGeneratedSecret = {
+  readonly path: string;
+  readonly resource: GeneratedSecretOutput;
 };
 
 type TailscaleServeOutput = {
@@ -76,6 +85,7 @@ export type DeployedState = {
   readonly services: ReadonlyArray<DeployedService>;
   readonly valkeyAccesses: ReadonlyArray<DeployedValkeyAccess>;
   readonly garageBuckets: ReadonlyArray<DeployedGarageBucket>;
+  readonly generatedSecrets: ReadonlyArray<DeployedGeneratedSecret>;
   readonly postgresDatabases: ReadonlyArray<DeployedPostgresDatabase>;
   readonly tailnetServes: ReadonlyArray<DeployedServe>;
   readonly outputs: ReadonlyArray<{
@@ -105,10 +115,10 @@ export type Constructors<R> = {
     id: string,
     props: TailscaleServeProps,
   ) => Effect.Effect<TailscaleServeOutput, never, R>;
-  readonly AdminCredential: (
+  readonly GeneratedSecret: (
     id: string,
-    props: AdminCredentialProps,
-  ) => Effect.Effect<AdminCredentialOutput, never, R>;
+    props: GeneratedSecretProps,
+  ) => Effect.Effect<GeneratedSecretOutput, never, R>;
   readonly OpenObserveDashboard: (
     id: string,
     props: OpenObserveDashboardProps,
@@ -188,11 +198,11 @@ export const compose = <R>(
           Effect.gen(function* () {
             const service = declaration.service;
             const config = serverAdmin[declaration._tag];
-            const adminCredential = yield* constructors.AdminCredential(
+            const adminCredential = yield* constructors.GeneratedSecret(
               `${service.name}-admin-credential`,
               {
-                engine: config.engine,
-                server: service.name,
+                path: adminCredentialPath(config.engine, service.name),
+                keys: [{ key: "password", bytes: adminPasswordBytes }],
               },
             );
             const adminSecret = {
@@ -217,6 +227,20 @@ export const compose = <R>(
                 kind: "GarageBucket",
                 id: resource.id,
                 name: bucket.key,
+              }),
+            };
+          }),
+        ),
+        Match.when({ _tag: "GeneratedSecret" }, ({ app, secret }) =>
+          Effect.gen(function* () {
+            const resource = yield* constructors.GeneratedSecret(`generated-secret-${app}`, secret);
+            return {
+              ...state,
+              generatedSecrets: Arr.append(state.generatedSecrets, { path: secret.path, resource }),
+              outputs: Arr.append(state.outputs, {
+                kind: "GeneratedSecret",
+                id: resource.path,
+                name: app,
               }),
             };
           }),
@@ -287,6 +311,7 @@ const initialState = (): DeployedState => ({
   services: Arr.empty<DeployedService>(),
   valkeyAccesses: Arr.empty<DeployedValkeyAccess>(),
   garageBuckets: Arr.empty<DeployedGarageBucket>(),
+  generatedSecrets: Arr.empty<DeployedGeneratedSecret>(),
   postgresDatabases: Arr.empty<DeployedPostgresDatabase>(),
   tailnetServes: Arr.empty<DeployedServe>(),
   outputs: Arr.empty<{ readonly kind: string; readonly id: string; readonly name: string }>(),
@@ -356,6 +381,15 @@ const resolveSecrets = (secrets: ReadonlyArray<ExpandedSecretReference>, state: 
             server: bucket.resource.server,
             ...envs,
           }),
+        ),
+      ),
+      // The path comes from the resource's output, so the job waits for its keys to exist.
+      Match.when({ _tag: "GeneratedSecret" }, ({ path, key, env }) =>
+        deployed(
+          state.generatedSecrets,
+          (entry) => entry.path === path,
+          `generated secret path '${path}'`,
+          (entry): SecretReference => ({ _tag: "KvSecret", path: entry.resource.path, key, env }),
         ),
       ),
       Match.when({ _tag: "KvSecret" }, (s) => Effect.succeed<SecretReference>(s)),

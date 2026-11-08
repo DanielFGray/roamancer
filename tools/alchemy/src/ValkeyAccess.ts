@@ -8,7 +8,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as S from "effect/Schema";
-import { adminCredentialPath } from "./AdminCredential.ts";
+import { adminCredentialPath } from "./GeneratedSecret.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
 import { OperationJournal } from "./OperationJournal.ts";

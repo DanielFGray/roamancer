@@ -38,7 +38,6 @@ import * as NomadLive from "./Nomad.ts";
 import * as Package from "./Package.ts";
 import { Nomad } from "./Nomad.ts";
 import { OpenBao, OpenBaoError } from "./OpenBao.ts";
-import * as StagedCartridge from "./StagedCartridge.ts";
 import * as TaskLog from "./TaskLog.ts";
 import { request as queueRequest } from "./queue/Client.ts";
 import { LoginRequired } from "./queue/Errors.ts";
@@ -650,7 +649,7 @@ const checkSecrets = Effect.fn("checkSecrets")(function* (
   name: string,
   cartridgeFile: string | undefined,
 ) {
-  const cartridgeName = Option.getOrElse(StagedCartridge.baseName(name), () => name);
+  const cartridgeName = Cartridge.liveName(name);
   const cartridge =
     cartridgeFile === undefined
       ? yield* Cartridge.resolve(Package.root, cartridgeName)

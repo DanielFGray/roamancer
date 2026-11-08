@@ -105,7 +105,7 @@ This proves ordered multi-job deployment, runtime secret delivery, and an authen
 
 ### Shared Valkey service and app access
 
-In v2 a platform cartridge (see `platform/data/cartridge.json`) declares the shared servers once. An app cartridge declares what it needs with `postgres`, `valkey` and `objectStore`; the platform derives the role names, login names and Valkey key prefix from the app name. Every other identity an app cartridge declares must lie in the app's namespace: each database equals the app name (with `_` for `-`) or starts with it and `_`, each service name and host volume equals the app name or starts with it and `-`, and each KV path equals `secret/data/<app>` or lies under it. A service's OpenBao role is `alchemy-<service name>`, so it is in the namespace too. The app name alone then decides what an app can reach, and no app cartridge can claim another app's database, secrets or volume. Route hostnames cannot follow from the name, so the operator reviews them. Platform cartridges declare shared identities such as `postgres` and `traefik`; they are not held to the namespace because they live in this repository. `platform/data` provides `PostgresServer "postgres"`, `ValkeyServer "valkey"` and `GarageServer "garage"`; each generates its own admin password or token through `AdminCredential`.
+In v2 a platform cartridge (see `platform/data/cartridge.json`) declares the shared servers once. An app cartridge declares what it needs with `postgres`, `valkey` and `objectStore`; the platform derives the role names, login names and Valkey key prefix from the app name. Every other identity an app cartridge declares must lie in the app's namespace: each database equals the app name (with `_` for `-`) or starts with it and `_`, each service name and host volume equals the app name or starts with it and `-`, and each KV path equals `secret/data/<app>` or lies under it. A service's OpenBao role is `alchemy-<service name>`, so it is in the namespace too. The app name alone then decides what an app can reach, and no app cartridge can claim another app's database, secrets or volume. Route hostnames cannot follow from the name, so the operator reviews them. Platform cartridges declare shared identities such as `postgres` and `traefik`; they are not held to the namespace because they live in this repository. `platform/data` provides `PostgresServer "postgres"`, `ValkeyServer "valkey"` and `GarageServer "garage"`; each generates its own admin password or token through `Generated.Secret`.
 
 The Valkey server job uses an ACL file on persistent storage and initialises it on first boot so the default user is never passwordless:
 
@@ -192,6 +192,16 @@ The platform creates a `ValkeyAccess` for the app and an ACL user whose key pref
 ```
 
 The `Garage.Bucket` resource (`src/GarageBucket.ts`) gives a new Garage node its storage role, creates the bucket and the key, and keeps the key in OpenBao at `secret/data/garage/<app>`. Garage shows a key's secret only when it creates the key, so OpenBao holds the only copy. Clients must sign for the region `garage` and use path-style addresses (`http://endpoint/bucket/object`). The store has no public route: an app serves its files through its own routes, and presigned URLs do not work outside the cluster. A staged copy gets its own key, `<app>-staged`, on the live bucket. Destroying the resource deletes the key and keeps the bucket and its objects. The design is in `docs/design/object-store.md`.
+
+### Generated secrets
+
+A `GeneratedSecret` reference asks the platform for a random value, such as a session signing key, so no operator makes or stores one by hand:
+
+```json
+{ "_tag": "GeneratedSecret", "key": "secret_key_base", "env": "SECRET_KEY_BASE", "bytes": 64 }
+```
+
+The first deploy writes each key at `secret/data/<app>/generated` as the hex text of `bytes` random bytes (at least 32), so `bytes: 64` gives 128 characters. Later deploys keep the stored value, even when `bytes` changes, and destroying the app keeps it too. To replace the values, run `bao kv metadata delete secret/<app>/generated` on the control host, then deploy: the next deploy makes every generated key of the app again. A plain `bao kv delete` keeps the path's version history, and the next write then fails its check-and-set. A staged copy reads the live app's values, because its database is a copy of the live one. The `Generated.Secret` resource (`src/GeneratedSecret.ts`) also makes each server's admin password. `ops secret` commands handle only the keys an operator sets, so a generated key is never reported as missing.
 
 A job's `ports` list adds container ports beside the service port. Each one gets a dynamic host port and the Nomad service `<job>-<name>`. The Garage job serves S3 on its service port and its admin API on the `admin` port, so the provider finds the admin API as `garage-admin`. Named ports need bridge or pasta networking.
 
