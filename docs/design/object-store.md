@@ -2,7 +2,7 @@
 
 ## Goal
 
-An app declares that it needs file storage, and the platform gives it its own bucket on an S3-compatible server, with an access key that can reach only that bucket. A staged copy of the app gets its own bucket. The store is backed up every night with the other platform data.
+An app declares that it needs file storage, and the platform gives it its own bucket on an S3-compatible server, with an access key that can reach only that bucket. A staged copy of the app uses the live bucket with its own key. The store is backed up every night with the other platform data.
 
 The first users are dfg.rocks (uploaded materials) and rfchat (icons, emoji and chat attachments). Today dfg.rocks writes files to a host volume, and `ops stage` refuses a service that writes a host volume (`StagedCartridge.ts`, `WritableStorage`).
 
@@ -49,9 +49,15 @@ A secret reference `{ "_tag": "ObjectStoreCredentials", ... }` renders the endpo
 
 A Garage job needs two ports: the S3 API for apps and the admin API for the platform. Today a job has one port, which Nomad registers as the service `<job>`. A job gains an optional list of more ports. Each entry has a name and a container port, gets a dynamic host port, and Nomad registers it as the service `<job>-<name>`. Garage declares one more port, `admin`, so the provider finds the admin API as the service `garage-admin`.
 
-### Staged copies get their own bucket
+### Staged copies share the live bucket
 
-A staged copy gets the bucket and key `<app>-staged`. Whether that bucket starts empty or as a copy of the live bucket is an open decision. A copy needs an S3 key, because the admin API does not read or write objects. It would use a platform key that can read the live bucket and write the staged bucket, and it would run in the same step as the database copy, so the copied rows name the copied objects.
+A staged copy gets its own key, `<app>-staged`, which can read and write the live bucket `<app>`. It gets no bucket of its own and no copy of the objects. Its database is a copy of the live database, so its rows name the live objects, and they work without a copy step. The key is its own so that removing the staged copy revokes only the staged key.
+
+The owner chose this on 2026-11-08 and accepted the risk: a staged copy can overwrite or delete a live object, and an upload in a staged copy lands in the live bucket. An app that names each object by a hash of its content (dfg.rocks does) cannot overwrite another object, and an upload from a staged copy leaves only an object that no live row names. A delete in a staged copy still removes the live object. `staged-releases.md` allows this exception.
+
+### Garage runs on cynic
+
+Postgres, Valkey and the nightly restic backups run on cynic, so the backup reads the Garage volume on the same machine.
 
 ### Apps serve their own files
 
@@ -63,11 +69,6 @@ Garage stores objects as blocks that it never changes after it writes them, and 
 
 The snapshot and the data match except for writes during the restic run. An object written after the snapshot leaves blocks with no metadata, which Garage can remove. An object deleted after the snapshot can lose its blocks: Garage deletes a block only some time after nothing names it, so this needs a delete during the run and a restore of that night's backup.
 
-## Open decisions
-
-- The node that runs Garage. cynic has about 640 MB of unreserved memory and runs the backups. atheist has about 1 GB.
-- Whether a staged bucket starts as a copy of the live bucket or empty.
-
 ## Work
 
 1. Job: a list of more ports, each registered as `<job>-<name>`.
@@ -75,7 +76,7 @@ The snapshot and the data match except for writes during the restic run. An obje
 3. Cartridge: `GarageServer` in the platform data cartridge.
 4. Provider: `Garage.Bucket`, with layout, bucket, key and permission steps.
 5. Secret reference: `ObjectStoreCredentials`.
-6. Staged copies: the `<app>-staged` bucket and its copy.
+6. Staged copies: the `<app>-staged` key on the live bucket.
 7. Backups and restore steps in `nixos/backup-operations.md`.
 8. README: the memory table and the cartridge reference.
 9. dfg.rocks: move `server/services/storageService.ts` to the S3 API and drop its host volume. rfchat does the same in its own repository.

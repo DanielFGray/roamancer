@@ -4,7 +4,7 @@
 
 Deploy and test an app release before it receives traffic at the app's usual URL. Keep the current release live while the candidate runs at a generated preview URL. After the candidate passes health checks and real client testing, promote it to the usual URL. Keep the previous release available for rollback.
 
-The release system must preserve application data. It must not run two versions against shared writable data unless the app and its data store support concurrent versions.
+The release system must preserve application data. It must not run two versions against shared writable data unless the app and its data store support concurrent versions. One exception: a staged copy reads and writes the live object store bucket (`object-store.md`).
 
 ## Candidate, promotion, and rollback
 
