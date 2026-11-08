@@ -13,8 +13,10 @@ import { type Accessor, createSignal, For, Show } from "solid-js";
 import { FleetApi } from "../src/fleet/Api.ts";
 import {
   type AllocationStatus,
-  type AppRelease,
+  type AppRow as AppRowItem,
+  appRows,
   type DashboardLink,
+  type Endpoint,
   jobDashboardUrl,
   type JobStatus,
   type NodeStatus,
@@ -62,12 +64,24 @@ const App = () => (
             {(node) => <NodeCard node={node()} />}
           </Section>
           <Section title="Jobs" section={taken().jobs} key={(job) => job.name}>
-            {(job) => <JobRow job={job()} dashboards={available(taken().dashboards)} />}
+            {(job) => (
+              <JobRow
+                job={job()}
+                dashboards={available(taken().dashboards)}
+                endpoints={available(taken().endpoints)}
+              />
+            )}
           </Section>
           <Section title="Runner jobs" section={taken().runner} key={(job) => job.id}>
             {(job) => <RunnerRow job={job()} />}
           </Section>
-          <Section title="App releases" section={taken().apps} key={(app) => app.name}>
+          <Section
+            title="Apps"
+            section={mapSection(taken().apps, (releases) =>
+              appRows(releases, available(taken().endpoints)),
+            )}
+            key={(app) => app.name}
+          >
             {(app) => <AppRow app={app()} />}
           </Section>
         </>
@@ -223,7 +237,11 @@ const Meter = (props: { label: string; fraction: number | null; detail?: string 
   );
 };
 
-const JobRow = (props: { job: JobStatus; dashboards: ReadonlyArray<DashboardLink> }) => (
+const JobRow = (props: {
+  job: JobStatus;
+  dashboards: ReadonlyArray<DashboardLink>;
+  endpoints: ReadonlyArray<Endpoint>;
+}) => (
   <article class="job">
     <div class="line">
       <span class={`dot ${healthTone[props.job.health]}`} title={props.job.health} />
@@ -234,6 +252,11 @@ const JobRow = (props: { job: JobStatus; dashboards: ReadonlyArray<DashboardLink
       <span class="image muted" title={props.job.images.join("\n")}>
         {props.job.images.map(shortImage).join(" ")}
       </span>
+      <Links
+        urls={props.endpoints
+          .filter((endpoint) => endpoint.job === props.job.name)
+          .map((endpoint) => endpoint.url)}
+      />
       <Show when={jobDashboardUrl(props.dashboards, props.job.name)}>
         {(url) => (
           <a href={url()} target="_blank" rel="noreferrer">
@@ -296,15 +319,48 @@ const RunnerRow = (props: { job: RunnerJob }) => (
   </div>
 );
 
-const AppRow = (props: { app: AppRelease }) => (
+const AppRow = (props: { app: AppRowItem }) => (
   <div class="app">
     <strong>{props.app.name}</strong>
-    <span class="muted">#{props.app.deployment}</span>
-    <code>{props.app.revision.slice(0, 8)}</code>
-    <span class="muted">{ago(props.app.deployedAt)}</span>
-    <span>{props.app.jobs.join(", ")}</span>
+    <Show when={props.app.release} fallback={<span class="muted">not released</span>}>
+      {(release) => (
+        <>
+          <span class="muted">#{release().deployment}</span>
+          <code>{release().revision.slice(0, 8)}</code>
+          <span class="muted">{ago(release().deployedAt)}</span>
+          <span>{release().jobs.join(", ")}</span>
+        </>
+      )}
+    </Show>
+    <Links urls={props.app.live.urls} />
+    <For each={props.app.previews}>
+      {(preview) => (
+        <span class="preview">
+          <span class="muted">{preview.stage}</span>
+          <Show when={preview.revision}>{(revision) => <code>{revision().slice(0, 8)}</code>}</Show>
+          <Links urls={preview.urls} />
+        </span>
+      )}
+    </For>
   </div>
 );
+
+/** One link per address, named by its host: a tailnet address differs from another by port. */
+const Links = (props: { urls: ReadonlyArray<string> }) => (
+  <For each={props.urls}>
+    {(url) => (
+      <a href={url} target="_blank" rel="noreferrer">
+        {new URL(url).host}
+      </a>
+    )}
+  </For>
+);
+
+const mapSection = <A, B>(
+  section: SnapshotSection<A>,
+  f: (items: ReadonlyArray<A>) => ReadonlyArray<B>,
+): SnapshotSection<B> =>
+  section._tag === "Available" ? { _tag: "Available", items: f(section.items) } : section;
 
 const available = <A,>(section: SnapshotSection<A>): ReadonlyArray<A> =>
   section._tag === "Available" ? section.items : [];

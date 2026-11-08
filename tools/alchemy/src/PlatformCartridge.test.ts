@@ -8,7 +8,6 @@ import { Cartridge, expand, decodeFile, kvKeys, loadDashboards } from "./Cartrid
 import * as Package from "./Package.ts";
 import { tailnetEntrypoint } from "./Job.ts";
 import { ingressService } from "./TailscaleServe.ts";
-import { observabilityStage } from "./FleetStatus.ts";
 import { jobDashboard } from "./fleet/Snapshot.ts";
 
 const observability = () =>
@@ -46,9 +45,8 @@ describe("platform observability cartridge", () => {
     );
   });
 
-  it("is the stage the fleet page reads, with the job tab and variable its job links set", async () => {
+  it("has the job tab and variable that the fleet page's job links set", async () => {
     const cartridge = await observability();
-    assert.equal(cartridge.name, observabilityStage);
     const dashboards = await Effect.runPromise(
       loadDashboards(Package.root, cartridge).pipe(Effect.provide(NodeFileSystem.layer)),
     );

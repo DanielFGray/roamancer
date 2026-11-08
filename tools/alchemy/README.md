@@ -21,7 +21,7 @@ ops secret list                            # in an app repository: each referenc
 ops secret check                           # fails when a referenced key is unset
 ops secret set github_client_secret        # prompts for the root token, then the value
 ops secret list platform/observability     # a platform cartridge, from tools/alchemy
-ops dash                                   # the fleet service's snapshot: each job's health, containers and why a queued one waits; nodes; apps; runner jobs
+ops dash                                   # the fleet service's snapshot: each job's health, containers and why a queued one waits; nodes; apps; runner jobs; addresses
 ops place-queued                           # ask Nomad to place jobs with queued allocations again; `ops rebuild` runs it last
 ops status giglist                         # each service's newest allocations
 ops rebuild                                # host config (with your OPS_SITE folder) for every host in the root flake.nix, one at a time; `ops rebuild cynic` for one. sudo asks for your password on each. It pushes the committed repository and site folder to the host and builds from them; the switch makes a new system generation to roll back to.
@@ -37,7 +37,7 @@ The secret commands read the `cartridge.json` in the given folder, default the c
 
 ## The fleet page
 
-The fleet service also serves a page with the same snapshot, at `https://<control host>.<tailnet>.ts.net/` on the tailnet. It reads the snapshot again every 5 seconds. The page is a Solid app in `web/`, built with Vite (`bun run build:web` writes `web/dist`). Nix builds it as the `fleet-page` package, and the runner's wrapper gives the fleet service its path as `FLEET_WEB_ROOT`. To work on it, forward the service's port and run Vite's dev server, which forwards `/api` to it:
+The fleet service also serves a page with the same snapshot, at `https://<control host>.<tailnet>.ts.net/` on the tailnet. It reads the snapshot again every 5 seconds. Each job row links to the job's addresses and its metrics. Each app row links to the live app's public hosts and lists each staged copy (`<app>-staged`) with the commit it runs and its tailnet address. The addresses come from Alchemy's state, so a resource gets its link when its deploy finishes. The page is a Solid app in `web/`, built with Vite (`bun run build:web` writes `web/dist`). Nix builds it as the `fleet-page` package, and the runner's wrapper gives the fleet service its path as `FLEET_WEB_ROOT`. To work on it, forward the service's port and run Vite's dev server, which forwards `/api` to it:
 
 ```sh
 ssh -L 8780:127.0.0.1:8780 cynic

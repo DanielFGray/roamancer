@@ -119,6 +119,68 @@ export const jobDashboardUrl = (
   return url.toString();
 };
 
+/** Where a deployed job answers: a public route's host, or its tailnet Serve address. */
+export const Endpoint = S.Struct({
+  // The app the stage is an instance of: the stage itself, or the live app of `<app>-staged`.
+  app: S.String,
+  stage: S.String,
+  job: S.String,
+  access: S.Literals(["public", "tailnet"]),
+  url: S.String,
+  // The app commit the job runs; null when its deploy sent none.
+  revision: S.NullOr(S.String),
+});
+export type Endpoint = typeof Endpoint.Type;
+
+/** A stage's distinct addresses, and the app commit its jobs run. */
+export type StageEndpoints = {
+  readonly stage: string;
+  readonly urls: ReadonlyArray<string>;
+  readonly revision: string | null;
+};
+
+/** One app on the page: its newest release, if any, its live addresses and its staged copies. */
+export type AppRow = {
+  readonly name: string;
+  readonly release: AppRelease | null;
+  readonly live: StageEndpoints;
+  readonly previews: ReadonlyArray<StageEndpoints>;
+};
+
+/**
+ * One row per released app, then one per app that runs only as a staged copy: a stage can
+ * run before the app's first release. Jobs of one app often share a host, so each address
+ * appears once.
+ */
+export const appRows = (
+  releases: ReadonlyArray<AppRelease>,
+  endpoints: ReadonlyArray<Endpoint>,
+): ReadonlyArray<AppRow> => {
+  const staged = endpoints.filter((endpoint) => endpoint.stage !== endpoint.app);
+  const unreleased = [...new Set(staged.map((endpoint) => endpoint.app))]
+    .filter((app) => !releases.some((release) => release.name === app))
+    .sort();
+  const row = (name: string, release: AppRelease | null): AppRow => {
+    const own = endpoints.filter((endpoint) => endpoint.app === name);
+    const stage = (stageName: string): StageEndpoints => {
+      const ofStage = own.filter((endpoint) => endpoint.stage === stageName);
+      return {
+        stage: stageName,
+        urls: [...new Set(ofStage.map((endpoint) => endpoint.url))],
+        revision: ofStage.find((endpoint) => endpoint.revision !== null)?.revision ?? null,
+      };
+    };
+    const previews = [...new Set(own.map((endpoint) => endpoint.stage))]
+      .filter((stageName) => stageName !== name)
+      .sort();
+    return { name, release, live: stage(name), previews: previews.map(stage) };
+  };
+  return [
+    ...releases.map((release) => row(release.name, release)),
+    ...unreleased.map((name) => row(name, null)),
+  ];
+};
+
 export const Snapshot = S.Struct({
   takenAt: S.String,
   jobs: section(JobStatus),
@@ -129,5 +191,7 @@ export const Snapshot = S.Struct({
   runner: section(RunnerJob),
   // The deployed OpenObserve dashboards; the page links each job to its view of the job dashboard.
   dashboards: section(DashboardLink),
+  // Where every deployed job answers, live and staged.
+  endpoints: section(Endpoint),
 });
 export type Snapshot = typeof Snapshot.Type;

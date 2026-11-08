@@ -246,3 +246,13 @@ code {
 .event {
   overflow-wrap: anywhere;
 }
+
+/* A staged copy beside its live app: stage, commit and addresses. */
+.preview {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
