@@ -14,6 +14,8 @@ in
     # the container's root (host nomad) still reaches it through the namespace.
     "d /var/lib/nomad/postgres-data 0700 100998 nomad -"
     "d /var/lib/nomad/valkey-data 0770 nomad nomad -"
+    # The Garage image (garage-image.nix) runs as the container's root, which is host nomad.
+    "d /var/lib/nomad/garage-data 0700 nomad nomad -"
   ];
 
   services.nomadNode.config = ''
@@ -76,6 +78,10 @@ in
       }
       host_volume "valkey-data" {
         path = "/var/lib/nomad/valkey-data"
+        read_only = false
+      }
+      host_volume "garage-data" {
+        path = "/var/lib/nomad/garage-data"
         read_only = false
       }
     }

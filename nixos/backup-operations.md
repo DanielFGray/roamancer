@@ -6,6 +6,7 @@ Every host backs up to one restic repository in Cloudflare R2. Restic encrypts o
 | --- | --- | --- | --- |
 | cynic | `restic-backups-postgres` | `pg_dumpall` of every database and role, as `postgres.sql` | 03:00, then prune and check |
 | cynic | `restic-backups-alchemy` | Alchemy state (`~/alchemy/.alchemy/state` of the operator account) and a `VACUUM INTO` copy of its operation journal, `alchemy-operations.sqlite` | 02:00 |
+| cynic | `restic-backups-garage` | The Garage object store volume, `/var/lib/nomad/garage-data`, with a fresh `garage meta snapshot` of its database in place of the live database | 04:00 |
 | atheist | `restic-backups-files` | `/srv/www` (static site releases) and `/var/lib/nomad/traefik-acme` (Let's Encrypt account and certificates) | 01:00 |
 
 Each timer adds up to 30 minutes of random delay, and runs a missed backup at the next boot.
@@ -13,6 +14,8 @@ Each timer adds up to 30 minutes of random delay, and runs a missed backup at th
 Only cynic's unit prunes and checks the repository, after its own backup. Prune locks the whole repository, so a second pruner would make the other host's backup fail. Retention keeps 14 daily, 8 weekly and 12 monthly snapshots for each host and path, and every snapshot tagged `pre-nixos` (atheist's Debian install). The check reads a random 5% of the stored data each run.
 
 The Postgres dump runs as `nomad`, the only user that can reach Postgres's rootless Podman container. restic keeps the snapshot only when the dump exits 0, so a failed or partial dump never becomes a backup.
+
+The Garage backup also runs as `nomad`, and asks the running Garage server for a database snapshot first. A failed snapshot stops the backup. Garage keeps its two newest snapshots under `meta/snapshots`. The backup skips the live database, `meta/db.lmdb`, because a copy taken during a write can be torn. The keys' secrets are also in OpenBao, which is not backed up yet: a restored Garage has its keys, and OpenBao must still hold their secrets.
 
 ## Set up a host
 
@@ -96,6 +99,32 @@ tools/alchemy/scripts/restore-database.sh cynic giglist giglist.dump
 ```
 
 The script restores into `giglist_restore` in one transaction, then swaps it in for `giglist`. Apps lose their connections for a moment. The replaced database stays as `giglist_before_restore_<UTC time>` until you drop it.
+
+## Restore the object store
+
+This restores the `garage` job's volume onto cynic. Garage must not run while its volume changes.
+
+```sh
+# On cynic. Stops only the garage job; Postgres and Valkey keep running.
+sudo sh -c 'export NOMAD_TOKEN="$(cat /var/lib/nomad-acl/bootstrap.token)"; exec nomad job stop garage'
+sudo restic-garage restore latest --host cynic --target /tmp/garage-restore
+```
+
+Then, as root on cynic, put the restored volume in place of the live one and make the newest snapshot the live database:
+
+```sh
+set -euo pipefail
+from=/tmp/garage-restore/var/lib/nomad/garage-data
+to=/var/lib/nomad/garage-data
+mv "$to" "$to.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+cp -a "$from" "$to"
+newest=$(ls "$to/meta/snapshots" | sort | tail -1)
+mkdir "$to/meta/db.lmdb"
+cp -a "$to/meta/snapshots/$newest/db.lmdb" "$to/meta/db.lmdb/data.mdb"
+chown -R nomad:nomad "$to"
+```
+
+Then start the job again with the same command, `nomad job start garage` in place of `nomad job stop garage`. Garage starts with its old node key and layout, so its buckets, keys and objects come back as they were at the snapshot. The replaced volume stays beside the live one until you remove it. This was tested on 2026-11-08 with the platform-garage image in Docker: a bucket, its key and one object came back, and the object read back intact.
 
 ## Not backed up yet
 

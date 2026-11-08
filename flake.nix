@@ -64,6 +64,9 @@
         postgres-image =
           import ./nixos/cynic/postgres-image.nix { pkgs = nixpkgs.legacyPackages.${system}; };
 
+        garage-image =
+          import ./nixos/cynic/garage-image.nix { pkgs = nixpkgs.legacyPackages.${system}; };
+
         # Disposable QEMU image of the same host config. It lives here, not in a
         # nested flake, so the shared modules under nixos/modules are in its source.
         testground-vm = nixos-generators.nixosGenerate {

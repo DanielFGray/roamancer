@@ -22,6 +22,22 @@ let
       exec podman exec "$container" pg_dumpall --username=postgres
     '';
   };
+
+  # The host path of the garage-data volume (nixos/cynic/nomad.nix).
+  garageVolume = "/var/lib/nomad/garage-data";
+
+  snapshotGarage = pkgs.writeShellApplication {
+    name = "snapshot-garage";
+    runtimeInputs = [ pkgs.podman pkgs.coreutils pkgs.gnugrep ];
+    text = ''
+      container=$(podman ps --filter label=com.hashicorp.nomad.job_name=garage --filter label=com.hashicorp.nomad.task_name=server --format '{{.ID}}')
+      if [ "$(printf '%s\n' "$container" | grep -c .)" -ne 1 ]; then
+        echo "Expected one running container for Nomad job garage, task server; found: $container" >&2
+        exit 1
+      fi
+      exec podman exec "$container" garage meta snapshot
+    '';
+  };
 in
 {
   # The operator runs restic by hand for init, snapshots and restore (nixos/backup-operations.md).
@@ -44,6 +60,23 @@ in
   };
 
   systemd.services.restic-backups-postgres.environment.XDG_RUNTIME_DIR = "/run/user/1001";
+
+  # Garage's objects (docs/design/object-store.md). Garage never changes a data block after it
+  # writes it, but a copy of its live LMDB database can be torn, so the backup takes a database
+  # snapshot first and saves that in place of the live one. The rest of meta/ (the node key and
+  # the cluster layout) is small files that a restore needs too. Garage keeps its two newest
+  # snapshots under meta/snapshots; nixos/backup-operations.md has the restore.
+  services.restic.backups.garage = import ../modules/restic-r2.nix // {
+    # Garage runs in nomad's rootless Podman, as the Postgres dump does.
+    user = "nomad";
+    backupPrepareCommand = "${snapshotGarage}/bin/snapshot-garage";
+    paths = [ garageVolume ];
+    exclude = [ "${garageVolume}/meta/db.lmdb" ];
+    # After the Postgres backup and its prune, which lock the whole repository.
+    timerConfig = (import ../modules/restic-r2.nix).timerConfig // { OnCalendar = "*-*-* 04:00"; };
+  };
+
+  systemd.services.restic-backups-garage.environment.XDG_RUNTIME_DIR = "/run/user/1001";
 
   # Alchemy's state and operation journal: the record of what each stage deployed.
   # The journal is SQLite in WAL mode, so a file copy taken during a write can be torn;

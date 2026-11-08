@@ -134,7 +134,7 @@ the minimum:
 
 | | Platform jobs (`memoryMB`) | Host reserve | Minimum |
 | --- | --- | --- | --- |
-| Control host | Postgres 512, Valkey 128, collector 256: 896 MB | 768 MB (Nomad, OpenBao, job runner, registry, journald, Tailscale, kernel) | 2 GB plus the apps' `memoryMB` |
+| Control host | Postgres 512, Valkey 128, Garage 256, collector 256: 1152 MB | 768 MB (Nomad, OpenBao, job runner, registry, journald, Tailscale, kernel) | 2 GB plus the apps' `memoryMB` |
 | Ingress host | Traefik 256, OpenObserve 768, collector 256: 1280 MB | 512 MB (Nomad, journald, Caddy, Tailscale) | 2 GB plus the apps' `memoryMB` |
 
 The two-host layout therefore needs about 4 GB before any app; one host that runs everything needs
