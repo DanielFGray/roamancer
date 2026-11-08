@@ -25,6 +25,10 @@
         {
           "name": "ZO_ROOT_USER_EMAIL",
           "value": "ops@example.com"
+        },
+        {
+          "name": "ZO_COOKIE_MAX_AGE",
+          "value": "31536000"
         }
       ],
       "connections": [],

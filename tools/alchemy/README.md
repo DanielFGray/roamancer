@@ -268,7 +268,7 @@ Nomad's node and allocation metrics are available for a scraper. The endpoint do
 
 `platform/observability/cartridge.json` declares two Nomad jobs that the platform runs for every app:
 
-- `openobserve` stores traces, logs and metrics. It uses the `openobserve-data` host volume and the `alchemy-openobserve` OpenBao role. Its root password comes from `secret/data/platform/openobserve`, key `root_password`.
+- `openobserve` stores traces, logs and metrics. It uses the `openobserve-data` host volume and the `alchemy-openobserve` OpenBao role. Its root password comes from `secret/data/platform/openobserve`, key `root_password`. A web login lasts a year (`ZO_COOKIE_MAX_AGE`), so the browser asks for the password about once a year.
 - `otel-collector` runs on the host network and receives OTLP over HTTP on the node's LAN address, port 4318, OTLP/HTTP's standard port. It also scrapes Nomad's `/v1/metrics` endpoint and forwards everything to `openobserve`. It uses the `alchemy-otel-collector` role and the same password. Its config is the `OTEL_CONFIG` environment value, read with `--config=env:OTEL_CONFIG`.
 
 Every Nomad task that Alchemy renders gets `OTEL_EXPORTER_OTLP_ENDPOINT=http://host.containers.internal:4318`. Inside a rootless Podman container the node's LAN address is the container's own address, so only `host.containers.internal` reaches the collector on the host. The value stays the same when the collector restarts, and no task restarts with it. A task's own `environment` entry of the same name replaces it. An app exports a signal only when its cartridge also sets that signal's exporter, for example `OTEL_TRACES_EXPORTER=otlp` and `OTEL_LOGS_EXPORTER=otlp`.
