@@ -150,6 +150,30 @@ describe("cartridge v2", () => {
       });
     }
 
+    const dashboards = (server: string) => ({
+      server,
+      username: "automation.default@sa.internal",
+      token: { path: "secret/data/shop", key: "automation_token" },
+      files: ["dashboards/shop.json"],
+    });
+
+    it("rejects dashboards, whose files an app's cartridge cannot bring to the host", () => {
+      assert.throws(
+        () =>
+          S.decodeUnknownSync(AppCartridge)(
+            app({ services: [job({ name: "shop" })], dashboards: dashboards("shop") }),
+          ),
+        { message: /an app cartridge cannot declare `dashboards`/ },
+      );
+    });
+
+    it("rejects dashboards whose server is not a service of the cartridge", () => {
+      assert.throws(
+        () => S.decodeUnknownSync(Cartridge)(app({ dashboards: dashboards("openobserve") })),
+        { message: /Dashboards name 'openobserve', which is not a service of this cartridge/ },
+      );
+    });
+
     it("rejects an app name that a derived instance of another app would take", () => {
       assert.throws(() => S.decodeUnknownSync(AppCartridge)(app({ name: "shop-dev" })), {
         message: /App name 'shop-dev' must not contain the segment 'dev'/,

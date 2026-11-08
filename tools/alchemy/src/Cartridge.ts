@@ -13,8 +13,10 @@ import {
   cartridgeArray,
   ExpandedJob,
   ExpandedSecretReference,
+  KvKey,
   ResourceName,
 } from "./Job.ts";
+import { DashboardDocument, OpenObserveDashboardProps } from "./OpenObserveDashboard.ts";
 import { ExtensionName, postgresRoles, PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { adminCredentialPath } from "./AdminCredential.ts";
@@ -56,6 +58,20 @@ const ValkeyEntry = S.Struct({
   access: S.optionalKey(S.Literals(["read-only", "read-write"])),
 });
 
+/**
+ * The OpenObserve dashboards a cartridge keeps. Each file holds one dashboard as OpenObserve's
+ * dashboard page exports it, at a path under the runner package root. Only platform cartridges
+ * may declare dashboards: an app's cartridge reaches the host as JSON without its files.
+ */
+const DashboardsEntry = S.Struct({
+  // The cartridge's OpenObserve service.
+  server: ResourceName,
+  // An OpenObserve service account. The token at `token` is its password.
+  username: S.String,
+  token: KvKey,
+  files: S.NonEmptyArray(S.String.check(S.isPattern(/^[a-z0-9-]+(\/[a-z0-9-]+)*\.json$/))),
+});
+
 export const Cartridge = S.Struct({
   apiVersion: S.Literals(["server-ansible/v2"]),
   name: AppName,
@@ -63,6 +79,7 @@ export const Cartridge = S.Struct({
   postgres: cartridgeArray(PostgresEntry),
   valkey: S.optionalKey(ValkeyEntry),
   services: S.Array(CartridgeJob),
+  dashboards: S.optionalKey(DashboardsEntry),
 }).check(
   S.makeFilter((cartridge) => {
     const issues: Array<string> = [];
@@ -134,6 +151,18 @@ export const Cartridge = S.Struct({
       }),
     );
     issues.push(...undeclaredIssues, ...routeIssues);
+    if (cartridge.dashboards !== undefined) {
+      const { server, files } = cartridge.dashboards;
+      if (!cartridge.services.some((service) => service.name === server)) {
+        issues.push(`Dashboards name '${server}', which is not a service of this cartridge`);
+      }
+      const names = files.map(dashboardName);
+      issues.push(
+        ...names
+          .filter((name, index) => names.indexOf(name) !== index)
+          .map((name) => `two dashboard files are named '${name}.json'`),
+      );
+    }
     const jobGraph = buildJobGraph(allJobs);
     if (!Graph.isAcyclic(jobGraph)) {
       const cycleIssues = Graph.stronglyConnectedComponents(jobGraph)
@@ -218,6 +247,9 @@ const namespaceIssues = (cartridge: Cartridge): ReadonlyArray<string> => {
     ...(job.readOnlyMounts ?? []).map((mount) => mount.volume),
   ]);
   return [
+    ...(cartridge.dashboards === undefined
+      ? []
+      : ["an app cartridge cannot declare `dashboards`: its files do not reach the host"]),
     ...postgresNamespaceIssues(
       app,
       cartridge.postgres.map((entry) => entry.database),
@@ -240,7 +272,12 @@ export type ExpandedResource =
   | { readonly _tag: "NomadService"; readonly service: ExpandedJob }
   | { readonly _tag: "PostgresDatabase"; readonly database: PostgresDatabaseProps }
   | { readonly _tag: "ValkeyAccess"; readonly access: ValkeyAccessConfig }
-  | { readonly _tag: "TailscaleServe"; readonly serviceName: string };
+  | { readonly _tag: "TailscaleServe"; readonly serviceName: string }
+  | {
+      readonly _tag: "OpenObserveDashboard";
+      readonly name: string;
+      readonly dashboard: OpenObserveDashboardProps;
+    };
 
 export const postgresLoginRole = (database: string, login: "api" | "migration") =>
   login === "api" ? `alchemy_${database}_api` : `alchemy_${database}_migration`;
@@ -476,13 +513,19 @@ export const findPlatform = Effect.fn("Cartridge.findPlatform")(function* (
   return Option.fromNullishOr(cartridges.find((cartridge) => cartridge.name === name));
 });
 
-/** Each OpenBao KV path the cartridge's services read, with the keys it reads there. */
+/**
+ * Each OpenBao KV path the cartridge reads, with the keys it reads there: the secrets of its
+ * services and the token of its dashboards.
+ */
 export const kvKeys = (cartridge: Cartridge) => {
-  const references = cartridge.services.flatMap((service) =>
-    [...service.secrets, ...(service.migrate?.secrets ?? [])].filter(
-      (secret) => secret._tag === "KvSecret",
+  const references: ReadonlyArray<KvKey> = [
+    ...cartridge.services.flatMap((service) =>
+      [...service.secrets, ...(service.migrate?.secrets ?? [])].filter(
+        (secret) => secret._tag === "KvSecret",
+      ),
     ),
-  );
+    ...(cartridge.dashboards === undefined ? [] : [cartridge.dashboards.token]),
+  ];
   return new Map(
     [...new Set(references.map((reference) => reference.path))].map((path) => [
       path,
@@ -502,6 +545,43 @@ export const missingSecrets = (references: KvReferences, stored: KvReferences) =
   [...references].flatMap(([path, keys]) =>
     keys.filter((key) => !(stored.get(path) ?? []).includes(key)).map((key) => ({ path, key })),
   );
+
+/**
+ * The dashboard resources of `cartridge`, one per file it names under `root`. Each file must
+ * hold a dashboard as OpenObserve exports it.
+ */
+export const loadDashboards = Effect.fn("Cartridge.loadDashboards")(function* (
+  root: string,
+  cartridge: Cartridge,
+) {
+  if (cartridge.dashboards === undefined) return [];
+  const { files, ...access } = cartridge.dashboards;
+  const fs = yield* FileSystem.FileSystem;
+  return yield* Effect.forEach(
+    files,
+    Effect.fnUntraced(function* (file) {
+      const text = yield* fs
+        .readFileString(`${root}/${file}`)
+        .pipe(
+          Effect.mapError((cause) => configError(`Could not read dashboard file '${file}'`, cause)),
+        );
+      const dashboard = yield* S.decodeUnknownEffect(S.fromJsonString(DashboardDocument))(
+        text,
+      ).pipe(
+        Effect.mapError((cause) =>
+          configError(`Dashboard file '${file}' is not an OpenObserve dashboard`, cause),
+        ),
+      );
+      return {
+        _tag: "OpenObserveDashboard",
+        name: dashboardName(file),
+        dashboard: { ...access, dashboard },
+      } satisfies ExpandedResource;
+    }),
+  );
+});
+
+const dashboardName = (file: string) => file.slice(file.lastIndexOf("/") + 1, -".json".length);
 
 /** Read one cartridge file and validate it against `schema`: AppCartridge or Cartridge. */
 export const decodeFile = Effect.fn("Cartridge.decodeFile")(function* (

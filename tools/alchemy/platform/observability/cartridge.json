@@ -87,5 +87,17 @@
         }
       ]
     }
-  ]
+  ],
+  "dashboards": {
+    "server": "openobserve",
+    "username": "automation.default@sa.internal",
+    "token": {
+      "path": "secret/data/platform/openobserve",
+      "key": "automation_token"
+    },
+    "files": [
+      "platform/observability/dashboards/services.json",
+      "platform/observability/dashboards/nomad.json"
+    ]
+  }
 }

@@ -9,6 +9,7 @@ import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { AdminCredentialProps } from "./AdminCredential.ts";
 import { TailscaleServeProps } from "./TailscaleServe.ts";
+import type { DashboardAttributes, OpenObserveDashboardProps } from "./OpenObserveDashboard.ts";
 
 type NomadJobOutput = {
   readonly id: string;
@@ -93,6 +94,10 @@ export type Constructors<R> = {
     id: string,
     props: AdminCredentialProps,
   ) => Effect.Effect<AdminCredentialOutput, never, R>;
+  readonly OpenObserveDashboard: (
+    id: string,
+    props: OpenObserveDashboardProps,
+  ) => Effect.Effect<DashboardAttributes, never, R>;
 };
 
 /**
@@ -202,6 +207,36 @@ export const compose = <R>(
               }),
             };
           }),
+        ),
+        // The server is the declared job's output, so each dashboard waits for that job.
+        Match.when({ _tag: "OpenObserveDashboard" }, ({ name, dashboard }) =>
+          Option.match(
+            Arr.findFirst(state.services, (entry) => entry.name === dashboard.server),
+            {
+              onNone: () =>
+                Effect.fail(
+                  new ComposeError({
+                    message: `unresolved dashboard server '${dashboard.server}'`,
+                  }),
+                ),
+              onSome: (server) =>
+                constructors
+                  .OpenObserveDashboard(`openobserve-dashboard-${name}`, {
+                    ...dashboard,
+                    server: server.resource.id,
+                  })
+                  .pipe(
+                    Effect.map((resource) => ({
+                      ...state,
+                      outputs: Arr.append(state.outputs, {
+                        kind: "OpenObserveDashboard",
+                        id: resource.dashboardId,
+                        name,
+                      }),
+                    })),
+                  ),
+            },
+          ),
         ),
         Match.exhaustive,
       ),

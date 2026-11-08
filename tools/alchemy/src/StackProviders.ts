@@ -7,6 +7,7 @@ import { PostgresDatabaseProvider } from "./PostgresDatabase.ts";
 import { ValkeyAccessProvider } from "./ValkeyAccess.ts";
 import { AdminCredentialProvider } from "./AdminCredential.ts";
 import { TailscaleServeProvider } from "./TailscaleServe.ts";
+import { OpenObserveDashboardProvider } from "./OpenObserveDashboard.ts";
 import * as NomadLive from "./Nomad.ts";
 import * as OperationHistory from "./OperationJournal.ts";
 import { OpenBao } from "./OpenBao.ts";
@@ -18,6 +19,7 @@ export const providers = Layer.mergeAll(
   ValkeyAccessProvider(),
   AdminCredentialProvider(),
   TailscaleServeProvider,
+  OpenObserveDashboardProvider(),
 ).pipe(
   Layer.provide(
     Layer.mergeAll(

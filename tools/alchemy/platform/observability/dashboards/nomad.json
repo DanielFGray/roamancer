@@ -1,0 +1,587 @@
+{
+  "version": 8,
+  "title": "Nomad cluster",
+  "description": "Host and job resources from the Nomad metrics that the OpenTelemetry collector scrapes on each node.",
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "24h",
+    "startTime": 0,
+    "endTime": 0
+  },
+  "variables": {
+    "list": [],
+    "showDynamicFilters": false
+  },
+  "tabs": [
+    {
+      "tabId": "hosts",
+      "name": "Hosts",
+      "panels": [
+        {
+          "id": "host-cpu",
+          "type": "line",
+          "title": "Host CPU",
+          "description": "Mean CPU use across the cores of each host.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "percent",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "promql",
+          "queries": [
+            {
+              "query": "avg by (host) (nomad_client_host_cpu_total_percent)",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "nomad_client_host_cpu_total_percent",
+                "stream_type": "metrics",
+                "x": [],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "{host}",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 16,
+            "h": 9,
+            "i": 1
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "host-memory",
+          "type": "line",
+          "title": "Host memory",
+          "description": "Memory in use as a share of each host's memory.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "percent",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "promql",
+          "queries": [
+            {
+              "query": "100 * sum by (host) (nomad_client_host_memory_used) / sum by (host) (nomad_client_host_memory_total)",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "nomad_client_host_memory_used",
+                "stream_type": "metrics",
+                "x": [],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "{host}",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 16,
+            "y": 0,
+            "w": 16,
+            "h": 9,
+            "i": 2
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "host-disk",
+          "type": "line",
+          "title": "Host disk",
+          "description": "Use of the fullest disk of each host.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "percent",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "promql",
+          "queries": [
+            {
+              "query": "max by (host) (nomad_client_host_disk_used_percent)",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "nomad_client_host_disk_used_percent",
+                "stream_type": "metrics",
+                "x": [],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "{host}",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 32,
+            "y": 0,
+            "w": 16,
+            "h": 9,
+            "i": 3
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "allocated-memory",
+          "type": "line",
+          "title": "Reserved memory",
+          "description": "Memory that allocations reserve on each host.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "bytes",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "promql",
+          "queries": [
+            {
+              "query": "sum by (host) (nomad_client_allocated_memory) * 1048576",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "nomad_client_allocated_memory",
+                "stream_type": "metrics",
+                "x": [],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "{host} reserved",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 9,
+            "w": 24,
+            "h": 9,
+            "i": 4
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "allocations",
+          "type": "line",
+          "title": "Running allocations",
+          "description": "Allocations running on each host.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "promql",
+          "queries": [
+            {
+              "query": "sum by (host) (nomad_client_allocations_running)",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "nomad_client_allocations_running",
+                "stream_type": "metrics",
+                "x": [],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "{host}",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 24,
+            "y": 9,
+            "w": 24,
+            "h": 9,
+            "i": 5
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        }
+      ]
+    },
+    {
+      "tabId": "jobs",
+      "name": "Jobs",
+      "panels": [
+        {
+          "id": "job-memory",
+          "type": "line",
+          "title": "Memory by job",
+          "description": "Memory in use by the allocations of each job.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "bytes",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "promql",
+          "queries": [
+            {
+              "query": "sum by (exported_job) (nomad_client_allocs_memory_usage)",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "nomad_client_allocs_memory_usage",
+                "stream_type": "metrics",
+                "x": [],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "{exported_job}",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 10,
+            "i": 1
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "job-cpu",
+          "type": "line",
+          "title": "CPU by job",
+          "description": "CPU use by the allocations of each job, as a share of one core.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "percent",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "promql",
+          "queries": [
+            {
+              "query": "sum by (exported_job) (nomad_client_allocs_cpu_total_percent)",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "nomad_client_allocs_cpu_total_percent",
+                "stream_type": "metrics",
+                "x": [],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "{exported_job}",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 24,
+            "y": 0,
+            "w": 24,
+            "h": 10,
+            "i": 2
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "job-restarts",
+          "type": "line",
+          "title": "Task restarts",
+          "description": "Task restarts per job that Nomad has counted. Nomad drops the count of an allocation 24 hours after its last restart.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "promql",
+          "queries": [
+            {
+              "query": "sum by (exported_job) (nomad_client_allocs_restart)",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "nomad_client_allocs_restart",
+                "stream_type": "metrics",
+                "x": [],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "{exported_job}",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 10,
+            "w": 24,
+            "h": 9,
+            "i": 3
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "job-failures",
+          "type": "bar",
+          "title": "Failed allocations",
+          "description": "Allocations that failed per job in the hour before each point.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "promql",
+          "queries": [
+            {
+              "query": "sum by (exported_job) (increase(nomad_nomad_job_summary_failed[1h]))",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "nomad_nomad_job_summary_failed",
+                "stream_type": "metrics",
+                "x": [],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "{exported_job}",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 24,
+            "y": 10,
+            "w": 24,
+            "h": 9,
+            "i": 4
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        }
+      ]
+    }
+  ]
+}

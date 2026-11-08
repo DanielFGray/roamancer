@@ -46,6 +46,9 @@ export const KvSecretReference = S.TaggedStruct("KvSecret", {
   key: SecretKey,
   env: EnvironmentVariable,
 });
+/** One key at a KV v2 path that a resource reads at deploy time; no job receives it. */
+export const KvKey = S.Struct({ path: SecretPath, key: SecretKey });
+export type KvKey = typeof KvKey.Type;
 const PostgresUrlReference = S.Struct({
   env: EnvironmentVariable,
   server: ResourceName,

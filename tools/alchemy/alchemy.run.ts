@@ -9,6 +9,7 @@ import { PostgresDatabase } from "./src/PostgresDatabase.ts";
 import { ValkeyAccess } from "./src/ValkeyAccess.ts";
 import { AdminCredential } from "./src/AdminCredential.ts";
 import { TailscaleServe } from "./src/TailscaleServe.ts";
+import { OpenObserveDashboard } from "./src/OpenObserveDashboard.ts";
 import * as Cartridge from "./src/Cartridge.ts";
 import * as Package from "./src/Package.ts";
 import * as Deployments from "./src/Deployments.ts";
@@ -30,7 +31,11 @@ const stack = Alchemy.Stack(
       onNone: () =>
         Effect.gen(function* () {
           const cartridge = yield* Cartridge.resolve(Package.root, stage);
-          return Cartridge.expand(cartridge, revision);
+          // After expand: a dashboard names its server job, which compose must declare first.
+          return [
+            ...Cartridge.expand(cartridge, revision),
+            ...(yield* Cartridge.loadDashboards(Package.root, cartridge)),
+          ];
         }),
       onSome: (base) =>
         Effect.gen(function* () {
@@ -91,12 +96,14 @@ const stack = Alchemy.Stack(
       | Alchemy.Provider<ValkeyAccess>
       | Alchemy.Provider<AdminCredential>
       | Alchemy.Provider<TailscaleServe>
+      | Alchemy.Provider<OpenObserveDashboard>
     >(resources, {
       NomadJob,
       PostgresDatabase,
       ValkeyAccess,
       AdminCredential,
       TailscaleServe,
+      OpenObserveDashboard,
     }).pipe(
       // The stack fails only with ConfigError; an unresolved route reference is one.
       Effect.mapError(

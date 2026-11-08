@@ -1,0 +1,872 @@
+{
+  "version": 8,
+  "title": "Services",
+  "description": "Requests, latency and database queries from traces, and log lines. Health checks and polling (('/api/health', '/healthz', '/api/sync')) are left out of every panel except Background traffic.",
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "24h",
+    "startTime": 0,
+    "endTime": 0
+  },
+  "variables": {
+    "list": [],
+    "showDynamicFilters": false
+  },
+  "tabs": [
+    {
+      "tabId": "requests",
+      "name": "Requests",
+      "panels": [
+        {
+          "id": "requests",
+          "type": "stacked",
+          "title": "Requests",
+          "description": "Server spans per service.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) AS \"x_axis_1\", count(*) AS \"y_axis_1\", service_name AS \"breakdown_1\" FROM \"default\" WHERE span_kind = '2' AND coalesce(http_route, '') NOT IN ('/api/health', '/healthz', '/api/sync') GROUP BY x_axis_1, breakdown_1 ORDER BY x_axis_1",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "x_axis_1",
+                    "column": "x_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "Requests",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "z": [],
+                "breakdown": [
+                  {
+                    "label": "Service",
+                    "alias": "breakdown_1",
+                    "column": "breakdown_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 9,
+            "i": 1
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "errors",
+          "type": "stacked",
+          "title": "Errors",
+          "description": "Server spans with status ERROR or an HTTP status of 500 or more.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) AS \"x_axis_1\", count(*) AS \"y_axis_1\", service_name AS \"breakdown_1\" FROM \"default\" WHERE span_kind = '2' AND coalesce(http_route, '') NOT IN ('/api/health', '/healthz', '/api/sync') AND (span_status = 'ERROR' OR CAST(http_response_status_code AS INT) >= 500) GROUP BY x_axis_1, breakdown_1 ORDER BY x_axis_1",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "x_axis_1",
+                    "column": "x_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "Errors",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "z": [],
+                "breakdown": [
+                  {
+                    "label": "Service",
+                    "alias": "breakdown_1",
+                    "column": "breakdown_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 24,
+            "y": 0,
+            "w": 24,
+            "h": 9,
+            "i": 2
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "latency",
+          "type": "line",
+          "title": "p95 latency",
+          "description": "The 95th percentile of server span duration per service.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "microseconds",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) AS \"x_axis_1\", approx_percentile_cont(duration, 0.95) AS \"y_axis_1\", service_name AS \"breakdown_1\" FROM \"default\" WHERE span_kind = '2' AND coalesce(http_route, '') NOT IN ('/api/health', '/healthz', '/api/sync') GROUP BY x_axis_1, breakdown_1 ORDER BY x_axis_1",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "x_axis_1",
+                    "column": "x_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "p95",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "z": [],
+                "breakdown": [
+                  {
+                    "label": "Service",
+                    "alias": "breakdown_1",
+                    "column": "breakdown_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 9,
+            "w": 24,
+            "h": 9,
+            "i": 3
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "background",
+          "type": "line",
+          "title": "Background traffic",
+          "description": "Health checks and polling, which the other panels leave out.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) AS \"x_axis_1\", count(*) AS \"y_axis_1\", concat(service_name, ' ', http_route) AS \"breakdown_1\" FROM \"default\" WHERE span_kind = '2' AND http_route IN ('/api/health', '/healthz', '/api/sync') GROUP BY x_axis_1, breakdown_1 ORDER BY x_axis_1",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "x_axis_1",
+                    "column": "x_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "Requests",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "z": [],
+                "breakdown": [
+                  {
+                    "label": "Route",
+                    "alias": "breakdown_1",
+                    "column": "breakdown_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 24,
+            "y": 9,
+            "w": 24,
+            "h": 9,
+            "i": 4
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "routes",
+          "type": "table",
+          "title": "Routes",
+          "description": "Server spans per route, slowest p95 first among the busiest. Times are in milliseconds.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT service_name AS \"service\", coalesce(http_route, url_path, operation_name) AS \"route\", count(*) AS \"requests\", sum(CASE WHEN span_status = 'ERROR' OR CAST(http_response_status_code AS INT) >= 500 THEN 1 ELSE 0 END) AS \"errors\", round(approx_percentile_cont(duration, 0.5) / 1000.0, 1) AS \"p50_ms\", round(approx_percentile_cont(duration, 0.95) / 1000.0, 1) AS \"p95_ms\", round(max(duration) / 1000.0, 1) AS \"max_ms\" FROM \"default\" WHERE span_kind = '2' AND coalesce(http_route, '') NOT IN ('/api/health', '/healthz', '/api/sync') GROUP BY service, route ORDER BY requests DESC LIMIT 100",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Service",
+                    "alias": "service",
+                    "column": "service",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Route",
+                    "alias": "route",
+                    "column": "route",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Requests",
+                    "alias": "requests",
+                    "column": "requests",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Errors",
+                    "alias": "errors",
+                    "column": "errors",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "p50 ms",
+                    "alias": "p50_ms",
+                    "column": "p50_ms",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "p95 ms",
+                    "alias": "p95_ms",
+                    "column": "p95_ms",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Max ms",
+                    "alias": "max_ms",
+                    "column": "max_ms",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 18,
+            "w": 48,
+            "h": 12,
+            "i": 5
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "queries",
+          "type": "table",
+          "title": "Database queries",
+          "description": "Database spans outside health-check and polling traces, most total time first. Times are in milliseconds.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT service_name AS \"service\", db_system_name AS \"database\", substr(o2_db_query_norm, 1, 160) AS \"statement\", count(*) AS \"calls\", round(approx_percentile_cont(duration, 0.95) / 1000.0, 1) AS \"p95_ms\", round(sum(duration) / 1000.0, 1) AS \"total_ms\" FROM \"default\" WHERE db_system_name IS NOT NULL AND trace_id NOT IN (SELECT trace_id FROM \"default\" WHERE span_kind = '2' AND http_route IN ('/api/health', '/healthz', '/api/sync')) GROUP BY service, database, statement ORDER BY total_ms DESC LIMIT 100",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "Service",
+                    "alias": "service",
+                    "column": "service",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Database",
+                    "alias": "database",
+                    "column": "database",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Statement",
+                    "alias": "statement",
+                    "column": "statement",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Calls",
+                    "alias": "calls",
+                    "column": "calls",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "p95 ms",
+                    "alias": "p95_ms",
+                    "column": "p95_ms",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Total ms",
+                    "alias": "total_ms",
+                    "column": "total_ms",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 30,
+            "w": 48,
+            "h": 12,
+            "i": 6
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        }
+      ]
+    },
+    {
+      "tabId": "logs",
+      "name": "Logs",
+      "panels": [
+        {
+          "id": "log-lines",
+          "type": "stacked",
+          "title": "Log lines",
+          "description": "Log lines per severity.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) AS \"x_axis_1\", count(*) AS \"y_axis_1\", severity AS \"breakdown_1\" FROM \"default\" WHERE coalesce(http_url, '') NOT IN ('/api/health', '/healthz', '/api/sync') GROUP BY x_axis_1, breakdown_1 ORDER BY x_axis_1",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "x_axis_1",
+                    "column": "x_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "y": [
+                  {
+                    "label": "Lines",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "z": [],
+                "breakdown": [
+                  {
+                    "label": "Severity",
+                    "alias": "breakdown_1",
+                    "column": "breakdown_1",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 48,
+            "h": 9,
+            "i": 1
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "warnings",
+          "type": "table",
+          "title": "Warnings and errors",
+          "description": "The newest 100 log lines at severity WARN or above. Times are UTC.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp), '%Y-%m-%d %H:%M:%S') AS \"time\", service_name AS \"service\", severity AS \"severity\", body AS \"message\", exception_type AS \"exception\", exception_message AS \"detail\" FROM \"default\" WHERE severity_number >= 13 ORDER BY _timestamp DESC LIMIT 100",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "time",
+                    "column": "time",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Service",
+                    "alias": "service",
+                    "column": "service",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Severity",
+                    "alias": "severity",
+                    "column": "severity",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Message",
+                    "alias": "message",
+                    "column": "message",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Exception",
+                    "alias": "exception",
+                    "column": "exception",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Detail",
+                    "alias": "detail",
+                    "column": "detail",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 9,
+            "w": 48,
+            "h": 12,
+            "i": 2
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        },
+        {
+          "id": "other-lines",
+          "type": "table",
+          "title": "Other log lines",
+          "description": "The newest 100 log lines that are not request logs, such as start-up messages. Times are UTC.",
+          "config": {
+            "show_legends": true,
+            "legends_position": null,
+            "unit": "default",
+            "decimals": 1,
+            "axis_border_show": false,
+            "connect_nulls": false,
+            "no_value_replacement": "",
+            "wrap_table_cells": false,
+            "table_transpose": false,
+            "table_dynamic_columns": false,
+            "drilldown": [],
+            "mark_line": [],
+            "override_config": [],
+            "mappings": []
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT to_char(to_timestamp_micros(_timestamp), '%Y-%m-%d %H:%M:%S') AS \"time\", service_name AS \"service\", severity AS \"severity\", body AS \"message\" FROM \"default\" WHERE coalesce(body, '') <> 'Sent HTTP response' ORDER BY _timestamp DESC LIMIT 100",
+              "vrlFunctionQuery": "",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "logs",
+                "x": [
+                  {
+                    "label": "Time",
+                    "alias": "time",
+                    "column": "time",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Service",
+                    "alias": "service",
+                    "column": "service",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Severity",
+                    "alias": "severity",
+                    "column": "severity",
+                    "color": null,
+                    "isDerived": false
+                  },
+                  {
+                    "label": "Message",
+                    "alias": "message",
+                    "column": "message",
+                    "color": null,
+                    "isDerived": false
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1,
+                "limit": 0,
+                "min": 0,
+                "max": 100,
+                "time_shift": []
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 21,
+            "w": 48,
+            "h": 12,
+            "i": 3
+          },
+          "htmlContent": "",
+          "markdownContent": "",
+          "customChartContent": ""
+        }
+      ]
+    }
+  ]
+}

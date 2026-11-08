@@ -11,6 +11,7 @@ import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { AdminCredentialProps } from "./AdminCredential.ts";
 import { TailscaleServeProps } from "./TailscaleServe.ts";
+import type { OpenObserveDashboardProps } from "./OpenObserveDashboard.ts";
 
 const readCartridge = (rel: string) => {
   const path = fileURLToPath(new URL(rel, import.meta.url));
@@ -24,6 +25,7 @@ const makeConstructors = () => {
   const valkeyAccessCalls: Array<{ id: string; props: ValkeyAccessConfig }> = [];
   const adminCredentialCalls: Array<{ id: string; props: AdminCredentialProps }> = [];
   const tailscaleServeCalls: Array<{ id: string; props: TailscaleServeProps }> = [];
+  const dashboardCalls: Array<{ id: string; props: OpenObserveDashboardProps }> = [];
   // Alchemy keys resources by logical ID within a stack, so a repeated ID would merge two resources.
   const declaredIds = new Set<string>();
   const declare = <A>(id: string, output: A) =>
@@ -72,6 +74,10 @@ const makeConstructors = () => {
         path: `secret/data/${props.engine}/servers/${props.server}`,
       });
     },
+    OpenObserveDashboard: (id: string, props: OpenObserveDashboardProps) => {
+      dashboardCalls.push({ id, props });
+      return declare(id, { dashboardId: `${id}-oo`, hash: "1" });
+    },
   };
 
   return {
@@ -81,6 +87,7 @@ const makeConstructors = () => {
     valkeyAccessCalls,
     adminCredentialCalls,
     tailscaleServeCalls,
+    dashboardCalls,
   };
 };
 
@@ -341,5 +348,33 @@ describe("Compose", () => {
     assert.ok(openobserveJob);
     assert.ok(otelJob);
     assert.equal(otelJob.props.connections[0].service, "openobserve-nomad");
+  });
+
+  it("points each dashboard at the output of its OpenObserve job", async () => {
+    const cartridge = readCartridge("../platform/observability/cartridge.json");
+    const dashboard = {
+      server: "openobserve",
+      username: "automation.default@sa.internal",
+      token: { path: "secret/data/platform/openobserve", key: "automation_token" },
+      dashboard: { version: 8 as const, title: "Services", description: "", tabs: [] },
+    };
+    const { constructors, dashboardCalls } = makeConstructors();
+
+    const deployed = await Effect.runPromise(
+      compose(
+        [...expand(cartridge), { _tag: "OpenObserveDashboard", name: "services", dashboard }],
+        constructors,
+      ),
+    );
+
+    assert.deepEqual(
+      dashboardCalls.map((call) => [call.id, call.props.server]),
+      [["openobserve-dashboard-services", "openobserve-nomad"]],
+    );
+    assert.deepEqual(deployed.outputs.at(-1), {
+      kind: "OpenObserveDashboard",
+      id: "openobserve-dashboard-services-oo",
+      name: "services",
+    });
   });
 });
