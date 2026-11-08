@@ -10,6 +10,7 @@ import { ValkeyAccess } from "./src/ValkeyAccess.ts";
 import { AdminCredential } from "./src/AdminCredential.ts";
 import { TailscaleServe } from "./src/TailscaleServe.ts";
 import { OpenObserveDashboard } from "./src/OpenObserveDashboard.ts";
+import { GarageBucket } from "./src/GarageBucket.ts";
 import * as Cartridge from "./src/Cartridge.ts";
 import * as Package from "./src/Package.ts";
 import * as Deployments from "./src/Deployments.ts";
@@ -97,6 +98,7 @@ const stack = Alchemy.Stack(
       | Alchemy.Provider<AdminCredential>
       | Alchemy.Provider<TailscaleServe>
       | Alchemy.Provider<OpenObserveDashboard>
+      | Alchemy.Provider<GarageBucket>
     >(resources, {
       NomadJob,
       PostgresDatabase,
@@ -104,6 +106,7 @@ const stack = Alchemy.Stack(
       AdminCredential,
       TailscaleServe,
       OpenObserveDashboard,
+      GarageBucket,
     }).pipe(
       // The stack fails only with ConfigError; an unresolved route reference is one.
       Effect.mapError(

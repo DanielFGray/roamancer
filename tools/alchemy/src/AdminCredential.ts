@@ -11,7 +11,7 @@ import { OperationJournal } from "./OperationJournal.ts";
 
 const ServerName = S.String.check(S.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/));
 
-export const AdminEngine = S.Literals(["postgres", "valkey"]);
+export const AdminEngine = S.Literals(["postgres", "valkey", "garage"]);
 export type AdminEngine = typeof AdminEngine.Type;
 
 export const AdminCredentialProps = S.Struct({

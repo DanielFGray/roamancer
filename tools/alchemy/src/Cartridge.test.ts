@@ -108,6 +108,11 @@ describe("cartridge v2", () => {
     });
 
     const rejected: ReadonlyArray<[string, Record<string, unknown>, string]> = [
+      [
+        "object store bucket",
+        { objectStore: { bucket: "other" } },
+        "Object store bucket 'other' must equal 'shop'",
+      ],
       ["database", { postgres: [{ database: "other_db" }] }, "Database 'other_db'"],
       ["service", { services: [job({ name: "other-web" })] }, "Service 'other-web'"],
       ["name that only shares a prefix", { services: [job({ name: "shopping" })] }, "'shopping'"],
@@ -253,6 +258,31 @@ describe("cartridge v2", () => {
           },
         ],
       }),
+    );
+  });
+
+  it("rejects ObjectStoreCredentials without objectStore", () => {
+    assert.throws(
+      () =>
+        S.decodeUnknownSync(Cartridge)({
+          apiVersion: "server-ansible/v2",
+          name: "shop",
+          services: [
+            {
+              name: "shop",
+              image: "img",
+              hostPort: "dynamic",
+              containerPort: 80,
+              cpu: 100,
+              memoryMB: 128,
+              networkMode: "bridge",
+              environment: [],
+              connections: [],
+              secrets: [{ _tag: "ObjectStoreCredentials", bucketEnv: "S3_BUCKET" }],
+            },
+          ],
+        }),
+      { message: /ObjectStoreCredentials requires `objectStore`/ },
     );
   });
 

@@ -257,6 +257,8 @@ const record = (options: {
           }),
         readKvKeys: () => Effect.succeed(Option.some([])),
         writeKvKey: unused,
+        readKvData: unused,
+        writeKvData: unused,
         createToken: () => Effect.succeed(Redacted.make("x")),
         readKv: unused,
         readValkeyCredentials: unused,

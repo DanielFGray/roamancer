@@ -19,6 +19,7 @@ import {
 import { DashboardDocument, OpenObserveDashboardProps } from "./OpenObserveDashboard.ts";
 import { ExtensionName, postgresRoles, PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
+import { GarageBucketProps } from "./GarageBucket.ts";
 import { adminCredentialPath } from "./AdminCredential.ts";
 import { Deployments } from "./Deployments.ts";
 
@@ -33,6 +34,9 @@ const PostgresServerDeclaration = S.TaggedStruct("PostgresServer", {
   service: CartridgeJob,
 });
 const ValkeyServerDeclaration = S.TaggedStruct("ValkeyServer", {
+  service: CartridgeJob,
+});
+const GarageServerDeclaration = S.TaggedStruct("GarageServer", {
   service: CartridgeJob,
 });
 
@@ -59,6 +63,16 @@ const ValkeyEntry = S.Struct({
 });
 
 /**
+ * The cartridge's own S3 bucket and key. `bucket` is the bucket the key may use; it defaults to
+ * the cartridge's name, and only a staged copy sets it, to its live app's bucket
+ * (docs/design/object-store.md).
+ */
+const ObjectStoreEntry = S.Struct({
+  server: S.optionalKey(ResourceName),
+  bucket: S.optionalKey(AppName),
+});
+
+/**
  * The OpenObserve dashboards a cartridge keeps. Each file holds one dashboard as OpenObserve's
  * dashboard page exports it, at a path under the runner package root. Only platform cartridges
  * may declare dashboards: an app's cartridge reaches the host as JSON without its files.
@@ -75,9 +89,12 @@ const DashboardsEntry = S.Struct({
 export const Cartridge = S.Struct({
   apiVersion: S.Literals(["server-ansible/v2"]),
   name: AppName,
-  servers: cartridgeArray(S.Union([PostgresServerDeclaration, ValkeyServerDeclaration])),
+  servers: cartridgeArray(
+    S.Union([PostgresServerDeclaration, ValkeyServerDeclaration, GarageServerDeclaration]),
+  ),
   postgres: cartridgeArray(PostgresEntry),
   valkey: S.optionalKey(ValkeyEntry),
+  objectStore: S.optionalKey(ObjectStoreEntry),
   services: S.Array(CartridgeJob),
   dashboards: S.optionalKey(DashboardsEntry),
 }).check(
@@ -85,9 +102,11 @@ export const Cartridge = S.Struct({
     const issues: Array<string> = [];
     if (
       cartridge.servers.length > 0 &&
-      (cartridge.postgres.length > 0 || cartridge.valkey !== undefined)
+      (cartridge.postgres.length > 0 ||
+        cartridge.valkey !== undefined ||
+        cartridge.objectStore !== undefined)
     ) {
-      issues.push("a cartridge cannot both declare servers and postgres/valkey");
+      issues.push("a cartridge cannot both declare servers and postgres/valkey/objectStore");
     }
     const allJobNames = [
       ...cartridge.servers.map((server) => server.service.name),
@@ -114,6 +133,9 @@ export const Cartridge = S.Struct({
         }
         if (secret._tag === "ValkeyCredentials" && cartridge.valkey === undefined) {
           result.push("ValkeyCredentials requires `valkey`");
+        }
+        if (secret._tag === "ObjectStoreCredentials" && cartridge.objectStore === undefined) {
+          result.push("ObjectStoreCredentials requires `objectStore`");
         }
         return result;
       });
@@ -263,15 +285,20 @@ const namespaceIssues = (cartridge: Cartridge): ReadonlyArray<string> => {
     ...[...new Set(volumes)]
       .filter((volume) => !within(volume, app, "-"))
       .map((volume) => `Volume '${volume}' must equal or start with '${app}-'`),
+    ...(cartridge.objectStore?.bucket === undefined || cartridge.objectStore.bucket === app
+      ? []
+      : [`Object store bucket '${cartridge.objectStore.bucket}' must equal '${app}'`]),
   ];
 };
 
 export type ExpandedResource =
   | { readonly _tag: "PostgresServer"; readonly service: ExpandedJob }
   | { readonly _tag: "ValkeyServer"; readonly service: ExpandedJob }
+  | { readonly _tag: "GarageServer"; readonly service: ExpandedJob }
   | { readonly _tag: "NomadService"; readonly service: ExpandedJob }
   | { readonly _tag: "PostgresDatabase"; readonly database: PostgresDatabaseProps }
   | { readonly _tag: "ValkeyAccess"; readonly access: ValkeyAccessConfig }
+  | { readonly _tag: "GarageBucket"; readonly bucket: GarageBucketProps }
   | { readonly _tag: "TailscaleServe"; readonly serviceName: string }
   | {
       readonly _tag: "OpenObserveDashboard";
@@ -323,6 +350,10 @@ const mapSecret = (
     };
     return result;
   }
+  if (secret._tag === "ObjectStoreCredentials") {
+    const { _tag, ...envs } = secret;
+    return { _tag, access: cartridge.name, ...envs };
+  }
   // ValkeyCredentials
   const appUnderscore = appIdentifier(cartridge.name);
   const result: ExpandedSecretReference = {
@@ -371,6 +402,7 @@ const toRenderedJob = (
     image: job.image,
     hostPort: job.hostPort,
     containerPort: job.containerPort,
+    ports: job.ports,
     healthCheck: job.healthCheck,
     cpu: job.cpu,
     memoryMB: job.memoryMB,
@@ -457,7 +489,26 @@ export const expand = (
           } as ExpandedResource,
         ];
 
-  return [...databaseResources, ...valkeyResource, ...orderedJobResources(cartridge, revision)];
+  const objectStoreResource: ReadonlyArray<ExpandedResource> =
+    cartridge.objectStore === undefined
+      ? []
+      : [
+          {
+            _tag: "GarageBucket",
+            bucket: {
+              server: cartridge.objectStore.server ?? "garage",
+              bucket: cartridge.objectStore.bucket ?? cartridge.name,
+              key: cartridge.name,
+            },
+          },
+        ];
+
+  return [
+    ...databaseResources,
+    ...valkeyResource,
+    ...objectStoreResource,
+    ...orderedJobResources(cartridge, revision),
+  ];
 };
 
 /**
@@ -646,6 +697,10 @@ const orderedJobResources = (
         () => ({ _tag: "ValkeyServer", service }) satisfies ExpandedResource,
       ),
       Match.when(
+        "GarageServer",
+        () => ({ _tag: "GarageServer", service }) satisfies ExpandedResource,
+      ),
+      Match.when(
         "NomadService",
         () => ({ _tag: "NomadService", service }) satisfies ExpandedResource,
       ),
@@ -661,7 +716,7 @@ const orderedJobResources = (
  */
 const declaredJobs = (cartridge: {
   readonly servers: ReadonlyArray<{
-    readonly _tag: "PostgresServer" | "ValkeyServer";
+    readonly _tag: "PostgresServer" | "ValkeyServer" | "GarageServer";
     readonly service: CartridgeJob;
   }>;
   readonly services: ReadonlyArray<CartridgeJob>;

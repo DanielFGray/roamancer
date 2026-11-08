@@ -68,6 +68,9 @@ export const baseName = (stage: string): Option.Option<string> =>
  * record, not from whether the live database exists, so a released app whose live
  * database is missing still fails its copy instead of staging on empty data.
  *
+ * The copy's object store key reads and writes the live bucket, so its rows name objects that
+ * exist. So a staged copy can change live objects; docs/design/object-store.md records why.
+ *
  * Refused when the services do not all run one image, because one candidate image cannot
  * replace them, and when a service writes a host volume, because the copy would write the
  * live volume.
@@ -116,6 +119,16 @@ export const staged = (
         database: derived.database(entry.database),
         copyFrom: live.released ? entry.database : entry.copyFrom,
       })),
+      // The staged key uses the live bucket (docs/design/object-store.md); its name, the copy's
+      // own, comes from the cartridge name.
+      ...(cartridge.objectStore === undefined
+        ? {}
+        : {
+            objectStore: {
+              ...cartridge.objectStore,
+              bucket: cartridge.objectStore.bucket ?? cartridge.name,
+            },
+          }),
     };
   });
 

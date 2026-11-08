@@ -72,10 +72,20 @@ const ValkeyCredentialsReference = S.TaggedStruct("ValkeyCredentials", {
   passwordEnv: S.optionalKey(EnvironmentVariable),
   url: S.optionalKey(ValkeyUrlReference),
 });
+
+// The bucket, its region and the key live together at `credentialPath` (GarageBucket.ts), so a
+// rendered task reads them from one place; only the S3 endpoint comes from Nomad.
+const ObjectStoreCredentialsReference = S.TaggedStruct("ObjectStoreCredentials", {
+  access: ResourceName,
+  credentialPath: SecretPath,
+  server: ResourceName,
+  ...objectStoreEnvFields(),
+});
 export const SecretReference = S.Union([
   KvSecretReference,
   PostgresCredentialsReference,
   ValkeyCredentialsReference,
+  ObjectStoreCredentialsReference,
 ]);
 export type SecretReference = typeof SecretReference.Type;
 
@@ -91,6 +101,27 @@ export const ValkeyCredentialsDeclaration = S.TaggedStruct("ValkeyCredentials", 
   passwordEnv: S.optionalKey(EnvironmentVariable),
   urlEnv: S.optionalKey(EnvironmentVariable),
 }).check(atLeastOneEnvironmentVariable);
+/** The environment names an object store credential may render; each is optional. */
+function objectStoreEnvFields() {
+  return {
+    endpointEnv: S.optionalKey(EnvironmentVariable),
+    regionEnv: S.optionalKey(EnvironmentVariable),
+    bucketEnv: S.optionalKey(EnvironmentVariable),
+    accessKeyIdEnv: S.optionalKey(EnvironmentVariable),
+    secretAccessKeyEnv: S.optionalKey(EnvironmentVariable),
+  };
+}
+
+const atLeastOneObjectStoreEnv = S.makeFilter((value: Record<string, unknown>) =>
+  Object.keys(objectStoreEnvFields()).some((key) => value[key] !== undefined)
+    ? undefined
+    : "at least one environment variable is required",
+);
+
+export const ObjectStoreCredentialsDeclaration = S.TaggedStruct(
+  "ObjectStoreCredentials",
+  objectStoreEnvFields(),
+).check(atLeastOneObjectStoreEnv);
 export const PostgresCredentialsDeclaration = S.TaggedStruct("PostgresCredentials", {
   database: DatabaseIdentifier,
   login: S.Literals(["api", "migration"]),
@@ -102,6 +133,7 @@ export const CartridgeSecretReference = S.Union([
   KvSecretReference,
   PostgresCredentialsDeclaration,
   ValkeyCredentialsDeclaration,
+  ObjectStoreCredentialsDeclaration,
 ]);
 export type CartridgeSecretReference = typeof CartridgeSecretReference.Type;
 
@@ -112,12 +144,32 @@ export const secretPolicyPath = (secret: SecretReference) =>
     Match.when({ _tag: "KvSecret" }, (value) => value.path),
     Match.when({ _tag: "PostgresCredentials" }, (value) => value.credentialPath),
     Match.when({ _tag: "ValkeyCredentials" }, (value) => value.credentialPath),
+    Match.when({ _tag: "ObjectStoreCredentials" }, (value) => value.credentialPath),
     Match.exhaustive,
   );
 
 /** The OpenBao paths a job reads, across its service task and its migration task, for its one workload role. */
 export const secretPolicyPaths = (job: Job) =>
   [...(job.secrets ?? []), ...(job.migrate?.secrets ?? [])].map(secretPolicyPath);
+
+const Port = S.Number.check(S.isInt(), S.isGreaterThan(0), S.isLessThanOrEqualTo(65_535));
+
+/**
+ * A port beside the job's service port. It gets a dynamic host port, and Nomad registers it as
+ * the service `portServiceName(job, name)`, so a job can serve one API to apps and another to
+ * the platform. `service` is the label of the main port.
+ */
+const NamedPort = S.Struct({
+  name: S.String.check(
+    S.isPattern(/^[a-z][a-z0-9]{0,15}$/),
+    S.makeFilter((name) => (name === "service" ? 'must not be "service"' : undefined)),
+  ),
+  containerPort: Port,
+});
+type NamedPort = typeof NamedPort.Type;
+
+/** The Nomad service that a job's named port registers. */
+export const portServiceName = (job: string, port: string) => `${job}-${port}`;
 
 const Storage = S.Struct({
   volume: ResourceName,
@@ -173,7 +225,8 @@ const JobBaseFields = {
     S.Literals(["dynamic"]),
     S.Number.check(S.isInt(), S.isGreaterThan(0), S.isLessThanOrEqualTo(65_535)),
   ]),
-  containerPort: S.Number.check(S.isInt(), S.isGreaterThan(0), S.isLessThanOrEqualTo(65_535)),
+  containerPort: Port,
+  ports: S.optionalKey(S.Array(NamedPort)),
   healthCheck: S.optionalKey(HealthCheck),
   cpu: S.Number.check(S.isInt(), S.isGreaterThan(0)),
   memoryMB: S.Number.check(S.isInt(), S.isGreaterThan(0)),
@@ -200,10 +253,15 @@ export const ExpandedValkeyCredentials = S.TaggedStruct("ValkeyCredentials", {
   passwordEnv: S.optionalKey(EnvironmentVariable),
   url: S.optionalKey(S.Struct({ env: EnvironmentVariable })),
 });
+export const ExpandedObjectStoreCredentials = S.TaggedStruct("ObjectStoreCredentials", {
+  access: ResourceName,
+  ...objectStoreEnvFields(),
+});
 export const ExpandedSecretReference = S.Union([
   KvSecretReference,
   ExpandedPostgresCredentials,
   ExpandedValkeyCredentials,
+  ExpandedObjectStoreCredentials,
 ]);
 export type ExpandedSecretReference = typeof ExpandedSecretReference.Type;
 
@@ -231,10 +289,14 @@ const hostNetworkPorts = S.makeFilter(
     networkMode: string;
     hostPort: string | number;
     containerPort: number;
+    ports?: ReadonlyArray<NamedPort>;
     routes?: ReadonlyArray<Route>;
   }) => {
     if (job.networkMode === "host" && job.routes?.some((route) => route.access === "tailnet")) {
       return "tailnet routes require bridge or pasta networking";
+    }
+    if (job.networkMode === "host" && (job.ports?.length ?? 0) > 0) {
+      return "named ports require bridge or pasta networking";
     }
     return job.networkMode === "host" && job.hostPort !== job.containerPort
       ? "host networking requires a fixed hostPort equal to containerPort"
@@ -322,6 +384,26 @@ const valkeyUrlLines = (url: typeof ValkeyUrlReference.Type) => [
   "{{- end }}",
 ];
 
+const objectStoreLines = (value: typeof ObjectStoreCredentialsReference.Type) => [
+  ...(value.endpointEnv === undefined
+    ? []
+    : [
+        '{{- range nomadService "' + value.server + '" }}',
+        value.endpointEnv + '={{ printf "http://%s:%d" .Address .Port | toJSON }}' + lineEnd,
+        "{{- end }}",
+      ]),
+  ...(
+    [
+      [value.regionEnv, "region"],
+      [value.bucketEnv, "bucket"],
+      [value.accessKeyIdEnv, "accessKeyId"],
+      [value.secretAccessKeyEnv, "secretAccessKey"],
+    ] as const
+  ).flatMap(([env, key]) =>
+    env === undefined ? [] : [env + "={{ .Data.data." + key + " | toJSON }}" + lineEnd],
+  ),
+];
+
 const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
   DestPath: "secrets/openbao.env",
   Envvars: true,
@@ -362,15 +444,23 @@ const toSecretTemplate = (secrets: ReadonlyArray<SecretReference>) => ({
             "{{- end }}",
           ].join("\n"),
         ),
+        Match.when({ _tag: "ObjectStoreCredentials" }, (value) =>
+          [
+            '{{- with secret "' + value.credentialPath + '" -}}',
+            ...objectStoreLines(value),
+            "{{- end }}",
+          ].join("\n"),
+        ),
         Match.exhaustive,
       ),
     )
     .join("\n"),
 });
 
-const toNetwork = (job: Job) =>
-  job.hostPort === "dynamic"
-    ? { DynamicPorts: [{ Label: "service", To: job.containerPort }] }
+const toNetwork = (job: Job) => {
+  const named = (job.ports ?? []).map((port) => ({ Label: port.name, To: port.containerPort }));
+  return job.hostPort === "dynamic"
+    ? { DynamicPorts: [{ Label: "service", To: job.containerPort }, ...named] }
     : {
         ReservedPorts: [
           {
@@ -379,7 +469,9 @@ const toNetwork = (job: Job) =>
             To: job.networkMode === "host" ? undefined : job.containerPort,
           },
         ],
+        ...(named.length === 0 ? {} : { DynamicPorts: named }),
       };
+};
 
 const toHealthCheck = (healthCheck: HealthCheck) =>
   healthCheck.type === "http"
@@ -406,7 +498,7 @@ export const progressDeadlineMillis = 600_000;
 export const toJobSpec = (job: Job, owner: string) => {
   const serverTask = toTask(job, {
     name: "server",
-    ports: ["service"],
+    ports: ["service", ...(job.ports ?? []).map((port) => port.name)],
     command: job.command,
     args: job.args,
     secrets: job.secrets ?? [],
@@ -462,6 +554,13 @@ export const toJobSpec = (job: Job, owner: string) => {
             Tags: routeTags(job),
             Checks: job.healthCheck === undefined ? undefined : [toHealthCheck(job.healthCheck)],
           },
+          ...(job.ports ?? []).map((port) => ({
+            Name: portServiceName(job.name, port.name),
+            PortLabel: port.name,
+            Provider: "nomad",
+            Tags: [],
+            Checks: undefined,
+          })),
         ],
         Tasks: tasks,
       },

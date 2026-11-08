@@ -321,6 +321,100 @@ describe("Nomad workload rendering", () => {
     );
   });
 
+  it("registers a named port as its own Nomad service on a dynamic host port", () => {
+    const job = S.decodeUnknownSync(Job)({
+      name: "garage",
+      image: "registry.example.test/platform-garage:2",
+      hostPort: "dynamic",
+      containerPort: 3900,
+      ports: [{ name: "admin", containerPort: 3903 }],
+      cpu: 200,
+      memoryMB: 256,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+    });
+
+    const group = toJobSpec(job, "ProofStack/garage").TaskGroups[0];
+
+    assert.deepEqual(group.Networks[0].DynamicPorts, [
+      { Label: "service", To: 3900 },
+      { Label: "admin", To: 3903 },
+    ]);
+    assert.deepEqual(
+      group.Services.map((service) => [service.Name, service.PortLabel]),
+      [
+        ["garage", "service"],
+        ["garage-admin", "admin"],
+      ],
+    );
+    assert.deepEqual(group.Tasks[0].Config.ports, ["service", "admin"]);
+  });
+
+  it("refuses a named port on host networking, where Nomad maps no ports", () => {
+    assert.throws(
+      () =>
+        S.decodeUnknownSync(Job)({
+          name: "garage",
+          image: "img",
+          hostPort: 3900,
+          containerPort: 3900,
+          ports: [{ name: "admin", containerPort: 3903 }],
+          cpu: 200,
+          memoryMB: 256,
+          networkMode: "host",
+          environment: [],
+          connections: [],
+        }),
+      { message: /named ports require bridge or pasta networking/ },
+    );
+  });
+
+  it("renders an object store key with its bucket and region from OpenBao, and the S3 endpoint from Nomad", () => {
+    const job = S.decodeUnknownSync(Job)({
+      name: "shop",
+      image: "img",
+      hostPort: "dynamic",
+      containerPort: 3000,
+      cpu: 100,
+      memoryMB: 128,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+      secrets: [
+        {
+          _tag: "ObjectStoreCredentials",
+          access: "shop",
+          credentialPath: "secret/data/garage/shop",
+          server: "garage",
+          endpointEnv: "S3_ENDPOINT",
+          regionEnv: "S3_REGION",
+          bucketEnv: "S3_BUCKET",
+          accessKeyIdEnv: "S3_ACCESS_KEY_ID",
+          secretAccessKeyEnv: "S3_SECRET_ACCESS_KEY",
+        },
+      ],
+    });
+
+    const template = toJobSpec(job, "ProofStack/shop").TaskGroups[0].Tasks[0].Templates[0]
+      .EmbeddedTmpl;
+
+    assert.match(template, /^\{\{- with secret "secret\/data\/garage\/shop" -\}\}/);
+    assert.match(
+      template,
+      /\{\{- range nomadService "garage" \}\}\nS3_ENDPOINT=\{\{ printf "http:\/\/%s:%d" \.Address \.Port \| toJSON \}\}/,
+    );
+    // GarageBucket.ts writes these keys at the credential path.
+    for (const [env, key] of [
+      ["S3_REGION", "region"],
+      ["S3_BUCKET", "bucket"],
+      ["S3_ACCESS_KEY_ID", "accessKeyId"],
+      ["S3_SECRET_ACCESS_KEY", "secretAccessKey"],
+    ]) {
+      assert.ok(template.includes(`${env}={{ .Data.data.${key} | toJSON }}`), env);
+    }
+  });
+
   it("renders no URL line for credentials without a url", () => {
     const job = S.decodeUnknownSync(Job)({
       name: "proof-app",

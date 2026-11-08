@@ -12,6 +12,7 @@ import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import { AdminCredentialProps } from "./AdminCredential.ts";
 import { TailscaleServeProps } from "./TailscaleServe.ts";
 import type { OpenObserveDashboardProps } from "./OpenObserveDashboard.ts";
+import type { GarageBucketProps } from "./GarageBucket.ts";
 
 const readCartridge = (rel: string) => {
   const path = fileURLToPath(new URL(rel, import.meta.url));
@@ -26,6 +27,7 @@ const makeConstructors = () => {
   const adminCredentialCalls: Array<{ id: string; props: AdminCredentialProps }> = [];
   const tailscaleServeCalls: Array<{ id: string; props: TailscaleServeProps }> = [];
   const dashboardCalls: Array<{ id: string; props: OpenObserveDashboardProps }> = [];
+  const garageBucketCalls: Array<{ id: string; props: GarageBucketProps }> = [];
   // Alchemy keys resources by logical ID within a stack, so a repeated ID would merge two resources.
   const declaredIds = new Set<string>();
   const declare = <A>(id: string, output: A) =>
@@ -74,6 +76,14 @@ const makeConstructors = () => {
         path: `secret/data/${props.engine}/servers/${props.server}`,
       });
     },
+    GarageBucket: (id: string, props: GarageBucketProps) => {
+      garageBucketCalls.push({ id, props });
+      return declare(id, {
+        id: `${id}-gb`,
+        server: props.server,
+        credentialPath: `secret/data/garage/${props.key}`,
+      });
+    },
     OpenObserveDashboard: (id: string, props: OpenObserveDashboardProps) => {
       dashboardCalls.push({ id, props });
       return declare(id, { dashboardId: `${id}-oo`, hash: "1" });
@@ -88,6 +98,7 @@ const makeConstructors = () => {
     adminCredentialCalls,
     tailscaleServeCalls,
     dashboardCalls,
+    garageBucketCalls,
   };
 };
 
@@ -176,6 +187,35 @@ describe("Compose", () => {
     if (vkSecret.url !== undefined) {
       assert.equal(vkSecret.url.server, "valkey");
     }
+  });
+
+  it("points a service's object store credentials at its own key and the S3 service", async () => {
+    const source = readCartridge("../examples/app-needs/cartridge.json");
+    const cartridge: Cartridge = {
+      ...source,
+      objectStore: {},
+      services: source.services.map((job) => ({
+        ...job,
+        secrets: [...job.secrets, { _tag: "ObjectStoreCredentials", bucketEnv: "S3_BUCKET" }],
+      })),
+    };
+    const { constructors, nomadJobCalls } = makeConstructors();
+
+    await Effect.runPromise(compose(expand(cartridge), constructors));
+
+    const secrets = nomadJobCalls.find((call) => call.id === "app-needs")?.props.secrets ?? [];
+    assert.deepEqual(
+      secrets.filter((secret) => secret._tag === "ObjectStoreCredentials"),
+      [
+        {
+          _tag: "ObjectStoreCredentials",
+          access: "app-needs",
+          credentialPath: "secret/data/garage/app-needs",
+          server: "garage",
+          bucketEnv: "S3_BUCKET",
+        },
+      ],
+    );
   });
 
   it("routes migration and api logins to their credential paths", async () => {

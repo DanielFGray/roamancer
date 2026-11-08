@@ -107,8 +107,7 @@ type WriteBody =
       readonly max_ttl: string;
     }
   | { readonly policy: string }
-  | { readonly data: typeof ValkeyCredentials.Type }
-  | { readonly data: typeof AdminCredential.Type }
+  | { readonly data: Readonly<Record<string, string>> }
   // A KV v2 write that fails unless the secret is still at version `cas` (0: not yet written).
   | { readonly options: { readonly cas: number }; readonly data: Readonly<Record<string, string>> }
   | { readonly ttl: string }
@@ -159,6 +158,15 @@ export class OpenBao extends Context.Service<
       roles: ReadonlyArray<DatabaseRole>,
     ) => Effect.Effect<void, OpenBaoError>;
     readonly configureWorkloadRole: (role: WorkloadRole) => Effect.Effect<void, OpenBaoError>;
+    /** Every key and value stored at a KV v2 path; None when nothing is stored there. */
+    readonly readKvData: (
+      path: string,
+    ) => Effect.Effect<Option.Option<Readonly<Record<string, string>>>, OpenBaoError>;
+    /** Replaces every key at a KV v2 path with `data`, in one write. */
+    readonly writeKvData: (
+      path: string,
+      data: Readonly<Record<string, string>>,
+    ) => Effect.Effect<void, OpenBaoError>;
     /** The key names stored at a KV v2 path; None when nothing is stored there. */
     readonly readKvKeys: (
       path: string,
@@ -442,6 +450,18 @@ export class OpenBao extends Context.Service<
         return Option.some(value.data);
       });
 
+      const readKvData = Effect.fn("OpenBao.readKvData")(function* (path: string) {
+        const entry = yield* readKvEntry(path);
+        return Option.map(entry, (found) => found.data);
+      });
+
+      const writeKvData = Effect.fn("OpenBao.writeKvData")(function* (
+        path: string,
+        data: Readonly<Record<string, string>>,
+      ) {
+        yield* request("write secret", path, "PUT", path, { data });
+      });
+
       const readKvKeys = Effect.fn("OpenBao.readKvKeys")(function* (path: string) {
         const entry = yield* readKvEntry(path);
         return Option.map(entry, (found) => Object.keys(found.data));
@@ -477,6 +497,8 @@ export class OpenBao extends Context.Service<
       });
 
       return OpenBao.of({
+        readKvData,
+        writeKvData,
         readKvKeys,
         writeKvKey,
         checkToken,

@@ -7,6 +7,7 @@ import type { ExpandedResource } from "./Cartridge.ts";
 import { Job, ExpandedJob, ExpandedSecretReference, SecretReference } from "./Job.ts";
 import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
+import type { GarageBucketProps } from "./GarageBucket.ts";
 import { AdminCredentialProps } from "./AdminCredential.ts";
 import { TailscaleServeProps } from "./TailscaleServe.ts";
 import type { DashboardAttributes, OpenObserveDashboardProps } from "./OpenObserveDashboard.ts";
@@ -26,6 +27,17 @@ type PostgresDatabaseOutput = {
 type ValkeyAccessOutput = {
   readonly id: string;
   readonly credentialPath: string;
+};
+
+type GarageBucketOutput = {
+  readonly id: string;
+  readonly server: string;
+  readonly credentialPath: string;
+};
+
+type DeployedGarageBucket = {
+  readonly key: string;
+  readonly resource: GarageBucketOutput;
 };
 
 type AdminCredentialOutput = {
@@ -65,6 +77,7 @@ export class ComposeError extends S.TaggedError<ComposeError>()("ComposeError", 
 export type DeployedState = {
   readonly services: ReadonlyArray<DeployedService>;
   readonly valkeyAccesses: ReadonlyArray<DeployedValkeyAccess>;
+  readonly garageBuckets: ReadonlyArray<DeployedGarageBucket>;
   readonly postgresDatabases: ReadonlyArray<DeployedPostgresDatabase>;
   readonly tailnetServes: ReadonlyArray<DeployedServe>;
   readonly outputs: ReadonlyArray<{
@@ -86,6 +99,10 @@ export type Constructors<R> = {
     id: string,
     props: ValkeyAccessConfig,
   ) => Effect.Effect<ValkeyAccessOutput, never, R>;
+  readonly GarageBucket: (
+    id: string,
+    props: GarageBucketProps,
+  ) => Effect.Effect<GarageBucketOutput, never, R>;
   readonly TailscaleServe: (
     id: string,
     props: TailscaleServeProps,
@@ -164,13 +181,10 @@ export const compose = <R>(
             };
           }),
         ),
-        Match.tag("PostgresServer", "ValkeyServer", (declaration) =>
+        Match.tag("PostgresServer", "ValkeyServer", "GarageServer", (declaration) =>
           Effect.gen(function* () {
             const service = declaration.service;
-            const config =
-              declaration._tag === "PostgresServer"
-                ? { engine: "postgres" as const, env: "POSTGRES_PASSWORD", kind: "PostgresServer" }
-                : { engine: "valkey" as const, env: "VALKEY_ADMIN_PASSWORD", kind: "ValkeyServer" };
+            const config = serverAdmin[declaration._tag];
             const adminCredential = yield* constructors.AdminCredential(
               `${service.name}-admin-credential`,
               {
@@ -185,6 +199,23 @@ export const compose = <R>(
               env: config.env,
             };
             return yield* declareJob(config.kind, service, state, [adminSecret], constructors);
+          }),
+        ),
+        Match.when({ _tag: "GarageBucket" }, ({ bucket }) =>
+          Effect.gen(function* () {
+            const resource = yield* constructors.GarageBucket(
+              `garage-bucket-${bucket.key}`,
+              bucket,
+            );
+            return {
+              ...state,
+              garageBuckets: Arr.append(state.garageBuckets, { key: bucket.key, resource }),
+              outputs: Arr.append(state.outputs, {
+                kind: "GarageBucket",
+                id: resource.id,
+                name: bucket.key,
+              }),
+            };
           }),
         ),
         Match.when({ _tag: "ValkeyAccess" }, ({ access }) =>
@@ -242,9 +273,17 @@ export const compose = <R>(
       ),
   );
 
+/** Each server kind's admin credential engine and the variable its job reads it from. */
+const serverAdmin = {
+  PostgresServer: { engine: "postgres", env: "POSTGRES_PASSWORD", kind: "PostgresServer" },
+  ValkeyServer: { engine: "valkey", env: "VALKEY_ADMIN_PASSWORD", kind: "ValkeyServer" },
+  GarageServer: { engine: "garage", env: "GARAGE_ADMIN_TOKEN", kind: "GarageServer" },
+} as const;
+
 const initialState = (): DeployedState => ({
   services: Arr.empty<DeployedService>(),
   valkeyAccesses: Arr.empty<DeployedValkeyAccess>(),
+  garageBuckets: Arr.empty<DeployedGarageBucket>(),
   postgresDatabases: Arr.empty<DeployedPostgresDatabase>(),
   tailnetServes: Arr.empty<DeployedServe>(),
   outputs: Arr.empty<{ readonly kind: string; readonly id: string; readonly name: string }>(),
@@ -265,53 +304,73 @@ const resolveSecrets = (secrets: ReadonlyArray<ExpandedSecretReference>, state: 
   Effect.forEach(secrets, (secret) =>
     Match.value(secret).pipe(
       Match.when({ _tag: "ValkeyCredentials" }, (value) =>
-        Option.match(
-          Arr.findFirst(state.valkeyAccesses, (entry) => entry.name === value.access),
-          {
-            onNone: () => Effect.die(new Error(`unresolved Valkey access '${value.access}'`)),
-            onSome: (access) =>
-              Effect.succeed<SecretReference>({
-                _tag: "ValkeyCredentials",
-                access: value.access,
-                credentialPath: access.resource.credentialPath,
-                usernameEnv: value.usernameEnv,
-                passwordEnv: value.passwordEnv,
-                url:
-                  value.url === undefined
-                    ? undefined
-                    : { env: value.url.env, server: access.server },
-              }),
-          },
+        deployed(
+          state.valkeyAccesses,
+          (entry) => entry.name === value.access,
+          `Valkey access '${value.access}'`,
+          (access): SecretReference => ({
+            _tag: "ValkeyCredentials",
+            access: value.access,
+            credentialPath: access.resource.credentialPath,
+            usernameEnv: value.usernameEnv,
+            passwordEnv: value.passwordEnv,
+            url:
+              value.url === undefined ? undefined : { env: value.url.env, server: access.server },
+          }),
         ),
       ),
       Match.when({ _tag: "PostgresCredentials" }, (value) =>
-        Option.match(
-          Arr.findFirst(state.postgresDatabases, (entry) => entry.role === value.role),
-          {
-            onNone: () => Effect.die(new Error(`unresolved PostgreSQL role '${value.role}'`)),
-            onSome: (database) =>
-              Effect.succeed<SecretReference>({
-                _tag: "PostgresCredentials",
-                role: value.role,
-                credentialPath: database.credentialPath,
-                usernameEnv: value.usernameEnv,
-                passwordEnv: value.passwordEnv,
-                url:
-                  value.url === undefined
-                    ? undefined
-                    : {
-                        env: value.url.env,
-                        server: database.resource.server,
-                        database: database.resource.name,
-                      },
-              }),
-          },
+        deployed(
+          state.postgresDatabases,
+          (entry) => entry.role === value.role,
+          `PostgreSQL role '${value.role}'`,
+          (database): SecretReference => ({
+            _tag: "PostgresCredentials",
+            role: value.role,
+            credentialPath: database.credentialPath,
+            usernameEnv: value.usernameEnv,
+            passwordEnv: value.passwordEnv,
+            url:
+              value.url === undefined
+                ? undefined
+                : {
+                    env: value.url.env,
+                    server: database.resource.server,
+                    database: database.resource.name,
+                  },
+          }),
+        ),
+      ),
+      Match.when({ _tag: "ObjectStoreCredentials" }, ({ _tag, access, ...envs }) =>
+        deployed(
+          state.garageBuckets,
+          (entry) => entry.key === access,
+          `object store key '${access}'`,
+          (bucket): SecretReference => ({
+            _tag,
+            access,
+            credentialPath: bucket.resource.credentialPath,
+            server: bucket.resource.server,
+            ...envs,
+          }),
         ),
       ),
       Match.when({ _tag: "KvSecret" }, (s) => Effect.succeed<SecretReference>(s)),
       Match.exhaustive,
     ),
   );
+
+// compose declares every resource before the jobs that use it, so a miss is a bug in compose.
+const deployed = <A, B>(
+  entries: ReadonlyArray<A>,
+  matches: (entry: A) => boolean,
+  what: string,
+  build: (entry: A) => B,
+) =>
+  Option.match(Arr.findFirst(entries, matches), {
+    onNone: () => Effect.die(new Error(`unresolved ${what}`)),
+    onSome: (entry) => Effect.succeed(build(entry)),
+  });
 
 const declareJob = <R>(
   kind: string,

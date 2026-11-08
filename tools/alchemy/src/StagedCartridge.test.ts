@@ -199,6 +199,22 @@ describe("staged cartridge", () => {
     );
   });
 
+  it("gives the staged copy its own object store key on the live bucket", async () => {
+    const live: Cartridge = {
+      ...(await load("../examples/apps/giglist/cartridge.json")),
+      objectStore: {},
+    };
+    const buckets = (cartridge: Cartridge) =>
+      expand(cartridge).flatMap((resource) =>
+        resource._tag === "GarageBucket" ? [resource.bucket] : [],
+      );
+
+    assert.deepEqual(buckets(live), [{ server: "garage", bucket: "giglist", key: "giglist" }]);
+    assert.deepEqual(buckets(await stage(live)), [
+      { server: "garage", bucket: "giglist", key: "giglist-staged" },
+    ]);
+  });
+
   it("stages postgres-garden's database, names and image", async () => {
     const live = await load("../examples/apps/postgres-garden/cartridge.json");
     const copy = await stage(live);
