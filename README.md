@@ -38,7 +38,8 @@ and orders the jobs by their dependencies.
 cluster registry. By default that build runs on the workstation with Docker. Set
 `[build] node = "<host>"` in the site folder's `site.toml` to build on that host with rootless
 Podman instead; the node receives the tree as a tar on ssh stdin and needs no app checkout.
-Both paths pin the same `repository:commit@digest` in the cartridge.
+Both paths build the repository's `Dockerfile`, even when a `Containerfile` sits beside it, and pin the same
+`repository:commit@digest` in the cartridge.
 
 ## What you get
 

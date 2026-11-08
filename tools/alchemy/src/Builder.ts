@@ -15,11 +15,17 @@ export interface BuildImage {
   readonly commit: string;
 }
 
+/**
+ * The file both builders build, named so they agree: Podman would otherwise prefer a
+ * Containerfile in the same tree, and an app may keep one for another purpose.
+ */
+const buildFile = "Dockerfile";
+
 /** Docker build and push on this machine from the exported tree. */
 const localBuild = (tree: string, image: BuildImage) =>
   Effect.gen(function* () {
     const tagged = `${image.repository}:${image.commit}`;
-    yield* run("docker", ["build", "-t", tagged, tree]);
+    yield* run("docker", ["build", "-f", `${tree}/${buildFile}`, "-t", tagged, tree]);
     yield* run("docker", ["push", tagged]);
     const digests = yield* output("docker", [
       "inspect",
@@ -52,7 +58,7 @@ const nodeBuild = (host: string) => (tree: string, image: BuildImage) =>
     const remote = [
       "tmp=$(mktemp)",
       `trap 'rm -f "$tmp"' EXIT`,
-      `podman build -t ${quote(tagged)} - >&2`,
+      `podman build -f ${buildFile} -t ${quote(tagged)} - >&2`,
       `podman push --digestfile "$tmp" ${quote(tagged)} >&2`,
       `cat "$tmp"`,
     ].join(" && ");

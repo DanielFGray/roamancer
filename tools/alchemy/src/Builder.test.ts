@@ -94,7 +94,7 @@ describe("Builder.layer", () => {
     assert.equal(log.length, 1);
     assert.equal(
       log[0],
-      `tar -C ${tree} -cf - . | ssh atheist tmp=$(mktemp) && trap 'rm -f "$tmp"' EXIT && podman build -t '${tagged}' - >&2 && podman push --digestfile "$tmp" '${tagged}' >&2 && cat "$tmp"`,
+      `tar -C ${tree} -cf - . | ssh atheist tmp=$(mktemp) && trap 'rm -f "$tmp"' EXIT && podman build -f Dockerfile -t '${tagged}' - >&2 && podman push --digestfile "$tmp" '${tagged}' >&2 && cat "$tmp"`,
     );
     assert.equal(result, `${tagged}@${digest}`);
   });
@@ -154,7 +154,11 @@ esac
         output: (line) => (line.startsWith("docker inspect") ? `${repository}@${digest}\n` : ""),
       },
     );
-    assert.ok(log.some((line) => line.startsWith(`docker build -t ${tagged} ${tree}`)));
+    assert.ok(
+      log.some((line) =>
+        line.startsWith(`docker build -f ${tree}/Dockerfile -t ${tagged} ${tree}`),
+      ),
+    );
     assert.ok(log.some((line) => line.startsWith(`docker push ${tagged}`)));
     assert.ok(log.some((line) => line.startsWith("docker inspect ")));
     assert.equal(log.filter((line) => line.includes(" ssh ")).length, 0);
