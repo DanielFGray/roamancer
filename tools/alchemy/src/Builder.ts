@@ -26,6 +26,15 @@ const localBuild = (tree: string, image: BuildImage) =>
   Effect.gen(function* () {
     const tagged = `${image.repository}:${image.commit}`;
     yield* run("docker", ["build", "-f", `${tree}/${buildFile}`, "-t", tagged, tree]);
+    return yield* dockerPush(image.repository, tagged);
+  });
+
+/**
+ * Push `tagged`, an image in this machine's Docker named `repository:tag`, and return
+ * `repository:tag@digest`. Docker learns the digest from the registry during the push.
+ */
+export const dockerPush = (repository: string, tagged: string) =>
+  Effect.gen(function* () {
     yield* run("docker", ["push", tagged]);
     const digests = yield* output("docker", [
       "inspect",
@@ -34,7 +43,7 @@ const localBuild = (tree: string, image: BuildImage) =>
       tagged,
     ]);
     const pinned = yield* Arr.findFirst(digests.split("\n"), (digest) =>
-      digest.startsWith(`${image.repository}@`),
+      digest.startsWith(`${repository}@`),
     ).pipe(
       Option.match({
         onNone: () =>
@@ -42,7 +51,7 @@ const localBuild = (tree: string, image: BuildImage) =>
         onSome: Effect.succeed,
       }),
     );
-    const digest = pinned.slice(image.repository.length + 1);
+    const digest = pinned.slice(repository.length + 1);
     return `${tagged}@${digest}`;
   });
 

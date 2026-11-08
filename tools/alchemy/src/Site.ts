@@ -11,6 +11,9 @@ const SiteFile = S.Struct({
   cluster: S.Struct({
     server: S.String,
     lanAddress: S.String,
+    // Only `ops image` reads the registry, so other commands work without these.
+    registryName: S.optionalKey(S.String),
+    registryPort: S.optionalKey(S.Number),
     nodes: S.optionalKey(S.Record(S.String, S.String)),
   }),
   build: S.optionalKey(S.Struct({ node: S.String })),
@@ -83,7 +86,18 @@ export class Site extends Context.Service<Site>()("ops/Site", {
       return address;
     });
 
-    return { folder, host, buildNode, devDbAddress };
+    /** The cluster image registry, as `name:port`, which every machine reaches by that name. */
+    const registry = Effect.gen(function* () {
+      const { registryName, registryPort } = (yield* siteFile).cluster;
+      if (registryName === undefined || registryPort === undefined) {
+        return yield* new OpsError({
+          message: "site.toml must set cluster.registryName and cluster.registryPort",
+        });
+      }
+      return `${registryName}:${registryPort}`;
+    });
+
+    return { folder, host, buildNode, devDbAddress, registry };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);

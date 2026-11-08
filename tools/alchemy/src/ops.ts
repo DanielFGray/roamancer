@@ -1,6 +1,6 @@
 /*
  * `ops`, the operator's command: releases and secrets from an app's repository, host
- * configuration (`rebuild`, `install`), and every Alchemy and Nomad command, which is a job on the
+ * configuration (`rebuild`, `install`), platform images (`image`), and every Alchemy and Nomad command, which is a job on the
  * control host. `scripts/ops` starts this file. The site folder that OPS_SITE names says
  * where the control host is (src/Site.ts).
  */
@@ -11,7 +11,7 @@ import { Argument, Command, Flag } from "effect/cli";
 import { Builder } from "./Builder.ts";
 import { commands as devCommands } from "./devdb/Commands.ts";
 import { OpsError, route } from "./Exec.ts";
-import { HostName, install, rebuild } from "./Nixos.ts";
+import { HostName, image, install, rebuild } from "./Nixos.ts";
 import { commands as releaseCommands } from "./release.ts";
 import { commands as jobCommands, forwarded } from "./Jobs.ts";
 import { Remote } from "./Remote.ts";
@@ -56,6 +56,22 @@ const installCommand = Command.make(
   install,
 ).pipe(Command.withDescription("Erase a machine's disk and install a host's configuration"));
 
+const imageCommand = Command.make(
+  "image",
+  {
+    output: Argument.String("output").pipe(
+      Argument.withDescription(
+        "A container image output of the root flake.nix, such as garage-image",
+      ),
+    ),
+  },
+  ({ output }) => image(output),
+).pipe(
+  Command.withDescription(
+    "Build a platform image with Nix, push it, and print the reference to pin",
+  ),
+);
+
 const ops = Command.make("ops").pipe(
   Command.withDescription("Release apps, rebuild hosts, and run Alchemy on the control host"),
   Command.withSubcommands([
@@ -64,6 +80,7 @@ const ops = Command.make("ops").pipe(
     secret,
     rebuildCommand,
     installCommand,
+    imageCommand,
     ...jobCommands,
   ]),
 );

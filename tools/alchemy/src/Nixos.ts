@@ -7,6 +7,7 @@
  */
 import { Config, Console, Effect, FileSystem, Option, Path, Schema as S, Stdio } from "effect";
 import { Prompt } from "effect/cli";
+import { dockerPush } from "./Builder.ts";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { Remote } from "./Remote.ts";
@@ -138,6 +139,46 @@ export const install = Effect.fn("Nixos.install")(function* (options: {
     ...options.anywhere,
   ]);
 }, Effect.scoped);
+
+/**
+ * Build the container image that a flake output such as `garage-image` makes, from the
+ * committed repository, and push it to the cluster registry. Prints the reference that a
+ * platform cartridge pins, `registry/name@sha256:digest`. Nix runs in the nixos/nix container,
+ * as for `install`, and this machine's Docker loads and pushes the result.
+ */
+export const image = Effect.fn("Nixos.image")(function* (output: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const registry = yield* (yield* Site).registry;
+  const tree = yield* fs.makeTempDirectoryScoped();
+  const built = yield* fs.makeTempDirectoryScoped();
+  yield* Git.exportTree(Git.repository, "HEAD", tree);
+  yield* Exec.run("docker", [
+    ...["run", "--rm"],
+    ...["--volume", `${tree}:/src:ro`],
+    ...["--volume", `${built}:/out`],
+    ...["--env", "NIX_CONFIG=experimental-features = nix-command flakes"],
+    // $0 of the script is the flake output.
+    ...["nixos/nix:latest", "sh", "-euc", imageScript, output],
+  ]);
+  const loaded = yield* Exec.output("docker", ["load", "--input", `${built}/image.tar.gz`]);
+  const name = /^Loaded image: (\S+)$/m.exec(loaded)?.[1];
+  if (name === undefined) {
+    return yield* new Exec.OpsError({ message: `docker load named no image: ${loaded.trim()}` });
+  }
+  // dockerTools names the image `name:tag` with no registry.
+  const tagged = `${registry}/${name}`;
+  const repository = tagged.slice(0, tagged.lastIndexOf(":"));
+  yield* Exec.run("docker", ["tag", name, tagged]);
+  const pushed = yield* dockerPush(repository, tagged);
+  yield* Console.log(`${repository}@${pushed.slice(pushed.lastIndexOf("@") + 1)}`);
+}, Effect.scoped);
+
+// Runs in the container: $0 is the flake output. A dockerTools image is one gzipped tar file,
+// which is copied out of the container's store.
+const imageScript = `
+nix build "path:/src#$0" --out-link /tmp/image
+cp -L /tmp/image /out/image.tar.gz
+`;
 
 const repositoryRoot = new URL("../../..", import.meta.url).pathname;
 const nixVolume = "server-ansible-nix";
