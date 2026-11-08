@@ -53,6 +53,35 @@ describe("Site.buildNode", () => {
   });
 });
 
+describe("Site.devDbAddress", () => {
+  const cluster =
+    '[cluster]\nserver = "ctl"\nlanAddress = "10.0.0.2"\n\n[cluster.nodes]\natheist = "10.0.0.3"\n';
+
+  it("is the control host's address when site.toml has no [devdb] table", async () => {
+    assert.equal(await withSite(cluster, (site) => site.devDbAddress), "10.0.0.2");
+  });
+
+  it("is the named node's address from [cluster.nodes]", async () => {
+    const address = await withSite(
+      `${cluster}\n[devdb]\nnode = "atheist"\n`,
+      (site) => site.devDbAddress,
+    );
+    assert.equal(address, "10.0.0.3");
+  });
+
+  it("refuses a node that [cluster.nodes] does not list", async () => {
+    const error = await withSite(
+      `${cluster}\n[devdb]\nnode = "heretic"\n`,
+      (site) => site.devDbAddress,
+    ).then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+    assert.ok(error instanceof OpsError);
+    assert.match(error.message, /'heretic'/);
+  });
+});
+
 describe("Builder.layer", () => {
   it("pipes a tar of the tree into one ssh call and returns tagged@digest", async () => {
     const { log, result } = await execute(

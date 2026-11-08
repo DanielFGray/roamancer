@@ -1,8 +1,8 @@
 /**
  * `ops dev db` subcommands: up, reset, list and psql, on the dev instances of the cartridge in
  * the current directory, and stale and drop, on every app's dev databases. The databases live
- * on the app's Postgres server; a host job provisions them (Host.ts) and an SSH tunnel brings
- * them to 127.0.0.1:5417 (Tunnel.ts).
+ * on the dev Postgres server (DevServer.ts); a host job provisions them (Host.ts) and an SSH
+ * tunnel brings them to 127.0.0.1:5417 (Tunnel.ts).
  */
 import { Console, Effect, FileSystem, Option } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
@@ -147,7 +147,7 @@ const drop = Command.make(
 
 /** The `db` command under `ops dev`. */
 export const db = Command.make("db").pipe(
-  Command.withDescription("Dev databases for cartridge apps on the server's Postgres"),
+  Command.withDescription("Dev databases for cartridge apps on the dev Postgres server"),
   Command.withSubcommands([up, reset, list, psql, stale, drop]),
 );
 
@@ -185,7 +185,8 @@ const runAction = Effect.fn("devdb.runAction")(function* (action: DevDbAction) {
 
 const readCartridge = Effect.fn("devdb.readCartridge")(function* () {
   const cartridge = yield* decodeDevDbFile(`${cwd}/cartridge.json`);
-  // The tunnel reaches the platform Postgres server only.
+  // The dev server runs the platform Postgres image, so it serves only databases whose live
+  // copy is on the platform server, which runs the same image and extensions.
   const elsewhere = cartridge.postgres.filter((entry) => entry.server !== undefined);
   if (elsewhere.length > 0) {
     return yield* new OpsError({

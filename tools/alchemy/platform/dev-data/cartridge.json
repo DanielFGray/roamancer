@@ -1,0 +1,34 @@
+{
+  "apiVersion": "server-ansible/v2",
+  "name": "platform-dev-data",
+  "servers": [
+    {
+      "_tag": "PostgresServer",
+      "service": {
+        "name": "postgres-dev",
+        "image": "registry.cluster:5000/platform-postgres@sha256:33fc66a01536893076e5432932e9e62004b40ca7ea2bfd84d753cd0aa76d2d29",
+        "hostPort": 5433,
+        "containerPort": 5432,
+        "healthCheck": {
+          "type": "tcp"
+        },
+        "cpu": 500,
+        "memoryMB": 512,
+        "networkMode": "bridge",
+        "storage": {
+          "volume": "postgres-dev-data",
+          "mountPath": "/var/lib/postgresql/data"
+        },
+        "environment": [
+          {
+            "name": "PGDATA",
+            "value": "/var/lib/postgresql/data/pgdata"
+          }
+        ],
+        "connections": [],
+        "secrets": []
+      }
+    }
+  ],
+  "services": []
+}

@@ -1,12 +1,11 @@
 /**
  * The control-host half of `ops dev db`: a queued job that provisions an app's dev
- * databases on the app's live Postgres server, through the admin connection the
+ * databases on the dev Postgres server (DevServer.ts), through the admin connection the
  * PostgresDatabase provider uses.
  *
- * The dev databases share the server, its memory cap and its connection slots with the live
- * databases, so every dev login is fenced: a connection limit, and per-session defaults for
- * statement and idle-transaction timeouts, work memory, and a temp-file cap that only a
- * superuser can raise.
+ * Every app's dev databases share that server, its memory limit and its connection slots, so
+ * every dev login is fenced: a connection limit, and per-session defaults for statement and
+ * idle-transaction timeouts, work memory, and a temp-file cap that only a superuser can raise.
  *
  * The job touches only databases it derives from the request (Declaration.ts), and only when
  * they are absent or owned by that dev database's owner role or migration login.
@@ -26,6 +25,7 @@ import { postgresAdmin, postgresLoginRole } from "../Cartridge.ts";
 import { Nomad } from "../Nomad.ts";
 import { OpenBao } from "../OpenBao.ts";
 import { adminConnection, postgresRoles } from "../PostgresDatabase.ts";
+import { devServer } from "./DevServer.ts";
 import {
   type PostgresAdminLayer,
   type PostgresDatabaseDeclaration,
@@ -49,8 +49,12 @@ import {
   ownedDatabases,
 } from "./Declaration.ts";
 
-/** Per login: two apps' test pools fit beside the live apps' connections. */
-const connectionLimit = 8;
+/**
+ * Per login. Every checkout and agent of an app shares its two logins, and the test, shadow and
+ * root URLs all use the migration login. One rfchat test run takes 8 connections, so 32 lets
+ * about three agents test one app at once, with room for migrations.
+ */
+const connectionLimit = 32;
 const sessionDefaults = [
   ["statement_timeout", "5min"],
   ["idle_in_transaction_session_timeout", "5min"],
@@ -79,22 +83,23 @@ export class DevDbUnknownDatabase extends S.TaggedError<DevDbUnknownDatabase>()(
   }
 }
 
-/** The job body: the action against the app's Postgres server. */
+/** The job body: the action against the dev Postgres server. */
 export const devDbJob = Effect.fn("devdb.job")(function* (submit: DevDbSubmit) {
-  yield* runDevDbAction(submit.request, submit.action, yield* platformAdminLayer);
+  yield* runDevDbAction(submit.request, submit.action, yield* devServerAdminLayer);
 });
 
 /** The job body of an action on every app's dev databases. */
 export const devDbClusterJob = Effect.fn("devdb.clusterJob")(function* (
   submit: DevDbClusterSubmit,
 ) {
-  yield* runDevDbClusterAction(submit.action, yield* platformAdminLayer);
+  yield* runDevDbClusterAction(submit.action, yield* devServerAdminLayer);
 });
 
-const platformAdminLayer = Effect.gen(function* () {
+const devServerAdminLayer = Effect.gen(function* () {
   const openBao = yield* OpenBao;
   const nomad = yield* Nomad;
-  return (yield* adminConnection({ props: postgresAdmin({}), openBao, nomad })).adminLayer;
+  const server = (yield* devServer()).name;
+  return (yield* adminConnection({ props: postgresAdmin({ server }), openBao, nomad })).adminLayer;
 });
 
 /** One action through `adminLayer`; the seam the integration test drives. */

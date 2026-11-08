@@ -90,8 +90,9 @@ Hosts and development:
 - Each host is a NixOS system built from this flake, with nixpkgs pinned. `ops rebuild` makes a
   new system generation that you can roll back to, and `ops install` sets up a new machine.
 - Containers run under rootless Podman, and restic backs up each host.
-- `ops dev db` gives an app's local checkout its own dev, shadow and test databases on the
-  platform Postgres, through an SSH tunnel.
+- `ops dev db` gives an app's local checkout its own dev, shadow and test databases on a
+  separate dev Postgres server, through an SSH tunnel, so dev work cannot use up the live
+  server's connections or memory.
 
 ## What you need
 
@@ -114,6 +115,7 @@ jobs.
 | Control host (cynic) | Nomad server, OpenBao, image registry (`registry.cluster:5000`), cluster CA, Alchemy job runner (`bun`), restic backups | `nixos/cynic/` |
 | Ingress host (atheist) | Caddy for static sites, restic backups | `nixos/atheist/`, `nixos/modules/static-sites.nix` |
 | Nomad job | PostgreSQL 17 (Nix-built image with pg_hashids, pgTAP, pgvector, pgsodium), Valkey | `tools/alchemy/platform/data` |
+| Nomad job | PostgreSQL 17 for `ops dev db` (the same image), on the node that `[devdb] node` names | `tools/alchemy/platform/dev-data` |
 | Nomad job | Traefik | `tools/alchemy/platform/ingress` |
 | Nomad job | OpenObserve, OpenTelemetry Collector (one per node) | `tools/alchemy/platform/observability` |
 
@@ -133,8 +135,10 @@ the minimum:
 | Ingress host | Traefik 256, OpenObserve 768, collector 256: 1280 MB | 512 MB (Nomad, journald, Caddy, Tailscale) | 2 GB plus the apps' `memoryMB` |
 
 The two-host layout therefore needs about 4 GB before any app; one host that runs everything needs
-about 3 GB. Valkey stops accepting writes at 48 MB (`maxmemory`, `noeviction`), so a log rewrite,
-which can briefly double its data, stays under its 128 MB limit. Measured on 2026-11-01.
+about 3 GB. When you use `ops dev db`, the dev Postgres server (`platform-dev-data`, 512 MB) adds
+to the host that `[devdb] node` names, the control host by default. Valkey stops accepting writes
+at 48 MB (`maxmemory`, `noeviction`), so a log rewrite, which can briefly double its data, stays
+under its 128 MB limit. Measured on 2026-11-01.
 
 Nomad reads a host's memory when its agent starts. On a virtual machine with memory ballooning,
 the hypervisor can take memory back later, so give each host a guaranteed minimum (on Proxmox,

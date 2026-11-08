@@ -8,8 +8,13 @@ import { Toml } from "effect/encoding";
 import { OpsError } from "./Exec.ts";
 
 const SiteFile = S.Struct({
-  cluster: S.Struct({ server: S.String, lanAddress: S.String }),
+  cluster: S.Struct({
+    server: S.String,
+    lanAddress: S.String,
+    nodes: S.optionalKey(S.Record(S.String, S.String)),
+  }),
   build: S.optionalKey(S.Struct({ node: S.String })),
+  devdb: S.optionalKey(S.Struct({ node: S.String })),
 });
 
 export class Site extends Context.Service<Site>()("ops/Site", {
@@ -38,7 +43,7 @@ export class Site extends Context.Service<Site>()("ops/Site", {
         Effect.mapError(
           (cause) =>
             new OpsError({
-              message: `${file} must set cluster.server, cluster.lanAddress and, when present, [build] node: ${cause}`,
+              message: `${file} must set cluster.server, cluster.lanAddress and, when present, [build] node and [devdb] node: ${cause}`,
             }),
         ),
       );
@@ -60,12 +65,25 @@ export class Site extends Context.Service<Site>()("ops/Site", {
     );
 
     /**
-     * The server's LAN address, where Nomad binds the platform Postgres host port. The
-     * dev database tunnel forwards to it through the control host.
+     * The LAN address of the node in `[devdb] node`, where Nomad binds the dev Postgres
+     * server's host port; the control host when the table is absent. The dev database
+     * tunnel forwards to it through the control host. NixOS reads the same setting to put
+     * the dev server's volume on that node, which pins the server there.
      */
-    const lanAddress = Effect.map(siteFile, (site) => site.cluster.lanAddress);
+    const devDbAddress = Effect.gen(function* () {
+      const site = yield* siteFile;
+      const node = site.devdb?.node ?? site.cluster.server;
+      if (node === site.cluster.server) return site.cluster.lanAddress;
+      const address = site.cluster.nodes?.[node];
+      if (address === undefined) {
+        return yield* new OpsError({
+          message: `[devdb] node is '${node}', which [cluster.nodes] of site.toml does not list`,
+        });
+      }
+      return address;
+    });
 
-    return { folder, host, buildNode, lanAddress };
+    return { folder, host, buildNode, devDbAddress };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);

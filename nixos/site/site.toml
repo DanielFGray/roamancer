@@ -40,6 +40,13 @@ registryCaDir = "/var/lib/registry-ca"
 # [build]
 # node = "atheist"
 
+# Optional. The node that runs the dev Postgres server for `ops dev db`
+# (tools/alchemy/platform/dev-data). NixOS puts the server's volume on this node, which pins
+# the server there, and the dev database tunnel forwards to its address in [cluster.nodes].
+# Omit the table to run it on the control host.
+# [devdb]
+# node = "atheist"
+
 # Machines that run Nomad clients, by Nomad node name. The firewall lets them reach every
 # TCP port on the server, so their jobs reach services such as Postgres's fixed 5432 and
 # Nomad's dynamic ports. The clients let the server reach every TCP port in turn, for

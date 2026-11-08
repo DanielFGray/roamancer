@@ -24,6 +24,8 @@ let
   };
 in
 {
+  imports = [ ./dev-postgres-volume.nix ];
+
   options.services.nomadNode.config = lib.mkOption {
     type = lib.types.lines;
     description = "This host's part of the Nomad agent configuration, in HCL.";

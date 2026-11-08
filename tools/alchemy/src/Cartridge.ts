@@ -432,7 +432,11 @@ export const resolve = Effect.fn("Cartridge.resolve")(function* (root: string, n
   return cartridge;
 });
 
-const findPlatform = Effect.fn("Cartridge.findPlatform")(function* (root: string, name: string) {
+/** The platform cartridge named `name` under `root`, none when no platform folder holds it. */
+export const findPlatform = Effect.fn("Cartridge.findPlatform")(function* (
+  root: string,
+  name: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const folders = yield* fs
     .readDirectory(`${root}/platform`)

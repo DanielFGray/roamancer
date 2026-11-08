@@ -47,6 +47,10 @@ let
       capabilities = ["mount-readwrite"]
     }
 
+    host_volume "postgres-dev-data" {
+      capabilities = ["mount-readwrite"]
+    }
+
     host_volume "valkey-data" {
       capabilities = ["mount-readwrite"]
     }
