@@ -7,6 +7,9 @@ import * as S from "effect/Schema";
 import { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Stream from "effect/Stream";
+import { tailnetEntrypoint } from "./Job.ts";
+import { Nomad } from "./Nomad.ts";
+import { dependencyRegistrationRetry, firstServiceLocation } from "./ServiceRegistration.ts";
 
 export const TailscaleStatus = S.Struct({
   Self: S.Struct({ DNSName: S.NonEmptyString }),
@@ -29,24 +32,17 @@ export const ServeStatus = S.Struct({
 export type ServeStatus = typeof ServeStatus.Type;
 export type ServeWeb = ServeStatus["Web"];
 
-export const serveOwnership = (web: ServeWeb, port: number, target: string) => {
-  const entries = Object.entries(web).filter(([address]) => address.endsWith(`:${port}`));
-  const conflict = Arr.findFirst(entries, ([, entry]) => entry.Handlers["/"].Proxy !== target);
-  return Option.match(conflict, {
-    onSome: ([, entry]) => ({ _tag: "Conflict" as const, target: entry.Handlers["/"].Proxy }),
-    onNone: () =>
-      Option.match(Arr.head(entries), {
-        onNone: () => ({ _tag: "Missing" as const }),
-        onSome: () => ({ _tag: "Owned" as const }),
-      }),
-  });
-};
+/** The target that Serve proxies the leased HTTPS port to; none when the port serves nothing. */
+export const servedTarget = (web: ServeWeb, port: number): Option.Option<string> =>
+  Option.map(
+    Arr.findFirst(Object.entries(web), ([address]) => address.endsWith(`:${port}`)),
+    ([, entry]) => entry.Handlers["/"].Proxy,
+  );
 
 export const servePortRange: { readonly first: number; readonly last: number } = {
   first: 9000,
   last: 9099,
 };
-export const backendPort = (port: number) => port + 1000;
 
 /** Pick the lowest unused HTTPS Serve port. None means the lease range is exhausted. */
 export const leasePort = (portsInUse: ReadonlyArray<number>): Option.Option<number> => {
@@ -59,13 +55,16 @@ export const leasePort = (portsInUse: ReadonlyArray<number>): Option.Option<numb
   );
 };
 
-export const TailscaleServeProps = S.Struct({});
+export const TailscaleServeProps = S.Struct({
+  // The path before each request, which tells Traefik the job (Job.tailnetPath).
+  path: S.String,
+});
 export type TailscaleServeProps = typeof TailscaleServeProps.Type;
 
 export interface TailscaleServe extends Alchemy.Resource<
   "Tailscale.Serve",
   TailscaleServeProps,
-  { id: string; port: number; backendPort: number; url: string }
+  { id: string; port: number; url: string; target: string }
 > {}
 export const TailscaleServe = Alchemy.Resource<TailscaleServe>("Tailscale.Serve");
 
@@ -112,19 +111,30 @@ const decodeCommand = <A extends S.Constraint>(schema: A, args: ReadonlyArray<st
     ),
   );
 
-const ensureServed = (port: number, backend: number) =>
-  commandOutput(["serve", "--bg", `--https=${port}`, `http://127.0.0.1:${backend}`]).pipe(
-    Effect.asVoid,
-  );
+// Serve keeps one handler per mount, so serving a port again replaces its target.
+const ensureServed = (port: number, target: string) =>
+  commandOutput(["serve", "--bg", `--https=${port}`, target]).pipe(Effect.asVoid);
 
+/**
+ * The Nomad service of Traefik, which serves the tailnet entrypoint (platform/ingress).
+ * Serve reaches it at the LAN address that Nomad registers for it.
+ */
+export const ingressService = "traefik";
+
+/**
+ * A leased HTTPS port on the control host that forwards to Traefik's tailnet entrypoint,
+ * under the job's path. Traefik then finds the job on any node through its service tags.
+ */
 export const TailscaleServeProvider = Provider.effect(
   TailscaleServe,
-  Effect.succeed(
-    TailscaleServe.Provider.of({
+  Effect.gen(function* () {
+    const nomad = yield* Nomad;
+    return TailscaleServe.Provider.of({
       list: () => Effect.succeed([]),
       stables: ["id"],
-      reconcile: Effect.fn(function* ({ output, fqn }) {
+      reconcile: Effect.fn(function* ({ news, output, fqn }) {
         const status = yield* decodeCommand(ServeStatus, ["serve", "status", "--json"]);
+        // A recorded port stays this resource's lease, whatever it serves now.
         const port = yield* Option.match(
           output === undefined
             ? leasePort(Object.keys(status.TCP).map(Number))
@@ -140,35 +150,32 @@ export const TailscaleServeProvider = Provider.effect(
             onSome: Effect.succeed,
           },
         );
+        const ingress = yield* firstServiceLocation(
+          ingressService,
+          nomad.service(ingressService),
+          dependencyRegistrationRetry,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TailscaleServeError({ operation: "find ingress", detail: cause.message }),
+          ),
+        );
+        const target = `http://${ingress.Address}:${tailnetEntrypoint.port}${news.path}`;
         const hostname = yield* decodeCommand(TailscaleStatus, ["status", "--json"]).pipe(
           Effect.map((value) => value.Self.DNSName.replace(/\.$/, "")),
         );
-        const target = `http://127.0.0.1:${backendPort(port)}`;
-        const ownership = serveOwnership(status.Web, port, target);
-        if (ownership._tag === "Conflict") {
-          return yield* new TailscaleServeError({
-            operation: "reconcile",
-            detail: `port ${port} is already served by ${ownership.target}`,
-          });
+        if (Option.getOrUndefined(servedTarget(status.Web, port)) !== target) {
+          yield* ensureServed(port, target);
         }
-        if (ownership._tag === "Missing") {
-          yield* ensureServed(port, backendPort(port));
-        }
-        return {
-          id: fqn,
-          port,
-          backendPort: backendPort(port),
-          url: `https://${hostname}:${port}`,
-        };
+        return { id: fqn, port, url: `https://${hostname}:${port}`, target };
       }),
       delete: Effect.fn(function* ({ output }) {
         const status = yield* decodeCommand(ServeStatus, ["serve", "status", "--json"]);
-        const target = `http://127.0.0.1:${backendPort(output.port)}`;
-        if (serveOwnership(status.Web, output.port, target)._tag === "Owned") {
+        if (Option.getOrUndefined(servedTarget(status.Web, output.port)) === output.target) {
           yield* commandOutput(["serve", `--https=${output.port}`, "off"]);
         }
       }),
       read: ({ output }) => Effect.succeed(output),
-    }),
-  ),
+    });
+  }),
 );

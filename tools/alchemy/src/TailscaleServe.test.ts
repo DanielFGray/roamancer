@@ -2,13 +2,7 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Option from "effect/Option";
 import * as S from "effect/Schema";
-import {
-  backendPort,
-  leasePort,
-  ServeStatus,
-  TailscaleStatus,
-  serveOwnership,
-} from "./TailscaleServe.ts";
+import { leasePort, ServeStatus, TailscaleStatus, servedTarget } from "./TailscaleServe.ts";
 
 describe("Tailscale Serve port lease", () => {
   it("chooses the lowest unused port in the lease range", () => {
@@ -20,10 +14,6 @@ describe("Tailscale Serve port lease", () => {
       leasePort(Array.from({ length: 100 }, (_, index) => 9000 + index)),
       Option.none(),
     );
-  });
-
-  it("derives the backend port from the Serve port", () => {
-    assert.equal(backendPort(9000), 10000);
   });
 });
 
@@ -68,22 +58,16 @@ describe("Tailscale JSON schemas", () => {
   });
 });
 
-describe("Tailscale Serve ownership", () => {
-  const expected = "http://127.0.0.1:10000";
-  const web = (target: string) => ({
-    "cynic.tail.example:9000": { Handlers: { "/": { Proxy: target } } },
+describe("Tailscale Serve target", () => {
+  const target = "http://10.13.37.83:18081/_tailnet/openobserve/";
+  const web = { "cynic.tail.example:9000": { Handlers: { "/": { Proxy: target } } } };
+
+  it("reads the target that the leased port proxies to", () => {
+    assert.deepEqual(servedTarget(web, 9000), Option.some(target));
   });
 
-  it("identifies a missing, owned, or foreign proxy at the leased port", () => {
-    assert.deepEqual(serveOwnership({}, 9000, expected), { _tag: "Missing" });
-    assert.deepEqual(serveOwnership(web(expected), 9000, expected), { _tag: "Owned" });
-    assert.deepEqual(serveOwnership(web("http://127.0.0.1:8080"), 9000, expected), {
-      _tag: "Conflict",
-      target: "http://127.0.0.1:8080",
-    });
-  });
-
-  it("does not claim a proxy on a different Serve port", () => {
-    assert.deepEqual(serveOwnership(web(expected), 9001, expected), { _tag: "Missing" });
+  it("reads none for a port that serves nothing", () => {
+    assert.deepEqual(servedTarget({}, 9000), Option.none());
+    assert.deepEqual(servedTarget(web, 9001), Option.none());
   });
 });

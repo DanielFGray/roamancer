@@ -132,7 +132,10 @@ describe("Nomad workload rendering", () => {
       routes: [{ access: "tailnet" }],
     });
     const tags = toJobSpec(job, "o").TaskGroups[0].Services[0].Tags;
-    assert.deepEqual(tags, []);
+    assert.deepEqual(
+      tags.filter((tag) => tag.includes(".entrypoints=")),
+      ["traefik.http.routers.preview-tailnet.entrypoints=tailnet"],
+    );
   });
   it("gives every task the node's OTLP collector address, which the job's own environment overrides", () => {
     const job = S.decodeUnknownSync(Job)({

@@ -25,7 +25,8 @@ export const HealthCheck = S.Union([
 ]);
 export type HealthCheck = typeof HealthCheck.Type;
 
-// Public routes carry host routing details; tailnet routes use Tailscale Serve and carry none.
+// Public routes carry host routing details. A tailnet route carries none: Tailscale Serve gives it
+// an HTTPS port on the control host and Traefik finds the job by name (see `tailnetPath`).
 const RouteHost = S.String.check(
   S.isPattern(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/),
 );
@@ -648,13 +649,25 @@ const toTask = (
 });
 
 /**
+ * The Traefik entrypoint that serves tailnet routes: plain HTTP on the ingress node, which only
+ * the control host's Tailscale Serve reaches (platform/ingress/cartridge.json and its README).
+ */
+export const tailnetEntrypoint = { name: "tailnet", port: 18081 } as const;
+
+/**
+ * The path that Tailscale Serve puts before each request of a job's tailnet route. Every Serve
+ * port sends the same Host to Traefik, so the path tells the routes apart; Traefik strips it.
+ */
+export const tailnetPath = (job: string) => `/_tailnet/${job}/`;
+
+/**
  * The Traefik tags for a job's routes. Traefik's Nomad provider reads them from the service
  * registration, so a route follows the allocation's address and port with no reconcile.
  * Nomad registers a service before it is ready, so a job with an HTTP check has Traefik
  * check the same path too.
  */
 export const routeTags = (job: Job): ReadonlyArray<string> => {
-  const routes = (job.routes ?? []).filter((route) => route.access === "public");
+  const routes = job.routes ?? [];
   if (routes.length === 0) return [];
   const service = job.name;
   const healthTags =
@@ -664,28 +677,51 @@ export const routeTags = (job: Job): ReadonlyArray<string> => {
           `traefik.http.services.${service}.loadbalancer.healthcheck.interval=5s`,
         ]
       : [];
-  const routerTags = routes.flatMap((route, index) => {
-    const router = `${service}-${index}`;
-    const paths = route.pathPrefixes?.map((prefix) => `PathPrefix(\`${prefix}\`)`) ?? [];
-    const rule =
-      paths.length === 0
-        ? `Host(\`${route.host}\`)`
-        : `Host(\`${route.host}\`) && (${paths.join(" || ")})`;
-    const headers = route.responseHeaders ?? [];
-    const middlewares = headers.length === 0 ? [] : [`${router}-headers`];
-    return [
-      `traefik.http.routers.${router}.rule=${rule}`,
-      `traefik.http.routers.${router}.entrypoints=web`,
-      `traefik.http.routers.${router}.service=${service}`,
-      ...headers.map(
-        (header) =>
-          `traefik.http.middlewares.${router}-headers.headers.customresponseheaders.${header.name}=${header.value}`,
-      ),
-      ...(middlewares.length === 0
-        ? []
-        : [`traefik.http.routers.${router}.middlewares=${middlewares.join(",")}`]),
-    ];
-  });
-
+  const routerTags = routes.flatMap((route, index) =>
+    route.access === "public"
+      ? publicRouterTags(service, `${service}-${index}`, route)
+      : tailnetRouterTags(service),
+  );
   return ["traefik.enable=true", ...healthTags, ...routerTags];
+};
+
+const publicRouterTags = (
+  service: string,
+  router: string,
+  route: Extract<Route, { access: "public" }>,
+) => {
+  const paths = route.pathPrefixes?.map((prefix) => `PathPrefix(\`${prefix}\`)`) ?? [];
+  const rule =
+    paths.length === 0
+      ? `Host(\`${route.host}\`)`
+      : `Host(\`${route.host}\`) && (${paths.join(" || ")})`;
+  const headers = route.responseHeaders ?? [];
+  const middlewares = headers.length === 0 ? [] : [`${router}-headers`];
+  return [
+    `traefik.http.routers.${router}.rule=${rule}`,
+    `traefik.http.routers.${router}.entrypoints=web`,
+    `traefik.http.routers.${router}.service=${service}`,
+    ...headers.map(
+      (header) =>
+        `traefik.http.middlewares.${router}-headers.headers.customresponseheaders.${header.name}=${header.value}`,
+    ),
+    ...(middlewares.length === 0
+      ? []
+      : [`traefik.http.routers.${router}.middlewares=${middlewares.join(",")}`]),
+  ];
+};
+
+// StripPrefix records the removed path in X-Forwarded-Prefix. The job never sees the path,
+// so a second middleware removes that header: an app that honours it would build wrong links.
+const tailnetRouterTags = (service: string) => {
+  const router = `${service}-tailnet`;
+  const prefix = tailnetPath(service).slice(0, -1);
+  return [
+    `traefik.http.routers.${router}.rule=PathPrefix(\`${tailnetPath(service)}\`)`,
+    `traefik.http.routers.${router}.entrypoints=${tailnetEntrypoint.name}`,
+    `traefik.http.routers.${router}.service=${service}`,
+    `traefik.http.middlewares.${router}-strip.stripprefix.prefixes=${prefix}`,
+    `traefik.http.middlewares.${router}-unprefix.headers.customrequestheaders.X-Forwarded-Prefix=`,
+    `traefik.http.routers.${router}.middlewares=${router}-strip,${router}-unprefix`,
+  ];
 };

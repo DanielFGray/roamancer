@@ -4,7 +4,7 @@ import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as S from "effect/Schema";
 import type { ExpandedResource } from "./Cartridge.ts";
-import { Job, ExpandedJob, ExpandedSecretReference, SecretReference } from "./Job.ts";
+import { Job, ExpandedJob, ExpandedSecretReference, SecretReference, tailnetPath } from "./Job.ts";
 import { PostgresDatabaseProps } from "./PostgresDatabase.ts";
 import { ValkeyAccessConfig } from "./ValkeyAccess.ts";
 import type { GarageBucketProps } from "./GarageBucket.ts";
@@ -47,8 +47,6 @@ type AdminCredentialOutput = {
 type TailscaleServeOutput = {
   readonly id: string;
   readonly port: number;
-  // A resource attribute, not port + 1000 here: at plan time the port is an unresolved Output.
-  readonly backendPort: number;
   readonly url: string;
 };
 type DeployedServe = { readonly name: string; readonly resource: TailscaleServeOutput };
@@ -135,10 +133,9 @@ export const compose = <R>(
       Match.value(declaration).pipe(
         Match.when({ _tag: "TailscaleServe" }, ({ serviceName }) =>
           Effect.gen(function* () {
-            const resource = yield* constructors.TailscaleServe(
-              `tailscale-serve-${serviceName}`,
-              {},
-            );
+            const resource = yield* constructors.TailscaleServe(`tailscale-serve-${serviceName}`, {
+              path: tailnetPath(serviceName),
+            });
             return {
               ...state,
               tailnetServes: Arr.append(state.tailnetServes, { name: serviceName, resource }),
@@ -401,21 +398,8 @@ const declareJob = <R>(
             },
           ),
     );
-    const hostPort = service.routes?.some((route) => route.access === "tailnet")
-      ? Option.match(
-          Arr.findFirst(state.tailnetServes, (serve) => serve.name === service.name),
-          {
-            onNone: () =>
-              Effect.fail(
-                new ComposeError({ message: `unresolved Tailscale Serve '${service.name}'` }),
-              ),
-            onSome: (serve) => Effect.succeed(serve.resource.backendPort),
-          },
-        )
-      : Effect.succeed(service.hostPort);
     const resource = yield* constructors.NomadJob(service.name, {
       ...service,
-      hostPort: yield* hostPort,
       environment,
       connections,
       secrets: secrets.length === 0 ? undefined : secrets,

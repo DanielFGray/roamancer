@@ -7,6 +7,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
 import { AppCartridge, Cartridge, decodeFile, expand } from "./Cartridge.ts";
 import { ImagesNotShared, WritableStorage, baseName, staged } from "./StagedCartridge.ts";
+import { routeTags, tailnetPath } from "./Job.ts";
 
 const candidate = "registry.cluster:5000/candidate:abc123@sha256:staged";
 
@@ -65,6 +66,28 @@ describe("staged cartridge", () => {
     assert.deepEqual(
       copy.services.flatMap((service) => service.routes),
       [{ access: "tailnet" }],
+    );
+  });
+
+  it("sends the staged preview to the staged job, on the tailnet entrypoint only", async () => {
+    const copy = await stage(await load("../examples/apps/giglist/cartridge.json"));
+    const resources = expand(copy);
+    const serve = resources.find((resource) => resource._tag === "TailscaleServe");
+    assert.ok(serve);
+    assert.equal(serve.serviceName, "giglist-api-staged");
+    const job = resources.find(
+      (resource) => resource._tag === "NomadService" && resource.service.name === serve.serviceName,
+    );
+    assert.ok(job && job._tag === "NomadService");
+    const tags = routeTags({ ...job.service, environment: [], secrets: [], migrate: undefined });
+    assert.ok(
+      tags.includes(
+        `traefik.http.routers.giglist-api-staged-tailnet.rule=PathPrefix(\`${tailnetPath(serve.serviceName)}\`)`,
+      ),
+    );
+    assert.deepEqual(
+      tags.filter((tag) => tag.includes(".entrypoints=")),
+      ["traefik.http.routers.giglist-api-staged-tailnet.entrypoints=tailnet"],
     );
   });
 

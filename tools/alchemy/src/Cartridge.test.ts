@@ -398,7 +398,7 @@ describe("cartridge v2", () => {
     );
   });
 
-  it("serves a tailnet-only service through Tailscale Serve and registers no Traefik route", () => {
+  it("serves a tailnet-only service through Traefik's tailnet entrypoint, never the public one", () => {
     const cartridge = S.decodeUnknownSync(Cartridge)({
       apiVersion: "server-ansible/v2",
       name: "private-app",
@@ -427,7 +427,15 @@ describe("cartridge v2", () => {
     assert.ok(service && service._tag === "NomadService");
     assert.deepEqual(
       routeTags({ ...service.service, environment: [], secrets: [], migrate: undefined }),
-      [],
+      [
+        "traefik.enable=true",
+        "traefik.http.routers.private-app-tailnet.rule=PathPrefix(`/_tailnet/private-app/`)",
+        "traefik.http.routers.private-app-tailnet.entrypoints=tailnet",
+        "traefik.http.routers.private-app-tailnet.service=private-app",
+        "traefik.http.middlewares.private-app-tailnet-strip.stripprefix.prefixes=/_tailnet/private-app",
+        "traefik.http.middlewares.private-app-tailnet-unprefix.headers.customrequestheaders.X-Forwarded-Prefix=",
+        "traefik.http.routers.private-app-tailnet.middlewares=private-app-tailnet-strip,private-app-tailnet-unprefix",
+      ],
     );
   });
 

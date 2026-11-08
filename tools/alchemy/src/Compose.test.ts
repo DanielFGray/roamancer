@@ -65,8 +65,8 @@ const makeConstructors = () => {
       return declare(id, {
         id: `${id}-ts`,
         port: 9000,
-        backendPort: 10000,
         url: `https://cynic.tail.example:9000`,
+        target: `http://10.13.37.83:18081${props.path}`,
       });
     },
     AdminCredential: (id: string, props: AdminCredentialProps) => {
@@ -103,7 +103,7 @@ const makeConstructors = () => {
 };
 
 describe("Compose", () => {
-  it("declares a Serve lease before the job and resolves its route URL and backend port", async () => {
+  it("declares a Serve lease for the job path before the job and resolves its route URL", async () => {
     const source = readCartridge("../examples/app-needs/cartridge.json");
     const service = source.services[0];
     const cartridge: Cartridge = {
@@ -124,10 +124,13 @@ describe("Compose", () => {
       deployed.tailnetServes.map((serve) => serve.resource.url),
       ["https://cynic.tail.example:9000"],
     );
-    assert.equal(tailscaleServeCalls.length, 1);
+    assert.deepEqual(tailscaleServeCalls, [
+      { id: `tailscale-serve-${service.name}`, props: { path: `/_tailnet/${service.name}/` } },
+    ]);
     const job = nomadJobCalls.find((call) => call.id === service.name);
     assert.ok(job);
-    assert.equal(job.props.hostPort, 10000);
+    // Traefik finds the job through its service tags, so the job keeps a Nomad-assigned port.
+    assert.equal(job.props.hostPort, "dynamic");
     assert.ok(
       job.props.environment.some(
         (entry) =>
