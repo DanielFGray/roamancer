@@ -159,7 +159,7 @@ esac
         line.startsWith(`docker build -f ${tree}/Dockerfile -t ${tagged} ${tree}`),
       ),
     );
-    assert.ok(log.some((line) => line.startsWith(`docker push ${tagged}`)));
+    assert.ok(log.some((line) => line.startsWith(`docker push --quiet ${tagged}`)));
     assert.ok(log.some((line) => line.startsWith("docker inspect ")));
     assert.equal(log.filter((line) => line.includes(" ssh ")).length, 0);
     assert.equal(result, `${tagged}@${digest}`);

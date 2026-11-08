@@ -8,6 +8,8 @@ const SecretPath = S.String.check(
 );
 const DatabaseCredentialPath = S.String.check(S.isPattern(/^database\/creds\/[A-Za-z0-9_.-]+$/));
 const SecretKey = S.String.check(S.isPattern(/^[A-Za-z0-9_-]+$/));
+// An image reference has no spaces or line breaks; a reference pasted with command output does.
+const ImageReference = S.String.check(S.isPattern(/^\S+$/));
 export const DatabaseIdentifier = S.String.check(S.isPattern(/^[a-z][a-z0-9_]{0,62}$/));
 export const ServiceConnection = S.Struct({
   service: ResourceName,
@@ -221,7 +223,7 @@ const EnvironmentValue = S.Union([
 
 const JobBaseFields = {
   name: ResourceName,
-  image: S.String,
+  image: ImageReference,
   hostPort: S.Union([
     S.Literals(["dynamic"]),
     S.Number.check(S.isInt(), S.isGreaterThan(0), S.isLessThanOrEqualTo(65_535)),

@@ -35,7 +35,9 @@ const localBuild = (tree: string, image: BuildImage) =>
  */
 export const dockerPush = (repository: string, tagged: string) =>
   Effect.gen(function* () {
-    yield* run("docker", ["push", tagged]);
+    // Without --quiet, docker prints its progress on stdout, where `ops image` prints only the
+    // reference to pin.
+    yield* output("docker", ["push", "--quiet", tagged]);
     const digests = yield* output("docker", [
       "inspect",
       "--format",

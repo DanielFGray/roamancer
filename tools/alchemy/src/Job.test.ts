@@ -335,6 +335,28 @@ describe("Nomad workload rendering", () => {
     assert.deepEqual(group.Tasks[0].Config.ports, ["service", "admin"]);
   });
 
+  it("refuses an image reference with command output around it", () => {
+    const job = {
+      name: "garage",
+      hostPort: "dynamic",
+      containerPort: 3900,
+      cpu: 200,
+      memoryMB: 256,
+      networkMode: "bridge",
+      environment: [],
+      connections: [],
+    };
+    const pinned = "registry.cluster:5000/platform-garage@sha256:aa15";
+
+    assert.equal(S.decodeUnknownSync(Job)({ ...job, image: pinned }).image, pinned);
+    assert.throws(() =>
+      S.decodeUnknownSync(Job)({
+        ...job,
+        image: `The push refers to repository [registry.cluster:5000/platform-garage]\n${pinned}`,
+      }),
+    );
+  });
+
   it("refuses a named port on host networking, where Nomad maps no ports", () => {
     assert.throws(
       () =>
