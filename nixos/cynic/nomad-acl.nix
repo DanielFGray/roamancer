@@ -162,8 +162,12 @@ let
     nomad acl policy apply -namespace default -job traefik -group service -task server \
       traefik ${pkgs.writeText "traefik-policy.hcl" traefikPolicy}
     # spread places each allocation on the least-loaded node. A job with a host volume
-    # still lands on the node that declares that volume.
-    nomad operator scheduler set-config -scheduler-algorithm=spread
+    # still lands on the node that declares that volume. Memory oversubscription lets a
+    # build reserve little (memory) and burst up to memory_max; jobs without a maximum
+    # are unchanged (docs/design/continuous-deployment.md).
+    nomad operator scheduler set-config \
+      -scheduler-algorithm=spread \
+      -memory-oversubscription=true
   '';
 
   # Issues a client token from the stored bootstrap token. The policy is
