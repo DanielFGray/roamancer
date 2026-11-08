@@ -61,6 +61,15 @@ in
   # is locked, so without the operator's password nobody can become root; each host says
   # where that password comes from.
   security.sudo.wheelNeedsPassword = true;
+  # One password covers a sitting: sudo remembers it for 30 minutes across every session of
+  # the operator, not only the terminal it was typed in, because each `ops rebuild` is a new
+  # `ssh -t` terminal. While that window is open, any process of the operator on this host,
+  # an agent's included, can use sudo; the window opens only when the operator types the
+  # password.
+  security.sudo.extraConfig = ''
+    Defaults timestamp_type=global
+    Defaults timestamp_timeout=30
+  '';
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 }

@@ -175,7 +175,7 @@ export class OpenBao extends Context.Service<
     ) => Effect.Effect<void, OpenBaoError>;
     /** Succeeds while the configured token is valid. */
     readonly checkToken: () => Effect.Effect<void, OpenBaoError>;
-    /** A child of the configured token that expires after `ttl` (for example "2h"). */
+    /** A child of the configured token that expires after `ttl` (for example "10h"). */
     readonly createToken: (ttl: string) => Effect.Effect<Redacted.Redacted<string>, OpenBaoError>;
   }
 >()("alchemy/OpenBao") {

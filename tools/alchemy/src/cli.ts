@@ -200,18 +200,18 @@ const login = Command.make(
   "login",
   {},
   Effect.fn(function* () {
-    // Only the 2-hour child leaves this process.
-    const token = yield* mintToken(yield* readRootToken, "2h");
+    // Only the 10-hour child leaves this process: one login covers a working day.
+    const token = yield* mintToken(yield* readRootToken, "10h");
     const stored = yield* queueRequest(QueuePaths.production.socket, {
       _tag: "token",
       value: Redacted.value(token),
     }).pipe(Effect.mapError((error) => new CliError({ message: error.message })));
     if (stored._tag === "error") return yield* new CliError({ message: stored.message });
-    yield* Console.log("OpenBao token for 2 hours stored for the Alchemy runner.");
+    yield* Console.log("OpenBao token for 10 hours stored for the Alchemy runner.");
   }),
 ).pipe(
   Command.withDescription(
-    "Mint a 2-hour OpenBao token from the root token and send it to the runner socket",
+    "Mint a 10-hour OpenBao token from the root token and send it to the runner socket",
   ),
 );
 

@@ -199,7 +199,7 @@ const login = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Mint a 2-hour OpenBao token for jobs from the root token, typed or piped on stdin",
+    "Mint a 10-hour OpenBao token for jobs from the root token, typed or piped on stdin",
   ),
 );
 
