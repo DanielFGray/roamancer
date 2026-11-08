@@ -43,6 +43,7 @@ import { request as queueRequest } from "./queue/Client.ts";
 import { LoginRequired } from "./queue/Errors.ts";
 import * as QueueFinished from "./queue/Finished.ts";
 import * as QueuePaths from "./queue/Paths.ts";
+import * as QueueProtocol from "./queue/Protocol.ts";
 import * as QueueRun from "./queue/Run.ts";
 import type {
   DeploySubmit,
@@ -152,7 +153,19 @@ const makeCli = () =>
     Command.withDescription(
       "Submit Alchemy jobs, log in to OpenBao for them, set their KV secrets, and read the fleet's Nomad health and logs",
     ),
-    Command.withSubcommands([submit, wait, version, login, secret, logs, dash, fleet, queue, job]),
+    Command.withSubcommands([
+      submit,
+      wait,
+      version,
+      login,
+      secret,
+      logs,
+      dash,
+      fleet,
+      queue,
+      job,
+      image,
+    ]),
   );
 
 const submit = Command.make(
@@ -180,6 +193,58 @@ const wait = Command.make(
   Command.withDescription(
     "Stream a job's output until it ends and exit with its code; interrupt cancels a queued job",
   ),
+);
+
+/** Send one image request to the runner socket and fail on its error answer. */
+const imageRequest = Effect.fn("imageRequest")(function* (
+  request: typeof QueueProtocol.RecordImage.Type | typeof QueueProtocol.FindImage.Type,
+) {
+  const answer = yield* queueRequest(QueuePaths.production.socket, request).pipe(
+    Effect.mapError((error) => new CliError({ message: error.message })),
+  );
+  if (answer._tag === "error") return yield* new CliError({ message: answer.message });
+  return answer;
+});
+
+const imageRecord = Command.make(
+  "record",
+  {},
+  Effect.fn(function* () {
+    const stdio = yield* Stdio.Stdio;
+    const text = yield* Stream.mkString(Stream.decodeText(stdio.stdin));
+    const record = yield* S.decodeUnknownEffect(S.fromJsonString(QueueProtocol.RecordImage))(
+      text.trim(),
+    ).pipe(Effect.mapError((error) => new CliError({ message: `image record: ${error.message}` })));
+    yield* imageRequest(record);
+  }),
+).pipe(
+  Command.withDescription(
+    "Record the pushed digest of an image key; one recordImage JSON request on stdin",
+  ),
+);
+
+const imageFind = Command.make(
+  "find",
+  {
+    repository: Argument.String("repository"),
+    key: Argument.String("key").pipe(Argument.withDescription("The image key, a git tree hash")),
+  },
+  Effect.fn(function* ({ repository, key }) {
+    const request = yield* S.decodeUnknownEffect(QueueProtocol.FindImage)({
+      _tag: "findImage",
+      repository,
+      key,
+    }).pipe(Effect.mapError((error) => new CliError({ message: `image find: ${error.message}` })));
+    const answer = yield* imageRequest(request);
+    if (answer._tag === "imageFound" && answer.digest !== null) yield* Console.log(answer.digest);
+  }),
+).pipe(
+  Command.withDescription("Print the digest recorded for an image key; nothing when there is none"),
+);
+
+const image = Command.make("image").pipe(
+  Command.withDescription("Record and find the image each tree of an app was built as"),
+  Command.withSubcommands([imageRecord, imageFind]),
 );
 
 const version = Command.make(

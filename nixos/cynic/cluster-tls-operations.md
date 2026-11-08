@@ -19,7 +19,7 @@ The firewall lets the machines in `nodes` reach every TCP port, so their jobs re
 
 It also copies the Nomad agent CA to `/var/lib/registry-ca/ca.crt` (`registryCaDir` in `site.toml`), readable by everyone; the CA is public. `/etc/containers/certs.d/registry.cluster:5000` links to that folder, and Podman reads it on each pull or push to trust the registry's server certificate.
 
-The registry checks no client credentials. Only `nodes` and the `workstation` reach port 5000 through the firewall, image deletion is off, and cartridges pin each image by digest, so a pushed tag changes nothing deployed.
+The registry checks no client credentials. Only `nodes` and the `workstation` reach port 5000 through the firewall, image deletion is off, and cartridges pin each image by digest, so a pushed tag changes nothing deployed. `ops` reuses an image only by the digest the runner recorded when `ops` pushed it, never by its tag.
 
 The service runs before the listeners start, and daily from a timer. It creates the CA if none exists. It re-issues a certificate when fewer than 30 days remain or when the server certificate does not name `lanAddress` and `registryName`. After it re-issues the server certificate, it sends SIGHUP to Nomad and restarts OpenBao and the registry without waiting for them. OpenBao and the registry read systemd's copies of the files, made at start. OpenBao unseals itself after the restart. To see that a rebuild that re-issued the certificate has finished, run `systemctl status cluster-tls openbao docker-registry`: cluster-tls is inactive with result success, and the other two are active.
 

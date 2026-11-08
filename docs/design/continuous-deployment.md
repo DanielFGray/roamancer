@@ -28,7 +28,7 @@ The host reads each watched repository with a read-only deploy key for that repo
 
 ### Build user
 
-Today `nodeBuild` (`Builder.ts`) runs an app's Dockerfile with rootless Podman as the operator, over ssh from the workstation. An unattended build runs code from anyone who can push to `main`. So it runs as a dedicated `builder` user with its own rootless Podman. That user is not `alchemy`, which holds the deploy token, and not the operator, whose shell can reach sudo. It holds no credentials: the registry checks none, and it needs only network access to the registry. The reconcile job gives it the exported tree and reads back the digest.
+Today `nodeBuild` (`Builder.ts`) runs an app's Dockerfile with rootless Podman as the operator, over ssh from the workstation. An unattended build runs code from anyone who can push to `main`. So it runs as a dedicated `builder` user with its own rootless Podman. That user is not `alchemy`, which holds the deploy token, and not the operator, whose shell can reach sudo. It holds no credentials: the registry checks none, and it needs only network access to the registry. The reconcile job gives it the exported tree and reads back the digest. Only the reconcile job records that digest, and only under the app's own repository; the `builder` user cannot reach the runner socket, so a Dockerfile cannot record an image under another app's tree.
 
 ### Check: a signoff keyed by tree
 

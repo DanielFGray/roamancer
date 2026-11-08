@@ -5,7 +5,7 @@
  */
 import { Console, Effect, FileSystem, Option } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import { Builder } from "./Builder.ts";
+import { Builder, type BuildImage } from "./Builder.ts";
 import * as Cartridge from "./Cartridge.ts";
 import { OpsError, output } from "./Exec.ts";
 import * as Git from "./Git.ts";
@@ -61,7 +61,7 @@ const promote = Command.make(
   { folder, yes },
   Effect.fn(function* ({ folder, yes }) {
     const tree = yield* committedTree(folder);
-    const image = yield* buildAndPush(folder, tree);
+    const image = yield* stagedImage(folder, tree);
     // The host fails this job unless every staged job is stable and runs this digest.
     yield* (yield* Remote).run({
       command: "stage-image",
@@ -73,7 +73,11 @@ const promote = Command.make(
     yield* destroyStage(`${image.name}-staged`, yes);
     yield* Console.log(`Promoted ${image.pinned} and discarded ${image.name}-staged`);
   }, Effect.scoped),
-).pipe(Command.withDescription("Release the staged commit live, then discard its stage"));
+).pipe(
+  Command.withDescription(
+    "Release the image staged from this commit's files live, then discard its stage",
+  ),
+);
 
 const discard = Command.make(
   "discard",
@@ -97,25 +101,61 @@ const committedTree = Effect.fn("committedTree")(function* (folder: string) {
 });
 
 /**
- * Build the exported commit and push it. Jobs name the image by digest alone: Nomad's Podman
- * driver refuses a reference that carries both a tag and a digest.
+ * The pushed image of HEAD's files, built only when the host has recorded no image for HEAD's
+ * image key. The host's record decides, not the registry's tag: the registry takes pushes
+ * from every node without credentials. Jobs name the image by digest alone: Nomad's Podman driver refuses a reference
+ * that carries both a tag and a digest.
  */
 const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string, tree: string) {
-  const cartridge = yield* Cartridge.decodeFile(cartridgePath(tree), Cartridge.AppCartridge);
-  const repository = yield* oneRepository(cartridge, cartridgePath(tree));
-  const commit = (yield* output("git", ["-C", folder, "rev-parse", "--short", "HEAD"])).trim();
-  const pinnedRef = yield* (yield* Builder).build(tree, { repository, commit });
+  const head = yield* headImage(folder, tree);
+  const remote = yield* Remote;
+  const found = yield* remote.findImage(head.image);
+  if (Option.isSome(found)) {
+    yield* Console.log(`Reusing the image of tree ${head.image.key.slice(0, 12)}`);
+    return pinnedImage(head, found.value);
+  }
+  const pinnedRef = yield* (yield* Builder).build(tree, head.image);
   const digest = yield* Option.match(imageDigest(pinnedRef), {
     onNone: () =>
       Effect.fail(
         new OpsError({
-          message: `builder returned an invalid digest for ${repository}:${commit}`,
+          message: `builder returned an invalid digest for ${head.image.repository}:${head.image.key}`,
         }),
       ),
     onSome: Effect.succeed,
   });
-  return { name: cartridge.name, commit, pinned: `${repository}@${digest}` };
+  yield* remote.recordImage(head.image, digest);
+  return pinnedImage(head, digest);
 });
+
+/**
+ * The pushed image of HEAD's files, which `ops stage` built or reused. Refused when none
+ * exists, because promote releases what was staged and never builds.
+ */
+const stagedImage = Effect.fn("stagedImage")(function* (folder: string, tree: string) {
+  const head = yield* headImage(folder, tree);
+  const found = yield* (yield* Remote).findImage(head.image);
+  if (Option.isNone(found)) {
+    return yield* new OpsError({
+      message: `no image has the files of ${head.commit} (tree ${head.image.key.slice(0, 12)}). Run \`ops stage\` first.`,
+    });
+  }
+  return pinnedImage(head, found.value);
+});
+
+/** HEAD's commit, the cartridge's name, and the image HEAD's files are keyed by. */
+const headImage = Effect.fn("headImage")(function* (folder: string, tree: string) {
+  const cartridge = yield* Cartridge.decodeFile(cartridgePath(tree), Cartridge.AppCartridge);
+  const repository = yield* oneRepository(cartridge, cartridgePath(tree));
+  const commit = (yield* output("git", ["-C", folder, "rev-parse", "--short", "HEAD"])).trim();
+  const key = (yield* output("git", ["-C", folder, "rev-parse", "HEAD^{tree}"])).trim();
+  return { name: cartridge.name, commit, image: { repository, key } };
+});
+
+const pinnedImage = (
+  head: { readonly name: string; readonly commit: string; readonly image: BuildImage },
+  digest: string,
+) => ({ name: head.name, commit: head.commit, pinned: `${head.image.repository}@${digest}` });
 
 /**
  * Deploy the folder's cartridge with every service image replaced by the pushed digest. The

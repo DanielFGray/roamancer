@@ -1,8 +1,9 @@
 /**
- * Build an exported commit tree and push it to the cluster registry. The workstation uses
- * Docker (Local); a node named in site.toml uses rootless Podman over one ssh call that
- * receives the tree as a tar on stdin (Node). Both return the same pinned reference
- * `repository:commit@digest`.
+ * Build an exported commit tree and push it to the cluster registry, tagged with its image
+ * key. The workstation uses Docker (Local); a node named in site.toml uses rootless Podman
+ * over one ssh call that receives the tree as a tar on stdin (Node). Both return the same
+ * pinned reference `repository:key@digest`. The tag only names the tree for people; a
+ * deploy pins the digest.
  */
 import { Array as Arr, Context, Effect, Layer, Option, Stream } from "effect";
 import { ChildProcess } from "effect/process";
@@ -12,7 +13,11 @@ import { Site } from "./Site.ts";
 
 export interface BuildImage {
   readonly repository: string;
-  readonly commit: string;
+  /**
+   * The image key: the git tree hash of the commit built (`git rev-parse <commit>^{tree}`).
+   * Two commits with the same files share it, as after a squash merge.
+   */
+  readonly key: string;
 }
 
 /**
@@ -24,7 +29,7 @@ const buildFile = "Dockerfile";
 /** Docker build and push on this machine from the exported tree. */
 const localBuild = (tree: string, image: BuildImage) =>
   Effect.gen(function* () {
-    const tagged = `${image.repository}:${image.commit}`;
+    const tagged = `${image.repository}:${image.key}`;
     yield* run("docker", ["build", "-f", `${tree}/${buildFile}`, "-t", tagged, tree]);
     return yield* dockerPush(image.repository, tagged);
   });
@@ -64,7 +69,7 @@ export const dockerPush = (repository: string, tagged: string) =>
  */
 const nodeBuild = (host: string) => (tree: string, image: BuildImage) =>
   Effect.gen(function* () {
-    const tagged = `${image.repository}:${image.commit}`;
+    const tagged = `${image.repository}:${image.key}`;
     const spawner = yield* ChildProcessSpawner;
     const remote = [
       "tmp=$(mktemp)",

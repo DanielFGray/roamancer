@@ -108,6 +108,19 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       yield* sql`INSERT INTO schema_migrations (version) VALUES (3)`;
     }
 
+    if (!applied.has(4)) {
+      yield* sql`
+        CREATE TABLE images (
+          repository TEXT NOT NULL,
+          key TEXT NOT NULL,
+          digest TEXT NOT NULL,
+          recorded_at TEXT NOT NULL,
+          PRIMARY KEY (repository, key)
+        )
+      `;
+      yield* sql`INSERT INTO schema_migrations (version) VALUES (4)`;
+    }
+
     const selectJob = SqlSchema.findOne({
       Request: S.Number,
       Result: JobRow,
@@ -357,7 +370,34 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       if (later[0] !== undefined) return yield* stale(`job ${later[0].id} changed resources since`);
     });
 
+    /** Record `digest` as the image of `key`; a later push of the same key replaces it. */
+    const recordImage = Effect.fn("Store.recordImage")(function* (image: {
+      readonly repository: string;
+      readonly key: string;
+      readonly digest: string;
+    }) {
+      yield* sql`
+        INSERT INTO images (repository, key, digest, recorded_at)
+        VALUES (${image.repository}, ${image.key}, ${image.digest}, ${sql.literal(nowSql)})
+        ON CONFLICT (repository, key)
+        DO UPDATE SET digest = excluded.digest, recorded_at = excluded.recorded_at
+      `;
+    });
+
+    /** The digest recorded for `key` in `repository`, or none. */
+    const findImage = Effect.fn("Store.findImage")(function* (image: {
+      readonly repository: string;
+      readonly key: string;
+    }) {
+      const rows = yield* sql<{ digest: string }>`
+        SELECT digest FROM images WHERE repository = ${image.repository} AND key = ${image.key}
+      `;
+      return Option.fromNullishOr(rows[0]?.digest);
+    });
+
     return {
+      recordImage,
+      findImage,
       enqueue,
       get,
       getOption,

@@ -17,10 +17,10 @@ type SiteService = Context.Service.Shape<typeof Site>;
 
 const digest = `sha256:${"a".repeat(64)}`;
 const repository = "registry.cluster:5000/probe";
-const commit = "abc1234";
-const tagged = `${repository}:${commit}`;
+const key = "c".repeat(40);
+const tagged = `${repository}:${key}`;
 const tree = "/exported-tree";
-const image = { repository, commit };
+const image = { repository, key };
 
 describe("Site.buildNode", () => {
   it("is none when site.toml has no [build] table", async () => {

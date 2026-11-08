@@ -7,9 +7,10 @@
  * answers with its exit code: its output is for the operator to read, because the journal
  * holds the job's stdout and stderr as one stream.
  */
-import { Context, Effect, Layer, Schema as S, Stdio } from "effect";
+import { Context, Effect, Layer, Option, Schema as S, Stdio } from "effect";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
+import { ImageDigest } from "./queue/Protocol.ts";
 import type { JobSubmit } from "./queue/Schema.ts";
 import { Site } from "./Site.ts";
 
@@ -67,7 +68,42 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       );
     });
 
-    return { submit, run, direct };
+    /**
+     * Record `digest` on the host as the image of `image.key`. Only an image that `ops`
+     * pushed itself is recorded, so a release that reuses a record deploys what it built.
+     */
+    const recordImage = Effect.fn("Remote.recordImage")(function* (
+      image: { readonly repository: string; readonly key: string },
+      digest: string,
+    ) {
+      yield* sameRevision;
+      yield* Exec.output(
+        "ssh",
+        [yield* site.host, `${runner} image record`],
+        JSON.stringify({ _tag: "recordImage", ...image, digest }),
+      );
+    });
+
+    /** The digest the host recorded for `image.key`, or none. */
+    const findImage = Effect.fn("Remote.findImage")(function* (image: {
+      readonly repository: string;
+      readonly key: string;
+    }) {
+      yield* sameRevision;
+      const printed = (yield* Exec.output("ssh", [
+        yield* site.host,
+        [runner, "image", "find", image.repository, image.key].map(Exec.quote).join(" "),
+      ])).trim();
+      if (printed === "") return Option.none<string>();
+      if (!S.is(ImageDigest)(printed)) {
+        return yield* new Exec.OpsError({
+          message: `the runner printed no digest for ${image.repository} ${image.key}: ${printed}`,
+        });
+      }
+      return Option.some(printed);
+    });
+
+    return { submit, run, direct, recordImage, findImage };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);

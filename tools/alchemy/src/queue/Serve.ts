@@ -108,6 +108,15 @@ const fulfill = (paths: Paths, request: Request) =>
           started: Option.getOrNull(started),
         };
       }
+      case "recordImage": {
+        const { _tag, ...image } = request;
+        yield* store.recordImage(image);
+        return { _tag: "imageRecorded" as const };
+      }
+      case "findImage": {
+        const digest = yield* store.findImage(request);
+        return { _tag: "imageFound" as const, digest: Option.getOrNull(digest) };
+      }
     }
   });
 

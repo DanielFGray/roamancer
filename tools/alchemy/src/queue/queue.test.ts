@@ -177,6 +177,15 @@ describe("queue protocol", () => {
     assert.equal(submitted._tag, "submit");
     if (submitted._tag === "submit") assert.equal(submitted.command, "plan");
   });
+
+  it("refuses an image record whose key or digest is not a hash", () => {
+    const record = { _tag: "recordImage", repository: "r/app", key: "a".repeat(40) };
+    assert.throws(() => decodeRequest({ ...record, digest: "latest" }));
+    assert.throws(() =>
+      decodeRequest({ ...record, key: "main", digest: `sha256:${"b".repeat(64)}` }),
+    );
+    assert.throws(() => decodeRequest({ _tag: "findImage", repository: "r/app", key: "HEAD" }));
+  });
 });
 
 describe("queue starter", () => {
@@ -410,6 +419,30 @@ describe("queue socket", () => {
       );
       assert.deepEqual(token, { _tag: "tokenStored" });
       assert.equal(readFileSync(paths.tokenFile, "utf8"), "minted-token");
+    } finally {
+      await server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("finds the digest recorded for an image key, and a later record replaces it", async () => {
+    const { root, paths } = tempRoot();
+    const server = await runServe(paths, fakeUnits().layer);
+    const image = { repository: "registry.cluster:5000/shop", key: "c".repeat(40) };
+    const find = () => Effect.runPromise(request(paths.socket, { _tag: "findImage", ...image }));
+    try {
+      assert.deepEqual(await find(), { _tag: "imageFound", digest: null });
+      for (const digest of [`sha256:${"1".repeat(64)}`, `sha256:${"2".repeat(64)}`]) {
+        const recorded = await Effect.runPromise(
+          request(paths.socket, { _tag: "recordImage", ...image, digest }),
+        );
+        assert.deepEqual(recorded, { _tag: "imageRecorded" });
+        assert.deepEqual(await find(), { _tag: "imageFound", digest });
+      }
+      const other = await Effect.runPromise(
+        request(paths.socket, { _tag: "findImage", ...image, key: "d".repeat(40) }),
+      );
+      assert.deepEqual(other, { _tag: "imageFound", digest: null });
     } finally {
       await server.stop();
       rmSync(root, { recursive: true, force: true });

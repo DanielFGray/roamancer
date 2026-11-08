@@ -36,9 +36,9 @@ The host marks a plan stale when any deploy, destroy or rollback finishes after 
 
 ### Images keyed by tree
 
-The builder tags each image with its tree hash and pushes it once. Before it builds, reconcile looks for an image with the tree it needs and uses that image if one exists.
+The builder tags each image with its tree hash and pushes it once. After each push, the runner records the pushed digest for the tree. Before it builds, reconcile reads that record and uses the recorded image if one exists. It never trusts the registry's tag, because the registry takes pushes from every node without credentials.
 
-The platform deletes an image only when no ref points at it and it is not:
+When the platform deletes an image, it deletes the image's record too. It deletes an image only when no ref points at it and it is not:
 
 - the image of `main`'s tree,
 - one of the last three live releases, kept for rollback,
@@ -82,7 +82,6 @@ The site folder holds the policy, beside `site.toml`. An app repository never ho
 ## Constraints in the current code
 
 - The stage name is `<app>-staged` with a fixed suffix (`StagedCartridge.stagedSuffix`, `release.ts`, `queue/StagelessJobs.ts`). `Cartridge.DerivedInstance` is the closed list `"staged" | "dev"`, and app names may not contain those words. Named refs need a reserved name form that cannot collide with an app name. They also need sanitizing and the 63-byte limit that Postgres identifiers and DNS labels share. A queue job carries the app and the ref as separate fields, because app names contain hyphens.
-- `ops promote` rebuilds the commit and then compares digests, so it fails when a rebuild of another commit gives another digest. A release by image key replaces it.
 - `release.ts` builds from a local checkout. The receiver has no checkout, so build, push and deploy must take an exported tree.
 - A staged copy runs one image for all its services and refuses a service that writes a host volume. Previews have the same limits.
 
