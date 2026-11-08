@@ -63,6 +63,8 @@ By default, `live` follows the tree of `main`. When `main` changes, reconcile re
 - If an image with that tree exists, reconcile releases it. A squash or fast-forward merge of an up-to-date branch gives the PR's own tree, so the release reuses the preview's image.
 - If no image has that tree, `main` moved under the PR and nobody previewed the merged code. Reconcile builds `main` and releases that image. The commit status says it was a fresh build.
 
+Either way, reconcile releases `main`'s tree only when it has a signoff (`continuous-deployment.md`). A merged tree that nobody tested gets none until someone runs `ops signoff` on it.
+
 An app can set `deploy = "manual"` in the site policy. A merge then deploys nothing, and `live` changes only when you run `ops release`. The image of `main`'s tree stays, so that release builds nothing when a preview ran the same tree.
 
 A merge into `main` is your approval, as `staged-releases.md` says. A release still waits for the new container's health checks, and Nomad reverts a release that fails them.

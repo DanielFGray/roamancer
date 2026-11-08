@@ -2,9 +2,9 @@
 
 ## Goal
 
-A push to an app's `main` branch releases that commit, and the operator runs no command. The platform builds the commit, runs its tests, and releases it only when they pass. The release waits for the new container's health checks, and Nomad reverts a release that fails them.
+A push to an app's `main` branch releases that commit, and the operator runs no command after the push. The platform builds the commit and releases it only when its tests passed and were signed off. The release waits for the new container's health checks, and Nomad reverts a release that fails them.
 
-This record is the first phase of `pr-previews.md`: its "Merge to deploy" path, without previews and without the GitHub App. It uses that record's terms (image key, ref, reconcile, site policy) and holds only what an unattended release adds. Decisions marked **open** wait for the operator.
+This record is the first phase of `pr-previews.md`: its "Merge to deploy" path, without previews and without the GitHub App. It uses that record's terms (image key, ref, reconcile, site policy) and holds only what an unattended release adds.
 
 ## Decisions
 
@@ -17,7 +17,8 @@ The runner's timer reads the `main` commit of each watched repository with `git 
 Reconcile releases `main` when its tree differs from the last tree that reconcile released or tried for that app. It does not compare `main` with `live`. So:
 
 - After `ops rollback`, `live` stays on the rolled-back release until `main` changes again. The next push, usually the fix, releases normally.
-- A build or test that fails is not tried again on each timer run. The next push tries again.
+- A build that fails is not tried again on each timer run. The next push tries again.
+- A tree without a signoff, or a run without a valid token, is not a try. Reconcile releases that tree when the signoff or the login arrives.
 
 An app with `deploy = "manual"` in the site policy is never released by reconcile; `ops release` still works for it.
 
@@ -29,18 +30,24 @@ The host reads each watched repository with a read-only deploy key for that repo
 
 Today `nodeBuild` (`Builder.ts`) runs an app's Dockerfile with rootless Podman as the operator, over ssh from the workstation. An unattended build runs code from anyone who can push to `main`. So it runs as a dedicated `builder` user with its own rootless Podman. That user is not `alchemy`, which holds the deploy token, and not the operator, whose shell can reach sudo. It holds only the registry client certificate. The reconcile job gives it the exported tree and reads back the digest.
 
-### Check: tests in the image build (open)
+### Check: a signoff keyed by tree
 
-Recommended: the app's Dockerfile runs its tests in a build stage. A failing test fails the build, so reconcile releases nothing and records the failure. This adds no mechanism, and `ops release` runs the same check. A test that needs Postgres or Valkey starts its own server in that stage, or moves to the other option.
+The tests run where the developer runs them, and `ops signoff` records that they passed. In the app's repository, after the tests:
 
-The other option: reconcile releases a commit only after its GitHub commit checks pass. The tests then run on GitHub, and a release waits for GitHub and needs a token that can read check status.
+```sh
+bun run test | tee test.log
+ops signoff --log test.log
+```
 
-### Token: a standing deploy token (open)
+`ops signoff` refuses when the working tree has uncommitted changes or `HEAD` is not on the remote, as `gh signoff` (basecamp/gh-signoff) does. It sends the app, the tree hash of `HEAD`, the commit and a summary of the log to the runner, which stores the record. Reconcile releases `main` only when its tree has a signoff.
 
-A job today uses the token that `ops login` mints from the root token, for 10 hours. A push at night would fail with "run ops login". Options:
+The record is keyed by tree, like the images. A squash merge makes a new commit with the same tree, so the signoff of the PR's last commit still applies. A GitHub commit status would not survive that, because it belongs to one commit.
 
-- Recommended: a periodic OpenBao token for reconcile jobs, which the runner renews before it expires. The operator creates it once from the root token. Its policies cover what an app deploy does (the app's KV paths, database roles, object store keys and Nomad jobs), not the platform stacks. So it can change any app, but it cannot change a platform service or mint other tokens. Platform deploys still need `ops login`.
-- Keep `ops login` only. Pushes deploy only during the 10 hours after a login.
+The signoff proves that the operator's ssh key sent it. An agent that holds that key can sign off too, as it can push to `main`.
+
+### Token: `ops login` only
+
+A reconcile job uses the same token as any job, the one `ops login` mints for 10 hours. Without a valid token, reconcile records "run ops login" and releases nothing. It tries again on the next timer run after a login, because no release was tried. So a push deploys only while the operator is logged in. A standing token can come later; it would change only this section.
 
 ### Approval
 
@@ -52,13 +59,13 @@ Today the workstation shows each plan and asks before it submits the deploy (`ho
 
 ### Records
 
-Each release goes into the deployment record as an `ops release` does, with its commit. A failed build, test or deploy is a failed job in `ops dash`, with its log.
+Each release goes into the deployment record as an `ops release` does, with its commit and its signoff. A failed build or deploy is a failed job in `ops dash`, with its log.
 
 ## Build order
 
 1. Tag images by tree hash, and release an existing image by its key (step 1 of `pr-previews.md`).
 2. The `builder` user, and a host-side build from an exported tree.
-3. Reconcile of `live` for one app, run by `ops reconcile <app>` and by the timer, with `deploy` in the site policy.
-4. The standing deploy token.
+3. `ops signoff` and the runner's signoff record.
+4. Reconcile of `live` for one app, run by `ops reconcile <app>` and by the timer, with `deploy` in the site policy.
 
 The previews of `pr-previews.md` (its steps 2 to 6) come after these.
