@@ -1,10 +1,19 @@
 # What every Nomad node shares: the agent, the rootless Podman it runs jobs in, and the
 # Podman task driver. Each host adds the rest of its agent configuration in
 # services.nomadNode.config: server or client, TLS, host volumes, OpenBao.
+#
+# Worker nodes set services.nomadNode.builder.enable: a second rootless Podman under the
+# builder user, named in the driver as socket "builder", with meta.builder for job
+# constraints. The control host leaves it off so builds never share a kernel with OpenBao
+# and the registry (docs/design/continuous-deployment.md).
 { config, lib, pkgs, site, ... }:
 let
   nomad = pkgs.callPackage ./nomad-package.nix { };
   cluster = site.cluster;
+  cfg = config.services.nomadNode;
+  builderUid = 1002;
+  # After nomad's 100000–165535 range so the two users' containers never share host uids.
+  builderSubIdStart = 165536;
 
   podmanDriver = pkgs.stdenvNoCC.mkDerivation {
     pname = "nomad-driver-podman";
@@ -22,13 +31,59 @@ let
       install -Dm755 nomad-driver-podman $out/bin/nomad-driver-podman
     '';
   };
+
+  # Named sockets when the builder is on; socket_path alone when it is not. The two forms
+  # are mutually exclusive in driver 0.6.5.
+  podmanPluginConfig =
+    if cfg.builder.enable then ''
+      plugin "nomad-driver-podman" {
+        config {
+          socket {
+            name = "default"
+            socket_path = "unix:///run/user/1001/podman.sock"
+          }
+          socket {
+            name = "builder"
+            socket_path = "unix:///run/user/${toString builderUid}/podman.sock"
+          }
+          # Labels each container com.hashicorp.nomad.job_name and .task_name, so
+          # host tools (backups.nix) can find a job's container without a Nomad token.
+          extra_labels = ["job_name", "task_name"]
+          volumes {
+            enabled = true
+          }
+          networking {
+            default_rootless_mode = "pasta"
+          }
+        }
+      }
+    '' else ''
+      plugin "nomad-driver-podman" {
+        config {
+          socket_path = "unix:///run/user/1001/podman.sock"
+          # Labels each container com.hashicorp.nomad.job_name and .task_name, so
+          # host tools (backups.nix) can find a job's container without a Nomad token.
+          extra_labels = ["job_name", "task_name"]
+          volumes {
+            enabled = true
+          }
+          networking {
+            default_rootless_mode = "pasta"
+          }
+        }
+      }
+    '';
 in
 {
   imports = [ ./dev-postgres-volume.nix ];
 
-  options.services.nomadNode.config = lib.mkOption {
-    type = lib.types.lines;
-    description = "This host's part of the Nomad agent configuration, in HCL.";
+  options.services.nomadNode = {
+    config = lib.mkOption {
+      type = lib.types.lines;
+      description = "This host's part of the Nomad agent configuration, in HCL.";
+    };
+    builder.enable = lib.mkEnableOption
+      "builder user with its own rootless Podman for Nomad batch builds on this worker";
   };
 
   config = {
@@ -43,12 +98,35 @@ in
     };
     users.groups.nomad = { };
 
+    users.users.builder = lib.mkIf cfg.builder.enable {
+      isSystemUser = true;
+      uid = builderUid;
+      group = "builder";
+      home = "/var/lib/builder";
+      createHome = true;
+      description = "Nomad batch image builds";
+      subUidRanges = [{ startUid = builderSubIdStart; count = 65536; }];
+      subGidRanges = [{ startGid = builderSubIdStart; count = 65536; }];
+    };
+    users.groups.builder = lib.mkIf cfg.builder.enable { gid = builderUid; };
+
     systemd.tmpfiles.rules = [
       # A unit bind mount would hide Nomad's secrets tmpfs from rootless Podman.
       # Keep the ip executable visible without giving Nomad a private mount namespace.
       "L+ /sbin/ip - - - - ${pkgs.iproute2}/bin/ip"
       "f /var/lib/systemd/linger/nomad 0644 root root -"
+    ] ++ lib.optionals cfg.builder.enable [
+      "f /var/lib/systemd/linger/builder 0644 root root -"
     ];
+
+    # Cap every build on the node together and yield CPU to production containers under
+    # the nomad user. user-<uid>.slice holds the lingering user manager and its Podman.
+    systemd.slices."user-${toString builderUid}" = lib.mkIf cfg.builder.enable {
+      sliceConfig = {
+        MemoryMax = "2560M";
+        CPUWeight = 20;
+      };
+    };
 
     virtualisation.podman = {
       enable = true;
@@ -78,8 +156,10 @@ in
       restartTriggers = [ config.environment.etc."nomad.d/nomad.hcl".source ];
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" "tailscaled.service" ];
-      after = [ "network-online.target" "tailscaled.service" "user@1001.service" ];
-      requires = [ "user@1001.service" ];
+      after = [ "network-online.target" "tailscaled.service" "user@1001.service" ]
+        ++ lib.optionals cfg.builder.enable [ "user@${toString builderUid}.service" ];
+      requires = [ "user@1001.service" ]
+        ++ lib.optionals cfg.builder.enable [ "user@${toString builderUid}.service" ];
       serviceConfig = {
         ExecStart = "${nomad}/bin/nomad agent -config=/etc/nomad.d";
         Restart = "on-failure";
@@ -99,23 +179,21 @@ in
         publish_node_metrics = true
       }
 
-      plugin "nomad-driver-podman" {
-        config {
-          socket_path = "unix:///run/user/1001/podman.sock"
-          # Labels each container com.hashicorp.nomad.job_name and .task_name, so
-          # host tools (backups.nix) can find a job's container without a Nomad token.
-          extra_labels = ["job_name", "task_name"]
-          volumes {
-            enabled = true
-          }
-          networking {
-            default_rootless_mode = "pasta"
+      ${podmanPluginConfig}
+
+      ${cfg.config}
+    '';
+
+    # Merged with the host's client block. Build jobs constrain on this.
+    environment.etc."nomad.d/builder-meta.hcl" = lib.mkIf cfg.builder.enable {
+      text = ''
+        client {
+          meta {
+            builder = "true"
           }
         }
-      }
-
-      ${config.services.nomadNode.config}
-    '';
+      '';
+    };
 
     environment.systemPackages = [ nomad pkgs.iproute2 pkgs.podman pkgs.curl pkgs.jq ];
 
