@@ -5,6 +5,8 @@
   bun2nix,
   jq,
   makeWrapper,
+  # The fleet page's built files (fleet-page-package.nix), served by `fleet serve`.
+  fleetPage,
   # server-ansible commit this package was built from (`self.rev`); null when dirty.
   revision ? null,
 }:
@@ -42,6 +44,7 @@ stdenvNoCC.mkDerivation {
       --add-flags "$out/lib/alchemy-runner/src/cli.ts" \
       --set NOMAD_ADDR http://127.0.0.1:4646 \
       --set OPENBAO_ADDR http://127.0.0.1:8200 \
+      --set FLEET_WEB_ROOT ${fleetPage} \
       ${
         if revision == null then
           ""

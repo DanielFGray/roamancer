@@ -52,11 +52,14 @@
     in {
       packages.${system} = {
         alchemy-runner = pkgs.callPackage ./nixos/modules/alchemy-runner-package.nix {
+          fleetPage = self.packages.${system}.fleet-page;
           # With no recorded commit the package omits ALCHEMY_RUNNER_REVISION.
           revision =
             let rev = nixpkgs.lib.trim (builtins.readFile "${build}/rev");
             in if rev == "" then null else rev;
         };
+
+        fleet-page = pkgs.callPackage ./nixos/modules/fleet-page-package.nix { };
 
         postgres-image =
           import ./nixos/cynic/postgres-image.nix { pkgs = nixpkgs.legacyPackages.${system}; };

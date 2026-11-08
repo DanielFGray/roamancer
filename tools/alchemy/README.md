@@ -34,6 +34,17 @@ ops install cynic root@10.0.0.9         # erase that machine's disk and install 
 
 The secret commands read the `cartridge.json` in the given folder, default the current directory, so a key added to the cartridge can be set before it is released. An app folder is held to its namespace; a folder under `platform/` is trusted. Each command then makes one `ssh` to the control host and runs `alchemy-runner secret` there with only KV paths and key names as arguments. The host reads the OpenBao root token, typed or piped (`pass show infra/openbao-token | ops secret list`), mints a 5-minute child of it, and uses that child only in that process; neither token reaches a file or a job. The `login` token is for jobs, and the secret commands do not use it. `secret set` prompts on the host for the root token and then the value, so it needs a terminal. Reads return key names, never values. `secret set` accepts only a key that the cartridge references with a `KvSecret`, at that reference's path, so a misspelled key fails before anything is stored. It keeps the other keys at that path. Nomad restarts a running task when a value it reads changes. Jobs read the Nomad controller token from `/var/lib/nomad-acl/controller.env` as the runner user `alchemy`; `ops logs` reads Nomad with the operator's read-only token, so no command needs sudo.
 
+## The fleet page
+
+The fleet service also serves a page with the same snapshot, at `https://<control host>.<tailnet>.ts.net/` on the tailnet. It reads the snapshot again every 5 seconds. The page is a Solid app in `web/`, built with Vite (`bun run build:web` writes `web/dist`). Nix builds it as the `fleet-page` package, and the runner's wrapper gives the fleet service its path as `FLEET_WEB_ROOT`. To work on it, forward the service's port and run Vite's dev server, which forwards `/api` to it:
+
+```sh
+ssh -L 8780:127.0.0.1:8780 cynic
+bunx vite web
+```
+
+The page's build tools are devDependencies, so `bun.nix` is generated from the full `bun.lock`; the runner installs only `bun-production.lock`. Run `bun run nix:deps` after a dependency change.
+
 ## Where cartridges live
 
 A platform cartridge lives in this package at `platform/<folder>/cartridge.json`. An app cartridge lives at the root of the app's own repository, and names its image repository without a digest. This package holds no app cartridge, so it knows no app until one is deployed; `examples/apps` holds sample cartridges that the tests load.

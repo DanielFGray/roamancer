@@ -4,14 +4,15 @@
   "type": "module",
   "scripts": {
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit -p tsconfig.json",
+    "typecheck": "bunx tsc --noEmit -p tsconfig.json && bunx tsc --noEmit -p web/tsconfig.json",
     "plan": "alchemy plan",
     "deploy": "alchemy deploy",
     "destroy": "alchemy destroy state.run.ts",
     "nix:deps": "./refresh-nix-deps.sh",
     "history": "node --import ./node_modules/alchemy/bin/register-oxc.js src/history.ts",
     "format": "oxfmt --check",
-    "lint": "oxlint"
+    "lint": "oxlint",
+    "build:web": "vite build web"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.6",
@@ -24,9 +25,17 @@
     "pg": "8.23.1"
   },
   "devDependencies": {
+    "@solidjs/vite-plugin": "3.0.0-next.51",
+    "@solidjs/web": "2.0.0-rc.18",
     "bun2nix": "2.1.2",
     "oxfmt": "^0.74.0",
     "oxlint": "^1.89.0",
-    "typescript": "^7.0.2"
+    "solid-js": "2.0.0-rc.18",
+    "typescript": "^7.0.2",
+    "vite": "8.3.5"
+  },
+  "overrides": {
+    "@solidjs/babel-plugin": "2.0.0-rc.18",
+    "@solidjs/compiler": "2.0.0-rc.18"
   }
 }
