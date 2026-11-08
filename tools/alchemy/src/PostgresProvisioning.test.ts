@@ -11,6 +11,7 @@ import {
   type PostgresDatabaseDeclaration,
 } from "./PostgresProvisioning.ts";
 import { databaseCreationStatements } from "./OpenBao.ts";
+import { waitReady } from "./testing/waitReady.ts";
 
 const PORT = 55417;
 const CONTAINER = "alchemy-postgres-provisioning-test";
@@ -90,18 +91,14 @@ const loginState = (names: ReadonlyArray<string>) =>
     }),
   );
 
-const waitReady = async () => {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const result = spawnSync(
-      "docker",
-      ["exec", CONTAINER, "pg_isready", "-U", "postgres", "-h", "127.0.0.1"],
-      { encoding: "utf8" },
-    );
-    if (result.status === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error("postgres container did not become ready");
-};
+const postgresReady = () =>
+  waitReady(
+    "postgres container",
+    () =>
+      spawnSync("docker", ["exec", CONTAINER, "pg_isready", "-U", "postgres", "-h", "127.0.0.1"], {
+        encoding: "utf8",
+      }).status === 0,
+  );
 
 describe("loginRolePolicy", () => {
   it("is the single source OpenBao creation statements use for options and session role", () => {
@@ -149,7 +146,7 @@ describe("provisionPostgresDatabase", () => {
       { encoding: "utf8" },
     );
     assert.equal(started.status, 0, started.stderr);
-    await waitReady();
+    await postgresReady();
   });
 
   after(() => {
