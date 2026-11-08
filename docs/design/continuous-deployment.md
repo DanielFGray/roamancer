@@ -26,9 +26,29 @@ An app with `deploy = "manual"` in the site policy is never released by reconcil
 
 The host reads each watched repository with a read-only deploy key for that repository. Reconcile exports `main`'s tree with `git archive` and builds from that tree. `pr-previews.md` already requires a build from an exported tree, because the host has no checkout.
 
-### Build user
+The runner uploads the exported tree to a `builds` bucket in Garage and gives the build job a presigned URL for it that expires after a few minutes. Nomad's `artifact` block fetches and unpacks the tree before the task starts, so the build container receives no credential. A batch job has no stdin, which is how today's ssh build receives its tree.
 
-Today `nodeBuild` (`Builder.ts`) runs an app's Dockerfile with rootless Podman as the operator, over ssh from the workstation. An unattended build runs code from anyone who can push to `main`. So it runs as a dedicated `builder` user with its own rootless Podman. That user is not `alchemy`, which holds the deploy token, and not the operator, whose shell can reach sudo. It holds no credentials: the registry checks none, and it needs only network access to the registry. The reconcile job gives it the exported tree and reads back the digest. Only the reconcile job records that digest, and only under the app's own repository; the `builder` user cannot reach the runner socket, so a Dockerfile cannot record an image under another app's tree.
+### Build: a Nomad batch job in the builder's Podman, on worker nodes
+
+Today `nodeBuild` (`Builder.ts`) runs an app's Dockerfile with rootless Podman as the operator, over ssh from the workstation. An unattended build runs code from anyone who can push to `main`, so it runs apart from both.
+
+The build is a Nomad batch job. Nomad places it as it places every job: the scheduler algorithm is `spread` (`nixos/cynic/nomad-acl.nix`), so the build goes to the least-loaded eligible node, and a node added later takes builds with no change here. The image goes to the registry, which every node pulls from, and the runner's record maps the tree to the digest wherever the build ran.
+
+The build task runs Buildah (chroot isolation, `vfs` storage) in a platform image built by the root flake. That image holds the cluster registry's CA and a registries.conf that resolves short names on Docker Hub, as the hosts' Podman does today. Measured on atheist on 2026-11-08, nested in rootless Podman with default security options: dfg.rocks built in 111 s with a peak of 1.6 GB, and postgres.garden in 475 s with a peak of 2.0 GB, file cache included.
+
+Isolation:
+
+1. **A `builder` user with its own rootless Podman.** The Podman driver selects it by a named `socket` block (`socket = "builder"` in the task). That user is not `nomad`, whose Podman runs the production containers, not `alchemy`, which holds the deploy token, and not the operator, whose shell can reach sudo.
+2. **Worker nodes only.** Only worker nodes have the builder socket, and the job is constrained to them. cynic holds OpenBao, the registry and the runner, and a kernel exploit from build code there would reach them. Today atheist is the only worker.
+3. **Egress by user.** Rootless Podman's traffic leaves the host as the builder user, so the node's firewall matches that user and allows only the registry, DNS and the public internet. It drops the LAN, the tailnet, OpenBao, Nomad and Garage's admin port.
+4. **No credentials in the build.** The registry checks none. The tree comes by a presigned URL, and the task gets no Nomad workload identity file or variable.
+5. **Limits.** A build reserves 256 MB in Nomad and may use up to 2 GB (`memory_max`), or what its cartridge sets. This needs Nomad memory oversubscription, which the scheduler settings in `nomad-acl.nix` turn on; it changes only jobs that set a maximum. The builder user's systemd slice caps all builds on a node together and gives them a low CPU weight, so production containers win under contention.
+
+The runner reads the digest that the job prints, with its own Nomad token. It treats that output as untrusted: it records a digest only after the registry answers for `<repository>@<digest>`, and only under the repository and key it chose for that job. The builder cannot reach the runner socket, so a Dockerfile cannot record an image under another app's tree.
+
+`ops release` and `ops stage` use the same build job: `ops` sends the exported tree to the runner, which uploads it and submits the job. The ssh build as the operator (`nodeBuild`, `[build] node` in site.toml) and the Docker build on the workstation (`localBuild`) are then removed, so every image, manual or unattended, comes from one build path with one set of limits.
+
+gVisor was measured and not chosen. Buildah fails inside it (no `/proc/<pid>/setgroups`), Kaniko builds dfg.rocks there in 407 s, and the container's memory limit is not enforced under rootless Podman. It would let builds run on cynic.
 
 ### Check: a signoff keyed by tree
 
@@ -64,7 +84,7 @@ Each release goes into the deployment record as an `ops release` does, with its 
 ## Build order
 
 1. Tag images by tree hash, and release an existing image by its key (step 1 of `pr-previews.md`).
-2. The `builder` user, and a host-side build from an exported tree.
+2. The build job: on worker nodes, the `builder` user, its Podman socket, its firewall rule and slice limits, and memory oversubscription; the Buildah platform image; the `builds` bucket; and the runner's build that submits the job, reads its digest, checks it and records it.
 3. `ops signoff` and the runner's signoff record.
 4. Reconcile of `live` for one app, run by `ops reconcile <app>` and by the timer, with `deploy` in the site policy.
 
