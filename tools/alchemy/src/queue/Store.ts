@@ -390,10 +390,6 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       return yield* Effect.forEach(rows, toJob, { concurrency: 1 });
     });
 
-    /**
-     * Deploy gate: the named plan must be a succeeded plan of the same stage and
-     * cartridge, run by the same runner revision, with no later finished job.
-     */
     const recordSignoff = Effect.fn("Store.recordSignoff")(function* (input: SignoffInput) {
       const rows = yield* sql<typeof SignoffRow.Type>`
         INSERT INTO signoffs (app, tree, "commit", summary, log_sha256, created_at)
@@ -422,6 +418,10 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       return rows.map(toSignoff);
     });
 
+    /**
+     * Deploy gate: the named plan must be a succeeded plan of the same stage and
+     * cartridge, run by the same runner revision, with no later finished job.
+     */
     const requireFreshPlan = Effect.fn("Store.requireFreshPlan")(function* (
       deploy: DeploySubmit,
       runnerRevision: string | null,

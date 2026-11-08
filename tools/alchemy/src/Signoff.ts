@@ -3,7 +3,7 @@
  * record the signoff on the control host. Listing is `ops signoff list <app>`.
  */
 import { createHash } from "node:crypto";
-import { Console, Effect, FileSystem, Option } from "effect";
+import { Console, Effect, FileSystem } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import * as Cartridge from "./Cartridge.ts";
 import { OpsError, output, succeeds } from "./Exec.ts";
@@ -16,10 +16,8 @@ const folder = Argument.String("folder").pipe(
   Argument.withDefault("."),
 );
 
-const logFlag = Flag.optional(
-  Flag.String("log").pipe(
-    Flag.withDescription("The test log whose last lines become the stored summary"),
-  ),
+const logFlag = Flag.String("log").pipe(
+  Flag.withDescription("The test log whose last lines become the stored summary"),
 );
 
 /** CSI / OSC ANSI sequences; stripped before the summary is truncated. */
@@ -62,13 +60,7 @@ const signoffList = Command.make(
 const signoff = Command.make(
   "signoff",
   { folder, log: logFlag },
-  Effect.fn(function* ({ folder, log: logOption }) {
-    const logPath = Option.getOrUndefined(logOption);
-    if (logPath === undefined) {
-      return yield* new OpsError({
-        message: "pass --log <file> after the tests, for example: ops signoff --log test.log",
-      });
-    }
+  Effect.fn(function* ({ folder, log: logPath }) {
     yield* refuseDirty(folder);
     yield* refuseUnpushed(folder);
     const fs = yield* FileSystem.FileSystem;
