@@ -21,7 +21,7 @@ MinIO's community edition went into maintenance mode in December 2025, and its r
 
 ### A Nix-built image, like Postgres
 
-`nixos/cynic/garage-image.nix` builds `platform-garage` from the nixpkgs `garage_2` package (Garage 2.4.1 in the pinned nixpkgs; `garage` is still 1.3.1, which has no admin API version 2), the same way `postgres-image.nix` builds `platform-postgres`. Its start script writes `garage.toml` and runs `garage server`. The file holds only settings that are not secret:
+`nixos/cynic/garage-image.nix` builds `platform-garage` from the nixpkgs `garage_2` package (Garage 2.4.1 in the pinned nixpkgs; `garage` is still 1.3.1, which has no admin API version 2), the same way `postgres-image.nix` builds `platform-postgres`. The image holds `/etc/garage.toml`, where the `garage` command also finds it, and its start script runs `garage server`. The file holds only settings that are not secret:
 
 - `replication_factor = 1`, because there is one node.
 - `s3_region = "garage"`. Garage refuses a request signed for any other region.
@@ -40,7 +40,7 @@ An app cartridge declares `"objectStore": {}`. Expand turns it into one `Garage.
 
 1. Give the node a role in the layout and apply it, when the layout has no role yet. The role has the zone `dc1` and a capacity of 50 GB. With one node the capacity only has to be larger than zero; it does not limit what the node stores. A later reconcile finds the role and changes nothing.
 2. Create the bucket `<app>` when it is missing.
-3. Create the key `<app>` when OpenBao has no key for the app, and store its id and secret in OpenBao at `secret/data/garage/<app>`. Garage shows a secret key only once, when it creates the key, so OpenBao is the only copy. When OpenBao has a key that Garage does not, the provider deletes the stored value and creates a new key.
+3. Create the key `<app>` when OpenBao has no key for the app, and store its id and secret in OpenBao at `secret/data/garage/<app>`. Garage shows a secret key only once, when it creates the key, so OpenBao is the only copy. When OpenBao has a key that Garage does not, the provider creates a new key and replaces the stored value.
 4. Allow the key to read and write that bucket and no other.
 
 A secret reference `{ "_tag": "ObjectStoreCredentials", ... }` renders the endpoint, region, bucket name, key id and secret key into environment names that the app chooses. Clients must use path-style addresses (`<endpoint>/<bucket>/<key>`), because the store has no host name for each bucket. The endpoint comes from the Nomad service of the S3 API, as the Valkey URL comes from the Valkey service.
@@ -65,11 +65,13 @@ The store has no public route. An app reads an object with its key and streams i
 
 ### Backups
 
-Garage stores objects as blocks that it never changes after it writes them, and it keeps its metadata in LMDB. A copy of a live LMDB file can be torn. So each night the backup first runs `garage meta snapshot` in the container (as nomad, the way the Postgres dump runs `pg_dumpall`), then restic backs up the snapshot and the data directory. A restore puts back the data directory and that snapshot.
+Garage stores objects as blocks that it never changes after it writes them, and it keeps its metadata in LMDB. A copy of a live LMDB file can be torn. So each night the backup first runs `garage meta snapshot` in the container (as nomad, the way the Postgres dump runs `pg_dumpall`), then restic backs up the whole volume except the live database. The node key and the cluster layout are small files beside the database, and a restore needs them too. A restore puts back the volume and makes the newest snapshot the live database (`nixos/backup-operations.md`).
 
 The snapshot and the data match except for writes during the restic run. An object written after the snapshot leaves blocks with no metadata, which Garage can remove. An object deleted after the snapshot can lose its blocks: Garage deletes a block only some time after nothing names it, so this needs a delete during the run and a restore of that night's backup.
 
 ## Work
+
+Items 1 to 8 are done. `ops image garage-image` builds and pushes the image.
 
 1. Job: a list of more ports, each registered as `<job>-<name>`.
 2. Image: `garage-image.nix`, the host volume, and its Nomad ACL entry.
