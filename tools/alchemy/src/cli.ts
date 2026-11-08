@@ -4,6 +4,7 @@
  * runner user (queue/Schema.ts lists the job kinds). `ops` on the workstation reaches this
  * program over SSH.
  */
+import * as Alchemy from "alchemy";
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import {
@@ -361,6 +362,8 @@ const fleetServe = Command.make(
           readOnlyNomad(fleetEnvPath),
           Deployments.layer(),
           queueStoreLayer(QueuePaths.production.database),
+          // The working directory's .alchemy/state, which the runner's deploys write.
+          Alchemy.localState(),
         ).pipe(Layer.provideMerge(BunServices.layer)),
       ),
     );

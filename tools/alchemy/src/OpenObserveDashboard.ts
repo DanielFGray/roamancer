@@ -153,8 +153,20 @@ export const saveDashboard = Effect.fn("OpenObserveDashboard.save")(function* (
 export type DashboardClient = ReturnType<typeof dashboardClient>;
 
 // OpenObserve's open-source build has the one organization, and the UI opens the default folder.
-const dashboards = "/api/default/dashboards";
+const organization = "default";
 const folder = "default";
+const dashboards = `/api/${organization}/dashboards`;
+
+/** Where OpenObserve's UI at `baseUrl` opens a saved dashboard. */
+export const viewUrl = (baseUrl: string, dashboardId: string): string => {
+  const url = new URL("/web/dashboards/view", baseUrl);
+  url.search = new URLSearchParams({
+    org_identifier: organization,
+    dashboard: dashboardId,
+    folder,
+  }).toString();
+  return url.toString();
+};
 
 const Saved = S.Struct({ hash: S.String, v8: S.Struct({ dashboardId: S.String }) });
 

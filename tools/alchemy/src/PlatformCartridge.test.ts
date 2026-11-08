@@ -1,12 +1,15 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
+import * as S from "effect/Schema";
 import { NodeFileSystem } from "@effect/platform-node";
 import { fileURLToPath } from "node:url";
 import { Cartridge, expand, decodeFile, kvKeys, loadDashboards } from "./Cartridge.ts";
 import * as Package from "./Package.ts";
 import { tailnetEntrypoint } from "./Job.ts";
 import { ingressService } from "./TailscaleServe.ts";
+import { observabilityStage } from "./FleetStatus.ts";
+import { jobDashboard } from "./fleet/Snapshot.ts";
 
 const observability = () =>
   Effect.runPromise(
@@ -41,6 +44,39 @@ describe("platform observability cartridge", () => {
         ["nomad", "Nomad cluster", "openobserve"],
       ],
     );
+  });
+
+  it("is the stage the fleet page reads, with the job tab and variable its job links set", async () => {
+    const cartridge = await observability();
+    assert.equal(cartridge.name, observabilityStage);
+    const dashboards = await Effect.runPromise(
+      loadDashboards(Package.root, cartridge).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    const nomad = dashboards.find(
+      (resource) => resource._tag === "OpenObserveDashboard" && resource.name === jobDashboard.name,
+    );
+    assert.ok(nomad && nomad._tag === "OpenObserveDashboard");
+    const document = S.decodeUnknownSync(
+      S.Struct({
+        variables: S.Struct({ list: S.Array(S.Struct({ name: S.String, value: S.String })) }),
+        tabs: S.Array(
+          S.Struct({
+            tabId: S.String,
+            panels: S.Array(S.Struct({ queries: S.Array(S.Struct({ query: S.String })) })),
+          }),
+        ),
+      }),
+    )(nomad.dashboard.dashboard);
+    // Without a variable in the link, the default matches every job.
+    assert.deepEqual(
+      document.variables.list.filter((variable) => variable.name === jobDashboard.variable),
+      [{ name: jobDashboard.variable, value: ".*" }],
+    );
+    const jobTab = document.tabs.find((tab) => tab.tabId === jobDashboard.tab);
+    assert.ok(jobTab);
+    for (const query of jobTab.panels.flatMap((panel) => panel.queries)) {
+      assert.match(query.query, new RegExp(`\\{exported_job=~"\\$${jobDashboard.variable}"\\}`));
+    }
   });
 
   it("lists the dashboard token among the keys `ops secret set` accepts", async () => {

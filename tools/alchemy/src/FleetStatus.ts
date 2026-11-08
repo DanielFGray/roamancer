@@ -1,7 +1,8 @@
 /**
  * One read-only picture of the cluster: each Nomad job's health, its live containers and
  * why its waiting allocations cannot be placed; each node's measured use beside what the
- * scheduler has reserved on it; each app's newest release; and the newest runner jobs.
+ * scheduler has reserved on it; each app's newest release; the newest runner jobs; and where
+ * each deployed OpenObserve dashboard opens.
  * The fleet service (fleet/Server.ts) serves it; `ops dash` and the fleet page read it there.
  */
 import * as Arr from "effect/Array";
@@ -9,8 +10,12 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as S from "effect/Schema";
+import { State, type StateService, type StateStoreError } from "alchemy/State";
+import { dashboardResourcePrefix, serveResourceId } from "./Compose.ts";
 import { type Deployment, Deployments } from "./Deployments.ts";
 import { Nomad, type NomadError } from "./Nomad.ts";
+import { viewUrl } from "./OpenObserveDashboard.ts";
+import * as Package from "./Package.ts";
 import type {
   Evaluation,
   JobListItem,
@@ -22,6 +27,7 @@ import type {
 import type {
   AllocationStatus,
   AppRelease,
+  DashboardLink,
   Health,
   JobStatus,
   NodeStatus,
@@ -39,16 +45,25 @@ export const snapshot = Effect.fn("FleetStatus.snapshot")(function* () {
   const allocations = yield* Effect.cached(nomad.placedAllocations());
   const deployments = yield* Deployments;
   const store = yield* Store;
-  const [jobs, nodes, apps, runner] = yield* Effect.all(
+  const state = yield* yield* State;
+  const [jobs, nodes, apps, runner, dashboards] = yield* Effect.all(
     [
       available(readJobs(nomad, allocations)),
       available(readNodes(nomad, allocations)),
       available(deployments.newest().pipe(Effect.flatMap(Effect.forEach(appRelease)))),
       available(store.list({ limit: runnerJobs }).pipe(Effect.map(Arr.map(runnerJob)))),
+      available(readDashboards(state)),
     ],
     { concurrency: "unbounded" },
   );
-  return { takenAt: new Date().toISOString(), jobs, nodes, apps, runner } satisfies Snapshot;
+  return {
+    takenAt: new Date().toISOString(),
+    jobs,
+    nodes,
+    apps,
+    runner,
+    dashboards,
+  } satisfies Snapshot;
 });
 
 /** A runner job as the snapshot shows it; the payload is reduced to what it acts on. */
@@ -176,6 +191,58 @@ const appRelease = (deployment: Deployment) =>
       jobs: cartridge.services.map((service) => service.name),
     })),
   );
+
+/** The stage that runs OpenObserve and deploys its dashboards (platform/observability). */
+export const observabilityStage = "platform-observability";
+
+// A dashboard's state: OpenObserve's ID for it, its title, and the job that serves it.
+const DeployedDashboard = S.Struct({
+  resourceType: S.Literal("OpenObserve.Dashboard"),
+  props: S.Struct({ server: S.String, dashboard: S.Struct({ title: S.String }) }),
+  attr: S.Struct({ dashboardId: S.String }),
+});
+const DeployedServe = S.Struct({ attr: S.Struct({ url: S.String }) });
+
+export class MissingState extends S.TaggedError<MissingState>()("MissingState", {
+  fqn: S.String,
+}) {
+  override get message() {
+    return `Alchemy state has no deployed ${this.fqn}`;
+  }
+}
+
+/**
+ * Each dashboard that the observability stage deployed, opened through the Tailscale Serve
+ * URL of the job that serves it. Fails while a dashboard or that Serve lease has no created
+ * state, so the section shows why instead of a link that does not open.
+ */
+export const readDashboards = Effect.fn("FleetStatus.readDashboards")(function* (
+  state: StateService,
+) {
+  const at = { stack: Package.stack, stage: observabilityStage };
+  const record = <A, I>(
+    fqn: string,
+    schema: S.Codec<A, I>,
+  ): Effect.Effect<A, MissingState | StateStoreError | S.SchemaError> =>
+    state.get({ ...at, fqn }).pipe(
+      Effect.flatMap((value) =>
+        value === undefined ? Effect.fail(new MissingState({ fqn })) : Effect.succeed(value),
+      ),
+      Effect.flatMap(S.decodeUnknownEffect(schema)),
+    );
+  const names = (yield* state.list(at)).filter((fqn) => fqn.startsWith(dashboardResourcePrefix));
+  return yield* Effect.forEach(names, (fqn) =>
+    Effect.gen(function* () {
+      const dashboard = yield* record(fqn, DeployedDashboard);
+      const serve = yield* record(serveResourceId(dashboard.props.server), DeployedServe);
+      return {
+        name: fqn.slice(dashboardResourcePrefix.length),
+        title: dashboard.props.dashboard.title,
+        url: viewUrl(serve.attr.url, dashboard.attr.dashboardId),
+      } satisfies DashboardLink;
+    }),
+  );
+});
 
 const available = <A, E>(read: Effect.Effect<ReadonlyArray<A>, E>) =>
   read.pipe(
@@ -323,6 +390,11 @@ export const render = (snapshot: Snapshot): string =>
     `apps`,
     ...renderSection(snapshot.apps, (app) => [
       `  ${app.name.padEnd(24)} #${app.deployment} ${app.revision.slice(0, 8)} ${minute(app.deployedAt)}  ${app.jobs.join(", ")}`,
+    ]),
+    ``,
+    `dashboards`,
+    ...renderSection(snapshot.dashboards, (dashboard) => [
+      `  ${dashboard.title.padEnd(24)} ${dashboard.url}`,
     ]),
     ``,
     `nodes`,

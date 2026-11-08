@@ -96,6 +96,29 @@ export const RunnerJob = S.Struct({
 });
 export type RunnerJob = typeof RunnerJob.Type;
 
+/** A dashboard that Alchemy deployed to OpenObserve, and where it opens on the tailnet. */
+export const DashboardLink = S.Struct({ name: S.String, title: S.String, url: S.String });
+export type DashboardLink = typeof DashboardLink.Type;
+
+/**
+ * The dashboard whose tab shows one job's memory, CPU, restarts and failures, and the
+ * variable that filters that tab (platform/observability/dashboards/nomad.json).
+ */
+export const jobDashboard = { name: "nomad", tab: "jobs", variable: "job" } as const;
+
+/** The job dashboard filtered to one Nomad job; undefined while that dashboard is not deployed. */
+export const jobDashboardUrl = (
+  dashboards: ReadonlyArray<DashboardLink>,
+  job: string,
+): string | undefined => {
+  const dashboard = dashboards.find((entry) => entry.name === jobDashboard.name);
+  if (dashboard === undefined) return undefined;
+  const url = new URL(dashboard.url);
+  url.searchParams.set("tab", jobDashboard.tab);
+  url.searchParams.set(`var-${jobDashboard.variable}`, job);
+  return url.toString();
+};
+
 export const Snapshot = S.Struct({
   takenAt: S.String,
   jobs: section(JobStatus),
@@ -104,5 +127,7 @@ export const Snapshot = S.Struct({
   apps: section(AppRelease),
   // The newest runner jobs, newest first: what is running, waiting, and what just ended.
   runner: section(RunnerJob),
+  // The deployed OpenObserve dashboards; the page links each job to its view of the job dashboard.
+  dashboards: section(DashboardLink),
 });
 export type Snapshot = typeof Snapshot.Type;

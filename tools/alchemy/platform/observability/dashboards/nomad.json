@@ -9,7 +9,18 @@
     "endTime": 0
   },
   "variables": {
-    "list": [],
+    "list": [
+      {
+        "type": "textbox",
+        "name": "job",
+        "label": "Job",
+        "value": ".*",
+        "options": [],
+        "multiSelect": false,
+        "hideOnDashboard": false,
+        "scope": "global"
+      }
+    ],
     "showDynamicFilters": false
   },
   "tabs": [
@@ -357,7 +368,7 @@
           "queryType": "promql",
           "queries": [
             {
-              "query": "sum by (exported_job) (nomad_client_allocs_memory_usage)",
+              "query": "sum by (exported_job) (nomad_client_allocs_memory_usage{exported_job=~\"$job\"})",
               "vrlFunctionQuery": "",
               "customQuery": true,
               "fields": {
@@ -419,7 +430,7 @@
           "queryType": "promql",
           "queries": [
             {
-              "query": "sum by (exported_job) (nomad_client_allocs_cpu_total_percent)",
+              "query": "sum by (exported_job) (nomad_client_allocs_cpu_total_percent{exported_job=~\"$job\"})",
               "vrlFunctionQuery": "",
               "customQuery": true,
               "fields": {
@@ -481,7 +492,7 @@
           "queryType": "promql",
           "queries": [
             {
-              "query": "count by (exported_job) (max_over_time(nomad_client_allocs_restart[1h]))",
+              "query": "count by (exported_job) (max_over_time(nomad_client_allocs_restart{exported_job=~\"$job\"}[1h]))",
               "vrlFunctionQuery": "",
               "customQuery": true,
               "fields": {
@@ -543,7 +554,7 @@
           "queryType": "promql",
           "queries": [
             {
-              "query": "sum by (exported_job) (increase(nomad_nomad_job_summary_failed[1h])) > 0",
+              "query": "sum by (exported_job) (increase(nomad_nomad_job_summary_failed{exported_job=~\"$job\"}[1h])) > 0",
               "vrlFunctionQuery": "",
               "customQuery": true,
               "fields": {

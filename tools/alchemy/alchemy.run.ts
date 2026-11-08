@@ -18,7 +18,7 @@ import * as StagedCartridge from "./src/StagedCartridge.ts";
 import { compose } from "./src/Compose.ts";
 
 const stack = Alchemy.Stack(
-  "cartridge",
+  Package.stack,
   { providers, state: Alchemy.localState() },
   Effect.gen(function* () {
     // The stage names the cartridge: `alchemy deploy --stage giglist` deploys the

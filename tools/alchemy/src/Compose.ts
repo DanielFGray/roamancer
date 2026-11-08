@@ -115,6 +115,12 @@ export type Constructors<R> = {
   ) => Effect.Effect<DashboardAttributes, never, R>;
 };
 
+/** The logical ID of a job's Tailscale Serve lease; readers of the state find it by this ID. */
+export const serveResourceId = (job: string) => `tailscale-serve-${job}`;
+/** The logical ID of a cartridge's dashboard; readers of the state find it by this ID. */
+export const dashboardResourceId = (name: string) => `${dashboardResourcePrefix}${name}`;
+export const dashboardResourcePrefix = "openobserve-dashboard-";
+
 /**
  * Declare one Alchemy resource per expanded resource, in order, wiring each job to the outputs it depends on.
  *
@@ -133,7 +139,7 @@ export const compose = <R>(
       Match.value(declaration).pipe(
         Match.when({ _tag: "TailscaleServe" }, ({ serviceName }) =>
           Effect.gen(function* () {
-            const resource = yield* constructors.TailscaleServe(`tailscale-serve-${serviceName}`, {
+            const resource = yield* constructors.TailscaleServe(serveResourceId(serviceName), {
               path: tailnetPath(serviceName),
             });
             return {
@@ -249,7 +255,7 @@ export const compose = <R>(
                 ),
               onSome: (server) =>
                 constructors
-                  .OpenObserveDashboard(`openobserve-dashboard-${name}`, {
+                  .OpenObserveDashboard(dashboardResourceId(name), {
                     ...dashboard,
                     server: server.resource.id,
                   })

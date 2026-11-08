@@ -8,6 +8,7 @@
   --warn: #b26b00;
   --bad: #c62f2f;
   --track: #e8ebef;
+  --link: #2457c5;
   color-scheme: light dark;
 }
 
@@ -22,6 +23,7 @@
     --warn: #e0a33a;
     --bad: #ef6464;
     --track: #2a3038;
+    --link: #7aa7ff;
   }
 }
 
@@ -49,6 +51,17 @@ header {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 12px;
+}
+
+a {
+  color: var(--link);
+}
+
+.dashboards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-left: auto;
 }
 
 h1 {

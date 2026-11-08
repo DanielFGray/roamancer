@@ -13,3 +13,5 @@ export const alchemyCli = path.join(root, "node_modules/alchemy/bin/cli.js");
 export const appEntry = path.join(root, "alchemy.run.ts");
 /** The entrypoint that reads and destroys state without a cartridge. */
 export const stateEntry = path.join(root, "state.run.ts");
+/** The Alchemy stack that every stage belongs to; each stage deploys one cartridge. */
+export const stack = "cartridge";

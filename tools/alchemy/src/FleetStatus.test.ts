@@ -1,7 +1,21 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
+import * as Effect from "effect/Effect";
 import * as S from "effect/Schema";
-import { allocationStatus, blockedBy, health, nodeStatus, runnerJob } from "./FleetStatus.ts";
+import { type CreatedResourceState, InMemoryService } from "alchemy/State";
+import { dashboardResourceId, serveResourceId } from "./Compose.ts";
+import {
+  allocationStatus,
+  blockedBy,
+  health,
+  nodeStatus,
+  observabilityStage,
+  readDashboards,
+  runnerJob,
+} from "./FleetStatus.ts";
+import { jobDashboard, jobDashboardUrl } from "./fleet/Snapshot.ts";
+import { viewUrl } from "./OpenObserveDashboard.ts";
+import * as Package from "./Package.ts";
 import { NodeSchema, NodeStatsSchema, PlacedAllocationSchema } from "./Nomad.ts";
 import type { Job } from "./queue/Schema.ts";
 
@@ -203,5 +217,94 @@ describe("runnerJob", () => {
       "giglist",
     );
     assert.equal(runnerJob(job({ command: "place-queued" })).subject, null);
+  });
+});
+
+describe("readDashboards", () => {
+  const serveUrl = "https://cynic.tail.example:9000";
+  // Records shaped as Alchemy stores them after a deploy of the observability stage.
+  const created = (
+    fqn: string,
+    resourceType: string,
+    props: object,
+    attr: object,
+  ): CreatedResourceState => ({
+    status: "created",
+    namespace: undefined,
+    fqn,
+    logicalId: fqn,
+    instanceId: "0",
+    resourceType,
+    props,
+    attr,
+    bindings: [],
+    providerVersion: 0,
+    downstream: [],
+    removalPolicy: "destroy",
+  });
+  const dashboard = (name: string, title: string, dashboardId: string) =>
+    created(
+      dashboardResourceId(name),
+      "OpenObserve.Dashboard",
+      { server: "openobserve", username: "automation", token: "key", dashboard: { title } },
+      { dashboardId, hash: "h" },
+    );
+  const serve = created(
+    serveResourceId("openobserve"),
+    "Tailscale.Serve",
+    { path: "/_tailnet/openobserve/" },
+    { id: serveResourceId("openobserve"), port: 9000, url: serveUrl },
+  );
+  const read = (records: ReadonlyArray<CreatedResourceState>) =>
+    Effect.runPromise(
+      Effect.flatMap(
+        InMemoryService({
+          [Package.stack]: {
+            [observabilityStage]: Object.fromEntries(records.map((record) => [record.fqn, record])),
+          },
+        }),
+        readDashboards,
+      ),
+    );
+
+  it("opens each deployed dashboard through the Serve URL of the job that serves it", async () => {
+    const links = await read([
+      serve,
+      dashboard("services", "Services", "41"),
+      dashboard("nomad", "Nomad cluster", "42"),
+    ]);
+    assert.deepEqual(
+      [...links].sort((a, b) => a.name.localeCompare(b.name)),
+      [
+        { name: "nomad", title: "Nomad cluster", url: viewUrl(serveUrl, "42") },
+        { name: "services", title: "Services", url: viewUrl(serveUrl, "41") },
+      ],
+    );
+  });
+
+  it("fails, naming the record, while the Serve lease has no state", async () => {
+    await assert.rejects(read([dashboard("nomad", "Nomad cluster", "42")]), {
+      message: /no deployed tailscale-serve-openobserve/,
+    });
+  });
+});
+
+describe("jobDashboardUrl", () => {
+  const nomad = {
+    name: jobDashboard.name,
+    title: "Nomad cluster",
+    url: viewUrl("https://cynic.tail.example:9000", "42"),
+  };
+
+  it("opens the job tab of the job dashboard, filtered to the job", () => {
+    const url = new URL(jobDashboardUrl([nomad], "giglist-api-staged")!);
+    assert.equal(url.origin, "https://cynic.tail.example:9000");
+    assert.equal(url.searchParams.get("dashboard"), "42");
+    assert.equal(url.searchParams.get("tab"), jobDashboard.tab);
+    assert.equal(url.searchParams.get(`var-${jobDashboard.variable}`), "giglist-api-staged");
+  });
+
+  it("gives no link while the job dashboard is not deployed", () => {
+    assert.equal(jobDashboardUrl([{ ...nomad, name: "services" }], "giglist-api"), undefined);
   });
 });

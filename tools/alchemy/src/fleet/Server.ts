@@ -1,7 +1,7 @@
 /**
  * The fleet service on the control host: FleetApi on loopback and, when `webRoot` is set,
  * the fleet page's built files. It runs as the runner user, which alone can read the
- * deployment record and the job queue, with a read-only Nomad token.
+ * deployment record, the job queue and Alchemy's state, with a read-only Nomad token.
  *
  * Viewers that ask within a few seconds of each other share one snapshot read, so each
  * open page does not add its own round of Nomad requests.
@@ -15,7 +15,7 @@ import { FleetApi, port } from "./Api.ts";
 
 const snapshotTtl = "5 seconds";
 
-/** The server; it needs Nomad, Deployments and the queue Store for the snapshot. */
+/** The server; it needs Nomad, Deployments, the queue Store and Alchemy's State for the snapshot. */
 export const layer = (options: { readonly webRoot: Option.Option<string> }) =>
   HttpRouter.serve(
     Layer.mergeAll(

@@ -11,13 +11,15 @@ import { FetchHttpClient } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
 import { type Accessor, createSignal, For, Show } from "solid-js";
 import { FleetApi } from "../src/fleet/Api.ts";
-import type {
-  AllocationStatus,
-  AppRelease,
-  JobStatus,
-  NodeStatus,
-  RunnerJob,
-  Snapshot,
+import {
+  type AllocationStatus,
+  type AppRelease,
+  type DashboardLink,
+  jobDashboardUrl,
+  type JobStatus,
+  type NodeStatus,
+  type RunnerJob,
+  type Snapshot,
 } from "../src/fleet/Snapshot.ts";
 
 // The fleet service keeps one snapshot for five seconds, so reading more often gains nothing.
@@ -50,6 +52,7 @@ const App = () => (
       <Show when={failure()}>
         {(message) => <span class="bad">cannot reach the fleet service: {message()}</span>}
       </Show>
+      <Show when={snapshot()}>{(taken) => <Dashboards section={taken().dashboards} />}</Show>
     </header>
     <Show when={snapshot()}>
       {(taken) => (
@@ -59,7 +62,7 @@ const App = () => (
             {(node) => <NodeCard node={node()} />}
           </Section>
           <Section title="Jobs" section={taken().jobs} key={(job) => job.name}>
-            {(job) => <JobRow job={job()} />}
+            {(job) => <JobRow job={job()} dashboards={available(taken().dashboards)} />}
           </Section>
           <Section title="Runner jobs" section={taken().runner} key={(job) => job.id}>
             {(job) => <RunnerRow job={job()} />}
@@ -101,6 +104,28 @@ const Stat = (props: { label: string; value: number; tone: string }) => (
     <strong>{props.value}</strong>
     <span>{props.label}</span>
   </div>
+);
+
+/** A link to each deployed OpenObserve dashboard, or why the page has none. */
+const Dashboards = (props: { section: SnapshotSection<DashboardLink> }) => (
+  <nav class="dashboards">
+    <Show
+      when={props.section._tag === "Available"}
+      fallback={
+        <span class="warn">
+          dashboards unavailable: {props.section._tag === "Unavailable" && props.section.reason}
+        </span>
+      }
+    >
+      <For each={available(props.section)} keyed={(dashboard) => dashboard.name}>
+        {(dashboard) => (
+          <a href={dashboard().url} target="_blank" rel="noreferrer">
+            {dashboard().title}
+          </a>
+        )}
+      </For>
+    </Show>
+  </nav>
 );
 
 type SnapshotSection<A> =
@@ -198,7 +223,7 @@ const Meter = (props: { label: string; fraction: number | null; detail?: string 
   );
 };
 
-const JobRow = (props: { job: JobStatus }) => (
+const JobRow = (props: { job: JobStatus; dashboards: ReadonlyArray<DashboardLink> }) => (
   <article class="job">
     <div class="line">
       <span class={`dot ${healthTone[props.job.health]}`} title={props.job.health} />
@@ -209,6 +234,13 @@ const JobRow = (props: { job: JobStatus }) => (
       <span class="image muted" title={props.job.images.join("\n")}>
         {props.job.images.map(shortImage).join(" ")}
       </span>
+      <Show when={jobDashboardUrl(props.dashboards, props.job.name)}>
+        {(url) => (
+          <a href={url()} target="_blank" rel="noreferrer">
+            metrics
+          </a>
+        )}
+      </Show>
     </div>
     <For each={props.job.blockedBy}>{(reason) => <p class="warn indent">waiting: {reason}</p>}</For>
     <For each={props.job.checks.filter((check) => check.status !== "success")}>
