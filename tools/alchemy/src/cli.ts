@@ -45,6 +45,7 @@ import * as QueueFinished from "./queue/Finished.ts";
 import * as QueuePaths from "./queue/Paths.ts";
 import * as QueueProtocol from "./queue/Protocol.ts";
 import * as QueueRun from "./queue/Run.ts";
+import * as QueueSignoff from "./queue/Signoff.ts";
 import type {
   DeploySubmit,
   Job as QueuedJob,
@@ -156,6 +157,8 @@ const makeCli = () =>
     Command.withSubcommands([
       submit,
       wait,
+      signoff,
+      signoffs,
       version,
       login,
       secret,
@@ -180,6 +183,33 @@ const submit = Command.make(
     yield* Console.log(id);
   }),
 ).pipe(Command.withDescription("Queue the job one JSON request on stdin describes; print its id"));
+
+const signoff = Command.make(
+  "signoff",
+  {},
+  Effect.fn(function* () {
+    const stdio = yield* Stdio.Stdio;
+    const text = yield* Stream.mkString(Stream.decodeText(stdio.stdin));
+    const id = yield* QueueSignoff.recordSignoff(text, QueuePaths.production.socket).pipe(
+      Effect.mapError((error) => new CliError({ message: error.message })),
+    );
+    yield* Console.log(id);
+  }),
+).pipe(
+  Command.withDescription(
+    "Store one local-test signoff from a JSON request on stdin; print its id",
+  ),
+);
+
+const signoffs = Command.make(
+  "signoffs",
+  { app: Argument.String("app").pipe(Argument.withDescription("The cartridge name to list")) },
+  Effect.fn(function* ({ app }) {
+    yield* QueueSignoff.printSignoffs(app, QueuePaths.production.socket).pipe(
+      Effect.mapError((error) => new CliError({ message: error.message })),
+    );
+  }),
+).pipe(Command.withDescription("Print an app's stored signoffs as JSON, newest first"));
 
 const wait = Command.make(
   "wait",

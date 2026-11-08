@@ -30,6 +30,35 @@ const ImageName = { repository: S.NonEmptyString, key: ImageKey };
  */
 export const RecordImage = S.TaggedStruct("recordImage", { ...ImageName, digest: ImageDigest });
 export const FindImage = S.TaggedStruct("findImage", ImageName);
+
+const Hex40 = S.String.check(S.isPattern(/^[0-9a-f]{40}$/));
+const Hex64 = S.String.check(S.isPattern(/^[0-9a-f]{64}$/));
+
+/** Record that an app's tree passed its tests on the operator's machine. Not a job. */
+export const Signoff = S.TaggedStruct("signoff", {
+  app: S.String,
+  tree: Hex40,
+  commit: Hex40,
+  summary: S.String,
+  logSha256: Hex64,
+});
+export type Signoff = typeof Signoff.Type;
+
+/** List stored signoffs for one app, newest first. */
+export const Signoffs = S.TaggedStruct("signoffs", { app: S.String });
+export type Signoffs = typeof Signoffs.Type;
+
+export const SignoffRecord = S.Struct({
+  id: S.Number,
+  app: S.String,
+  tree: S.String,
+  commit: S.String,
+  summary: S.String,
+  logSha256: S.String,
+  createdAt: S.String,
+});
+export type SignoffRecord = typeof SignoffRecord.Type;
+
 export const Request = S.Union([
   Submit,
   List,
@@ -40,6 +69,8 @@ export const Request = S.Union([
   Next,
   RecordImage,
   FindImage,
+  Signoff,
+  Signoffs,
 ]);
 export type Request = typeof Request.Type;
 
@@ -57,6 +88,8 @@ export const Response = S.Union([
   S.TaggedStruct("next", { started: S.NullOr(S.Number) }),
   S.TaggedStruct("imageRecorded", {}),
   S.TaggedStruct("imageFound", { digest: S.NullOr(ImageDigest) }),
+  S.TaggedStruct("signedOff", { id: S.Number }),
+  S.TaggedStruct("signoffsListed", { signoffs: S.Array(SignoffRecord) }),
   S.TaggedStruct("error", { message: S.String }),
 ]);
 export type Response = typeof Response.Type;

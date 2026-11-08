@@ -37,6 +37,45 @@ const JobRow = S.Struct({
   finished_at: S.NullOr(S.String),
 });
 
+const SignoffRow = S.Struct({
+  id: S.Number,
+  app: S.String,
+  tree: S.String,
+  commit: S.String,
+  summary: S.String,
+  log_sha256: S.String,
+  created_at: S.String,
+});
+
+/** A stored local-test signoff; newest row for an app+tree wins at read time. */
+export type Signoff = {
+  readonly id: number;
+  readonly app: string;
+  readonly tree: string;
+  readonly commit: string;
+  readonly summary: string;
+  readonly logSha256: string;
+  readonly createdAt: string;
+};
+
+export type SignoffInput = {
+  readonly app: string;
+  readonly tree: string;
+  readonly commit: string;
+  readonly summary: string;
+  readonly logSha256: string;
+};
+
+const toSignoff = (row: typeof SignoffRow.Type): Signoff => ({
+  id: row.id,
+  app: row.app,
+  tree: row.tree,
+  commit: row.commit,
+  summary: row.summary,
+  logSha256: row.log_sha256,
+  createdAt: row.created_at,
+});
+
 const decodePayload = S.decodeUnknownEffect(S.fromJsonString(JobSubmit));
 const encodePayload = S.encodeEffect(S.fromJsonString(JobSubmit));
 
@@ -106,6 +145,7 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
     if (!applied.has(3)) {
       yield* sql`DELETE FROM jobs WHERE command = 'dash'`;
       yield* sql`INSERT INTO schema_migrations (version) VALUES (3)`;
+      applied.add(3);
     }
 
     if (!applied.has(4)) {
@@ -119,6 +159,25 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
         )
       `;
       yield* sql`INSERT INTO schema_migrations (version) VALUES (4)`;
+      applied.add(4);
+    }
+
+    // Local test signoffs keyed by tree; reconcile reads these, the queue does not run them.
+    if (!applied.has(5)) {
+      yield* sql`
+        CREATE TABLE signoffs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          app TEXT NOT NULL,
+          tree TEXT NOT NULL,
+          "commit" TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          log_sha256 TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      `;
+      yield* sql`CREATE INDEX signoffs_app_created ON signoffs(app, created_at DESC)`;
+      yield* sql`INSERT INTO schema_migrations (version) VALUES (5)`;
+      applied.add(5);
     }
 
     const selectJob = SqlSchema.findOne({
@@ -335,6 +394,34 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
      * Deploy gate: the named plan must be a succeeded plan of the same stage and
      * cartridge, run by the same runner revision, with no later finished job.
      */
+    const recordSignoff = Effect.fn("Store.recordSignoff")(function* (input: SignoffInput) {
+      const rows = yield* sql<typeof SignoffRow.Type>`
+        INSERT INTO signoffs (app, tree, "commit", summary, log_sha256, created_at)
+        VALUES (
+          ${input.app},
+          ${input.tree},
+          ${input.commit},
+          ${input.summary},
+          ${input.logSha256},
+          ${sql.literal(nowSql)}
+        )
+        RETURNING *
+      `;
+      const row = rows[0];
+      if (row === undefined) {
+        return yield* Effect.die(new Error("INSERT RETURNING produced no signoff"));
+      }
+      return toSignoff(row);
+    });
+
+    const listSignoffs = Effect.fn("Store.listSignoffs")(function* (app: string) {
+      const rows = yield* sql<typeof SignoffRow.Type>`
+        SELECT * FROM signoffs WHERE app = ${app}
+        ORDER BY created_at DESC, id DESC
+      `;
+      return rows.map(toSignoff);
+    });
+
     const requireFreshPlan = Effect.fn("Store.requireFreshPlan")(function* (
       deploy: DeploySubmit,
       runnerRevision: string | null,
@@ -409,6 +496,8 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       cancel,
       recoverInterrupted,
       list,
+      recordSignoff,
+      listSignoffs,
       requireFreshPlan,
     } as const;
   }),

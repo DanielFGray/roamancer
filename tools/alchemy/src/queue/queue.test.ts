@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import { spawnSync } from "node:child_process";
 import * as assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -176,6 +177,151 @@ describe("queue protocol", () => {
     });
     assert.equal(submitted._tag, "submit");
     if (submitted._tag === "submit") assert.equal(submitted.command, "plan");
+    assert.throws(() =>
+      decodeRequest({
+        _tag: "signoff",
+        app: "shop",
+        tree: "not-a-tree",
+        commit: "a".repeat(40),
+        summary: "ok",
+        logSha256: "b".repeat(64),
+      }),
+    );
+    const signoff = decodeRequest({
+      _tag: "signoff",
+      app: "shop",
+      tree: "a".repeat(40),
+      commit: "b".repeat(40),
+      summary: "ok",
+      logSha256: "c".repeat(64),
+    });
+    assert.equal(signoff._tag, "signoff");
+    assert.deepEqual(decodeRequest({ _tag: "signoffs", app: "shop" }), {
+      _tag: "signoffs",
+      app: "shop",
+    });
+  });
+});
+
+describe("queue signoffs", () => {
+  const sample = {
+    app: "shop",
+    tree: "a".repeat(40),
+    commit: "b".repeat(40),
+    summary: "line one\nline two",
+    logSha256: "c".repeat(64),
+  };
+
+  it("migrates signoffs on a new database and on one already at version 4", async () => {
+    const { root, paths } = tempRoot();
+    try {
+      await withStore(
+        paths,
+        fakeUnits().layer,
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const first = yield* store.recordSignoff(sample);
+          assert.equal(first.id, 1);
+          assert.equal(first.app, "shop");
+          const second = yield* store.recordSignoff({ ...sample, summary: "newer" });
+          assert.equal(second.id, 2);
+          const listed = yield* store.listSignoffs("shop");
+          assert.deepEqual(
+            listed.map((row) => row.summary),
+            ["newer", "line one\nline two"],
+          );
+          assert.deepEqual(yield* store.listSignoffs("other"), []);
+        }),
+      );
+
+      // Drop migration 5 so the next open upgrades a current (v4, images) database.
+      const reset = spawnSync(
+        process.execPath,
+        [
+          "-e",
+          `
+          const { Database } = require("bun:sqlite");
+          const db = new Database(${JSON.stringify(paths.database)});
+          db.run("DELETE FROM schema_migrations WHERE version = 5");
+          db.run("DROP TABLE signoffs");
+          db.close();
+          `,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(reset.status, 0, reset.stderr);
+
+      await withStore(
+        paths,
+        fakeUnits().layer,
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const again = yield* store.recordSignoff(sample);
+          assert.equal(again.id, 1);
+          assert.equal((yield* store.listSignoffs("shop")).length, 1);
+        }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stores a signoff over the socket and lists newest first; malformed gets error", async () => {
+    const { root, paths } = tempRoot();
+    const server = await runServe(paths, fakeUnits().layer);
+    try {
+      const first = await Effect.runPromise(request(paths.socket, { _tag: "signoff", ...sample }));
+      assert.deepEqual(first, { _tag: "signedOff", id: 1 });
+      await delay(5);
+      const second = await Effect.runPromise(
+        request(paths.socket, {
+          _tag: "signoff",
+          ...sample,
+          summary: "second",
+        }),
+      );
+      assert.deepEqual(second, { _tag: "signedOff", id: 2 });
+
+      const listed = await Effect.runPromise(
+        request(paths.socket, { _tag: "signoffs", app: "shop" }),
+      );
+      assert.equal(listed._tag, "signoffsListed");
+      if (listed._tag === "signoffsListed") {
+        assert.deepEqual(
+          listed.signoffs.map((row) => row.summary),
+          ["second", "line one\nline two"],
+        );
+      }
+
+      // Bypass the client encoder so the front end sees a malformed line and answers error.
+      const raw = await new Promise<string>((resolve, reject) => {
+        const sock = createConnection(paths.socket, () => {
+          sock.write(
+            `${JSON.stringify({
+              _tag: "signoff",
+              app: "shop",
+              tree: "short",
+              commit: sample.commit,
+              summary: "x",
+              logSha256: sample.logSha256,
+            })}\n`,
+          );
+        });
+        let buffer = "";
+        sock.on("data", (chunk) => {
+          buffer += chunk.toString();
+          if (buffer.includes("\n")) {
+            sock.end();
+            resolve(buffer.slice(0, buffer.indexOf("\n")));
+          }
+        });
+        sock.on("error", reject);
+      });
+      assert.equal(JSON.parse(raw)._tag, "error");
+    } finally {
+      await server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("refuses an image record whose key or digest is not a hash", () => {

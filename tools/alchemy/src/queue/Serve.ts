@@ -117,6 +117,22 @@ const fulfill = (paths: Paths, request: Request) =>
         const digest = yield* store.findImage(request);
         return { _tag: "imageFound" as const, digest: Option.getOrNull(digest) };
       }
+      case "signoff": {
+        const recorded = yield* store.recordSignoff({
+          app: request.app,
+          tree: request.tree,
+          commit: request.commit,
+          summary: request.summary,
+          logSha256: request.logSha256,
+        });
+        return { _tag: "signedOff" as const, id: recorded.id };
+      }
+      case "signoffs": {
+        return {
+          _tag: "signoffsListed" as const,
+          signoffs: yield* store.listSignoffs(request.app),
+        };
+      }
     }
   });
 
