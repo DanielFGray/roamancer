@@ -5,12 +5,19 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as BunServices from "@effect/platform-bun/BunServices";
-import { Context, Effect, type FileSystem, Layer, Option } from "effect";
+import { Effect, type FileSystem, Layer, Option, Stream } from "effect";
 import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { BuildStore } from "./BuildStore.ts";
 import { Nomad, type AllocationSummary } from "./Nomad.ts";
 import * as Policy from "./Policy.ts";
-import { decide, fetchHead, reconcileApp, remoteHead, type ReconcileDeps } from "./Reconcile.ts";
+import {
+  decide,
+  fetchHead,
+  ReleaseFailed,
+  reconcileApp,
+  remoteHead,
+  type ReconcileDeps,
+} from "./Reconcile.ts";
 import { Registry } from "./Registry.ts";
 import { layer as storeLayer, Store } from "./queue/Store.ts";
 
@@ -53,8 +60,8 @@ describe("Policy", () => {
       b: { repository: "git@github.com:me/b.git" },
       a: { repository: "ssh://git@github.com/me/a.git", deploy: "manual" },
     });
-    assert.equal(result._tag, "Success");
-    const policy = (result as { success: Policy.Policy }).success;
+    if (result._tag !== "Success") return assert.fail("the policy should decode");
+    const policy = result.success;
     assert.deepEqual(
       Policy.apps(policy).map((entry) => [entry.app, entry.deploy]),
       [
@@ -168,42 +175,72 @@ describe("fetching main", () => {
   });
 });
 
+/** Methods a reconcile never calls fail the test loudly instead of returning a stand-in. */
+const unused =
+  <Args extends ReadonlyArray<unknown>>(name: string) =>
+  (..._args: Args) =>
+    Effect.die(`Nomad.${name} is not part of reconcile`);
+
+const unusedNomad = {
+  jobs: unused("jobs"),
+  job: unused("job"),
+  plan: unused("plan"),
+  planRelease: unused("planRelease"),
+  register: unused("register"),
+  registerRelease: unused("registerRelease"),
+  deployment: unused("deployment"),
+  service: unused("service"),
+  allocation: unused("allocation"),
+  allocationChecks: unused("allocationChecks"),
+  evaluate: unused("evaluate"),
+  placedAllocations: unused("placedAllocations"),
+  nodes: unused("nodes"),
+  nodeStats: unused("nodeStats"),
+};
+
 /** A harness for `reconcileApp` over a real queue store and fakes for Nomad, Garage and the registry. */
 const harness = () => {
   const repo = origin();
   const root = repo.root;
   const calls = {
     uploaded: [] as Array<string>,
+    planned: [] as Array<string>,
     deployed: [] as Array<{ app: string; env: Record<string, string>; cartridge: string }>,
     registered: 0,
   };
   const knobs = { token: true, deployFails: false, buildDigest: digest };
-  const allocation = {
+  const allocation: AllocationSummary = {
     ID: "alloc-1",
+    TaskGroup: "build",
+    DesiredStatus: "run",
     ClientStatus: "complete",
+    JobVersion: 0,
+    CreateTime: 0,
     TaskStates: { buildah: { State: "dead", Failed: false, Restarts: 0, Events: [] } },
-  } as unknown as AllocationSummary;
-  const nomad = {
+  };
+  const nomad = Nomad.of({
+    ...unusedNomad,
+    followLogs: () => Stream.die("Nomad.followLogs is not part of reconcile"),
     registerBatch: () =>
       Effect.sync(() => (calls.registered += 1)).pipe(
         Effect.as({ EvalID: "e", JobModifyIndex: 1 }),
       ),
     allocations: () => Effect.succeed([allocation]),
     evaluations: () => Effect.succeed([]),
-    logs: (_id: string, _task: string, stream: string) =>
+    logs: (_id, _task, stream) =>
       Effect.succeed(
         stream === "stdout"
           ? `2026-11-09T19:20:41.834870449+00:00 stdout P ${knobs.buildDigest}`
           : "",
       ),
     stop: () => Effect.void,
-  } as unknown as Context.Service.Shape<typeof Nomad>;
-  const garage = {
-    put: (object: string) => Effect.sync(() => void calls.uploaded.push(object)),
-    getUrl: (object: string) => Effect.succeed(`http://garage/${object}`),
+  });
+  const garage = BuildStore.of({
+    put: (object) => Effect.sync(() => void calls.uploaded.push(object)),
+    getUrl: (object) => Effect.succeed(`http://garage/${object}`),
     remove: () => Effect.void,
-  } as Context.Service.Shape<typeof BuildStore>;
-  const registry = { has: () => Effect.succeed(true) } as Context.Service.Shape<typeof Registry>;
+  });
+  const registry = Registry.of({ has: () => Effect.succeed(true) });
 
   const policy: Policy.Policy = { apps: { shop: { repository: repo.url } } };
   const deps = (patch: Partial<ReconcileDeps> = {}): ReconcileDeps => ({
@@ -213,18 +250,20 @@ const harness = () => {
     site: { registry: "registry.cluster:5000", registryCaDir: "/var/lib/registry-ca" },
     gitEnvironment: () => ({}),
     tokenValid: Effect.sync(() => knobs.token),
-    deploy: (app, env) =>
-      knobs.deployFails
-        ? Effect.fail({ _tag: "CliError", message: "alchemy deploy failed" })
-        : Effect.sync(
-            () =>
-              // The pinned cartridge is a temporary file that ends with the release.
-              void calls.deployed.push({
-                app,
-                env,
-                cartridge: readFileSync(env["CARTRIDGE_FILE"], "utf8"),
-              }),
-          ),
+    stage: (command, app, env) =>
+      command === "plan"
+        ? Effect.sync(() => void calls.planned.push(app))
+        : knobs.deployFails
+          ? Effect.fail(new ReleaseFailed({ message: "alchemy deploy failed" }))
+          : Effect.sync(
+              () =>
+                // The pinned cartridge is a temporary file that ends with the release.
+                void calls.deployed.push({
+                  app,
+                  env,
+                  cartridge: readFileSync(env["CARTRIDGE_FILE"], "utf8"),
+                }),
+            ),
     ...patch,
   });
 
@@ -242,7 +281,7 @@ const harness = () => {
       E,
       Store | BuildStore | Nomad | Registry | FileSystem.FileSystem | ChildProcessSpawner
     >,
-  ) => Effect.runPromise(effect.pipe(Effect.provide(services)) as Effect.Effect<A, E, never>);
+  ) => Effect.runPromise(effect.pipe(Effect.provide(services)));
   const reconcile = (patch?: Partial<ReconcileDeps>) =>
     run(reconcileApp("shop", deps(patch)).pipe(Effect.result));
   const status = () =>
@@ -307,6 +346,7 @@ describe("reconcileApp", () => {
 
       // The runner's build ran, and the deploy got the pinned cartridge, its commit and signoff.
       assert.equal(h.calls.registered, 1);
+      assert.deepEqual(h.calls.planned, ["shop"], "the plan runs before the deploy");
       assert.equal(h.calls.deployed.length, 1);
       const { app, env, cartridge: sent } = h.calls.deployed[0];
       assert.equal(app, "shop");

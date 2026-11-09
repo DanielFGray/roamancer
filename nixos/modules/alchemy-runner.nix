@@ -169,8 +169,8 @@ in
     systemd.services."alchemy-job@" = {
       description = "Alchemy job %i";
       # A unit's PATH holds only coreutils and systemd: jobs also run tailscale (TailscaleServe)
-      # and psql, pg_dump and pg_restore (PostgresDatabase); a reconcile job runs git over ssh.
-      path = [ config.services.tailscale.package pkgs.postgresql_17 pkgs.git pkgs.openssh ];
+      # and psql, pg_dump and pg_restore (PostgresDatabase); a reconcile job runs git over ssh and unpacks the tree with tar.
+      path = [ config.services.tailscale.package pkgs.postgresql_17 pkgs.git pkgs.gnutar pkgs.openssh ];
       # A build job (tools/alchemy/src/BuildJob.ts) asks the registry whether it holds the digest a build printed,
       # and names the worker nodes' registry CA folder in the Nomad job. Bun trusts the
       # cluster CA through NODE_EXTRA_CA_CERTS.

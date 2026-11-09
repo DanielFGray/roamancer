@@ -4,7 +4,7 @@
  * waits or builds and deploys the tree the way `ops release` does, without the prompt: a push
  * to `main` is the approval. A queue job runs it, so it takes turns with deploys.
  */
-import { Cause, Console, Effect, FileSystem, Option } from "effect";
+import { Cause, Console, Effect, FileSystem, Option, Schema as S } from "effect";
 import { defaultBuildMemoryMB } from "./BuildLimits.ts";
 import { runBuild, type BuildSite } from "./BuildJob.ts";
 import * as Cartridge from "./Cartridge.ts";
@@ -106,6 +106,11 @@ export const fetchHead = Effect.fn("Reconcile.fetchHead")(function* (
   return { commit, tree };
 });
 
+/** `ops release`'s plan or deploy step failed; `message` is the reason its error gave. */
+export class ReleaseFailed extends S.TaggedError<ReleaseFailed>()("ReleaseFailed", {
+  message: S.String,
+}) {}
+
 /** What a reconcile job needs besides the store and the build services. */
 export interface ReconcileDeps {
   readonly policy: Policy;
@@ -118,12 +123,15 @@ export interface ReconcileDeps {
   readonly gitEnvironment: (app: string) => Record<string, string>;
   /** Whether the job holds a token OpenBao accepts. */
   readonly tokenValid: Effect.Effect<boolean>;
-  /** Plan and deploy `app` as `ops release` does, with `env` added: the pinned cartridge and the commit. */
-  readonly deploy: (
+  /** Plan or deploy `app` as `ops release` does, with `env` added: the pinned cartridge and the commit. */
+  readonly stage: (
+    command: "plan" | "deploy",
     app: string,
     env: Record<string, string>,
-  ) => Effect.Effect<void, unknown, never>;
+  ) => Effect.Effect<void, ReleaseFailed>;
 }
+
+type Saved = Omit<ReconcileState, "checkedAt">;
 
 /**
  * Reconcile one app: record what it found, and release when {@link decide} says so. Fails the
@@ -140,8 +148,7 @@ export const reconcileApp = Effect.fn("Reconcile.reconcileApp")(function* (
       message: `'${app}' is not in the site policy (policy.toml). Add it and run \`ops rebuild\`.`,
     });
   }
-  const before = Option.getOrNull(yield* store.getReconcile(app));
-  let state: Omit<ReconcileState, "checkedAt"> = before ?? {
+  const before: Saved = Option.getOrElse(yield* store.getReconcile(app), () => ({
     app,
     seenCommit: null,
     seenTree: null,
@@ -149,76 +156,124 @@ export const reconcileApp = Effect.fn("Reconcile.reconcileApp")(function* (
     triedCommit: null,
     triedResult: null,
     triedJob: null,
-    status: "no-main",
+    status: "no-main" as const,
     detail: "",
-  };
-  const note = Effect.fn("Reconcile.note")(function* (
-    status: ReconcileState["status"],
-    detail: string,
-    patch: Partial<ReconcileState> = {},
-  ) {
-    state = { ...state, ...patch, status, detail };
-    yield* store.saveReconcile(state);
-    yield* Console.log(`${app}: ${status}: ${detail}`);
-  });
-
+  }));
   if (entry.deploy === "manual") {
-    return yield* note(
+    yield* note(
+      app,
+      before,
       "manual",
       "the site policy sets deploy = manual; release it with `ops release`",
     );
+    return;
   }
 
-  const env = deps.gitEnvironment(app);
   // A repository that cannot be read (no deploy key on GitHub yet, no network) is an outcome
   // on show in `ops dash`, not a failed job: the timer would add one every minute.
-  const seen = yield* readMain(entry.repository, `${deps.cacheDir}/${app}.git`, env, state).pipe(
-    Effect.catch((error) => note("unreachable", describe(error)).pipe(Effect.as(null))),
+  yield* readMain(
+    entry.repository,
+    `${deps.cacheDir}/${app}.git`,
+    deps.gitEnvironment(app),
+    before,
+  ).pipe(
+    Effect.matchEffect({
+      onFailure: (error) => note(app, before, "unreachable", describeFailure(error)),
+      onSuccess: (seen) => actOn(app, entry.deploy, seen, before, deps),
+    }),
   );
-  if (seen === null) return;
-  if (seen === "no-main") {
-    return yield* note("no-main", `${entry.repository} has no ${deployRef}`);
-  }
-  state = { ...state, seenCommit: seen.commit, seenTree: seen.tree };
+});
 
-  const signoff = (yield* store.listSignoffs(app)).find((row) => row.tree === seen.tree);
+/** Save and print the outcome; returns the saved state for the next step. */
+const note = Effect.fn("Reconcile.note")(function* (
+  app: string,
+  state: Saved,
+  status: ReconcileState["status"],
+  detail: string,
+  patch: Partial<ReconcileState> = {},
+) {
+  const next: Saved = { ...state, ...patch, status, detail };
+  yield* (yield* StoreService).saveReconcile(next);
+  yield* Console.log(`${app}: ${status}: ${detail}`);
+  return next;
+});
+
+/** Decide for the head of `main` and carry out the verdict. */
+const actOn = Effect.fn("Reconcile.actOn")(function* (
+  app: string,
+  deploy: Deploy,
+  main: Option.Option<{ readonly commit: string; readonly tree: string }>,
+  before: Saved,
+  deps: ReconcileDeps,
+) {
+  const store = yield* StoreService;
+  if (Option.isNone(main)) {
+    yield* note(app, before, "no-main", `${app}'s repository has no ${deployRef}`);
+    return;
+  }
+  const seen = main.value;
+  const state: Saved = { ...before, seenCommit: seen.commit, seenTree: seen.tree };
+  const signoff = Option.fromNullishOr(
+    (yield* store.listSignoffs(app)).find((row) => row.tree === seen.tree),
+  );
   const verdict = decide({
-    deploy: entry.deploy,
+    deploy,
     tree: seen.tree,
     triedTree: state.triedTree,
-    signedOff: signoff !== undefined,
-    tokenValid: signoff === undefined ? false : yield* deps.tokenValid,
+    signedOff: Option.isSome(signoff),
+    tokenValid: Option.isSome(signoff) && (yield* deps.tokenValid),
   });
   const what = `commit ${short(seen.commit)} (tree ${short(seen.tree)})`;
+  const waitForSignoff = () =>
+    note(
+      app,
+      state,
+      "waiting-signoff",
+      `${what} has no signoff; run \`ops signoff ${short(seen.commit)}\``,
+    );
 
   switch (verdict) {
     case "manual":
       return;
     case "tried":
       // Keep the last outcome on show; only the time it was looked at moves.
-      return yield* store.saveReconcile(state);
+      yield* store.saveReconcile(state);
+      return;
     case "signoff":
-      return yield* note(
-        "waiting-signoff",
-        `${what} has no signoff; run \`ops signoff ${short(seen.commit)}\``,
-      );
+      yield* waitForSignoff();
+      return;
     case "login":
-      return yield* note("waiting-login", `${what} is signed off; run \`ops login\` to release it`);
+      yield* note(
+        app,
+        state,
+        "waiting-login",
+        `${what} is signed off; run \`ops login\` to release it`,
+      );
+      return;
     case "release": {
+      // decide releases only a signed-off tree, so none here means the signoff went away.
+      if (Option.isNone(signoff)) {
+        yield* waitForSignoff();
+        return;
+      }
       const tried = { triedTree: seen.tree, triedCommit: seen.commit, triedJob: deps.jobId };
-      yield* releaseTree(app, seen, signoff!.id, deps).pipe(
+      yield* releaseTree(app, seen, signoff.value.id, deps).pipe(
         Effect.scoped,
         Effect.matchCauseEffect({
           onSuccess: (pinned) =>
-            note("released", `${what} released as ${pinned}`, {
+            note(app, state, "released", `${what} released as ${pinned}`, {
               ...tried,
               triedResult: "released",
             }),
           onFailure: (cause) => {
-            const message = describe(Cause.squash(cause));
-            return note("failed", `${what}: ${message}`, { ...tried, triedResult: "failed" }).pipe(
-              Effect.andThen(new JobCommandError({ message })),
-            );
+            const message = Option.match(Cause.findErrorOption(cause), {
+              onSome: describeFailure,
+              onNone: () => Cause.pretty(cause),
+            });
+            return note(app, state, "failed", `${what}: ${message}`, {
+              ...tried,
+              triedResult: "failed",
+            }).pipe(Effect.andThen(new JobCommandError({ message })));
           },
         }),
       );
@@ -227,8 +282,8 @@ export const reconcileApp = Effect.fn("Reconcile.reconcileApp")(function* (
 });
 
 /**
- * The commit and tree at the head of `main`, or `"no-main"`. Reconcile fetches only when the
- * head differs from the one it saw last, so a quiet minute costs one `git ls-remote`.
+ * The commit and tree at the head of `main`, or none. Reconcile fetches only when the head
+ * differs from the one it saw last, so a quiet minute costs one `git ls-remote`.
  */
 const readMain = Effect.fn("Reconcile.readMain")(function* (
   url: string,
@@ -237,16 +292,16 @@ const readMain = Effect.fn("Reconcile.readMain")(function* (
   seen: { readonly seenCommit: string | null; readonly seenTree: string | null },
 ) {
   const head = yield* remoteHead(url, env);
-  if (Option.isNone(head)) return "no-main" as const;
+  if (Option.isNone(head)) return Option.none<{ commit: string; tree: string }>();
   if (seen.seenCommit === head.value && seen.seenTree !== null) {
-    return { commit: head.value, tree: seen.seenTree };
+    return Option.some({ commit: head.value, tree: seen.seenTree });
   }
-  return yield* fetchHead(cache, url, env);
+  return Option.some(yield* fetchHead(cache, url, env));
 });
 
 /**
- * Export the tree, find or build its image, and deploy the cartridge pinned to it. Returns the
- * pinned image reference.
+ * Export the tree, find or build its image, and plan then deploy the cartridge pinned to it.
+ * Returns the pinned image reference.
  */
 const releaseTree = Effect.fn("Reconcile.releaseTree")(function* (
   app: string,
@@ -279,20 +334,20 @@ const releaseTree = Effect.fn("Reconcile.releaseTree")(function* (
   const repository = repositories[0];
 
   const find = store.findImage({ repository, key: head.tree });
-  let digest = yield* find;
-  if (Option.isNone(digest)) {
-    yield* runBuild(
-      {
-        repository,
-        key: head.tree,
-        jobId: deps.jobId,
-        tarFile,
-        memoryMaxMB: cartridge.build?.memoryMB ?? defaultBuildMemoryMB,
-      },
-      deps.site,
-    );
-    digest = yield* find;
-  }
+  const digest = yield* Option.match(yield* find, {
+    onSome: (known) => Effect.succeed(Option.some(known)),
+    onNone: () =>
+      runBuild(
+        {
+          repository,
+          key: head.tree,
+          jobId: deps.jobId,
+          tarFile,
+          memoryMaxMB: cartridge.build?.memoryMB ?? defaultBuildMemoryMB,
+        },
+        deps.site,
+      ).pipe(Effect.andThen(find)),
+  });
   if (Option.isNone(digest)) {
     return yield* new JobCommandError({ message: `the build recorded no image for ${repository}` });
   }
@@ -311,25 +366,27 @@ const releaseTree = Effect.fn("Reconcile.releaseTree")(function* (
     "--max-parents=0",
     head.commit,
   ]);
-  yield* deps.deploy(app, {
+  const env = {
     CARTRIDGE_FILE: pinnedFile,
     ORIGIN: roots.trim().split("\n").sort()[0],
     REVISION: head.commit,
     SIGNOFF: String(signoffId),
-  });
+  };
+  // A push to main is the approval, but the plan still checks the cartridge and its secrets
+  // before anything deploys, as `ops release` does.
+  yield* deps.stage("plan", app, env);
+  yield* deps.stage("deploy", app, env);
   return pinned;
 });
 
 const short = (hash: string) => hash.slice(0, 12);
 
-/** One line for a failure: its message when it has one, else its tag or exit code. */
-const describe = (error: unknown): string => {
-  const { message, _tag, code } = (error ?? {}) as {
-    message?: unknown;
-    _tag?: unknown;
-    code?: unknown;
-  };
-  if (typeof message === "string" && message !== "") return message;
-  if (typeof code === "number") return `${String(_tag ?? "the command")} exited ${code}`;
-  return typeof _tag === "string" ? _tag : String(error);
+/** One line for a failure: its message when it has one, else its exit code or its tag. */
+export const describeFailure = (error: {
+  readonly _tag: string;
+  readonly message?: string;
+  readonly code?: number;
+}): string => {
+  if (error.message !== undefined && error.message !== "") return error.message;
+  return error.code === undefined ? error._tag : `${error._tag} exited ${error.code}`;
 };

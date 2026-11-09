@@ -970,8 +970,13 @@ const reconcileJob = Effect.fn("reconcileJob")(function* (
       Effect.exit,
       Effect.map((exit) => exit._tag === "Success"),
     ),
-    deploy: (app, extra) =>
-      planOrDeploy("deploy", app, { ...env, ...extra }).pipe(Effect.provide(context)),
+    stage: (command, app, extra) =>
+      planOrDeploy(command, app, { ...env, ...extra }).pipe(
+        Effect.provide(context),
+        Effect.mapError(
+          (error) => new Reconcile.ReleaseFailed({ message: Reconcile.describeFailure(error) }),
+        ),
+      ),
   });
 });
 
