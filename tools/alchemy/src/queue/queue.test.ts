@@ -23,6 +23,7 @@ import {
   FileSystem as FileSystemModule,
   Layer,
   Option,
+  Redacted,
   Schedule,
   Sink,
   Stream,
@@ -36,6 +37,7 @@ import { decodeRequest } from "./Protocol.ts";
 import { runJob } from "./Run.ts";
 import { unitName } from "./Schema.ts";
 import { layerServer, recover, serve, sweepSpool } from "./Serve.ts";
+import { pipedValue, SecretWriter } from "./Secrets.ts";
 import { tryStart } from "./Starter.ts";
 import { layer as storeLayer, Store } from "./Store.ts";
 import { submitJob, waitJob } from "./Submit.ts";
@@ -88,9 +90,14 @@ const withStore = <A, E>(
   effect: Effect.Effect<A, E, Store | Units | FileSystemModule.FileSystem>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(storeUnits(paths, units))));
 
-const runServe = async (paths: Paths, units: Layer.Layer<Units>) => {
+const runServe = async (
+  paths: Paths,
+  units: Layer.Layer<Units>,
+  secrets: Layer.Layer<SecretWriter> = recordingWriter().layer,
+) => {
   const program = serve(paths).pipe(
     Effect.provide(layerServer(paths)),
+    Effect.provide(secrets),
     Effect.provide(storeUnits(paths, units)),
     Effect.provide(BunServices.layer),
   );
@@ -1510,5 +1517,58 @@ describe("queue reconcile jobs", () => {
       await server.stop();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+/** A secret writer that records each write and the token it was given, and stores nothing. */
+const recordingWriter = () => {
+  const writes: Array<{ token: string; path: string; key: string; value: string }> = [];
+  const layer = Layer.succeed(SecretWriter, {
+    write: (token, path, key, value) =>
+      Effect.sync(() => {
+        writes.push({ token: Redacted.value(token), path, key, value: Redacted.value(value) });
+      }),
+  });
+  return { writes, layer };
+};
+
+describe("secret set on the socket", () => {
+  it("writes with the stored login token, and refuses until there is one", async () => {
+    const { root, paths } = tempRoot();
+    const writer = recordingWriter();
+    const server = await runServe(paths, fakeUnits().layer, writer.layer);
+    const set = () =>
+      Effect.runPromise(
+        request(paths.socket, {
+          _tag: "setSecret",
+          path: "secret/data/shop",
+          key: "api_key",
+          value: "v 1",
+        }),
+      );
+    try {
+      assert.deepEqual(await set(), { _tag: "error", message: "run ops login" });
+      assert.deepEqual(writer.writes, []);
+
+      await Effect.runPromise(request(paths.socket, { _tag: "token", value: "minted-token" }));
+      assert.deepEqual(await set(), { _tag: "secretSet" });
+      assert.deepEqual(writer.writes, [
+        { token: "minted-token", path: "secret/data/shop", key: "api_key", value: "v 1" },
+      ]);
+      // The value is written at once, never queued.
+      assert.deepEqual(await Effect.runPromise(request(paths.socket, { _tag: "list" })), {
+        _tag: "listed",
+        jobs: [],
+      });
+    } finally {
+      await server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("drops only the one trailing newline a pipe adds to a value", () => {
+    assert.equal(pipedValue("secret\n"), "secret");
+    assert.equal(pipedValue("secret\r\n"), "secret");
+    assert.equal(pipedValue(" secret \n\n"), " secret \n");
   });
 });

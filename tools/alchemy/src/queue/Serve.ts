@@ -4,13 +4,15 @@
  * inherited unix socket's address as `{}`, and Effect's socket server fails on it.
  */
 import * as BunSocketServer from "@effect/platform-bun/BunSocketServer";
-import { Effect, FileSystem, Layer, Option, Schedule, Schema as S } from "effect";
+import { Effect, FileSystem, Layer, Option, Redacted, Schedule, Schema as S } from "effect";
 import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
 import { QueueProtocolError, TokenWriteError } from "./Errors.ts";
 import { spoolFile, type Paths } from "./Paths.ts";
 import { type BuildUpload, Request, Response } from "./Protocol.ts";
+import { readToken } from "./Run.ts";
 import { unitName } from "./Schema.ts";
+import { SecretWriter } from "./Secrets.ts";
 import { tryStart } from "./Starter.ts";
 import { Store } from "./Store.ts";
 import type { Units } from "./Units.ts";
@@ -101,6 +103,16 @@ const fulfill = (paths: Paths, request: Exclude<Request, BuildUpload>) =>
       case "token": {
         yield* storeToken(paths, request.value);
         return { _tag: "tokenStored" as const };
+      }
+      case "setSecret": {
+        const token = yield* readToken(paths);
+        yield* (yield* SecretWriter).write(
+          Redacted.make(token),
+          request.path,
+          request.key,
+          Redacted.make(request.value),
+        );
+        return { _tag: "secretSet" as const };
       }
       case "next": {
         const started = yield* tryStart();
@@ -200,7 +212,11 @@ export const sweepSpool = Effect.fn("queue.sweepSpool")(function* (paths: Paths)
 });
 
 /** What answering one request needs and may fail with; the connection turns any failure into an error response. */
-type Handled = Effect.Effect<Response, unknown, Store | Units | FileSystem.FileSystem>;
+type Handled = Effect.Effect<
+  Response,
+  unknown,
+  Store | Units | SecretWriter | FileSystem.FileSystem
+>;
 
 const handleConnection = (paths: Paths, socket: Socket.Socket) =>
   Effect.scoped(

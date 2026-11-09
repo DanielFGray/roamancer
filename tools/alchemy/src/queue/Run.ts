@@ -28,7 +28,8 @@ export type Execute = (
   FileSystem.FileSystem | ChildProcessSpawner | Store
 >;
 
-const readToken = (paths: Paths) =>
+/** The `ops login` token the front end stored; fails with "run ops login" when there is none. */
+export const readToken = (paths: Paths) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const text = yield* fs.readFileString(paths.tokenFile).pipe(
