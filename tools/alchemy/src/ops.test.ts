@@ -246,9 +246,12 @@ describe("install", () => {
     const archives = log.filter((line) => line.includes(" archive "));
     assert.match(
       archives[0],
-      new RegExp(`^git -C ${Git.repository} archive --format=tar -o \\S+ HEAD$`),
+      new RegExp(`^git -c tar.umask=0022 -C ${Git.repository} archive --format=tar -o \\S+ HEAD$`),
     );
-    assert.match(archives[1], new RegExp(`^git -C ${site} archive --format=tar -o \\S+ HEAD$`));
+    assert.match(
+      archives[1],
+      new RegExp(`^git -c tar.umask=0022 -C ${site} archive --format=tar -o \\S+ HEAD$`),
+    );
     const extractions = log.filter((line) => line.startsWith("tar -xf "));
     const tree = / -C (\S+)$/.exec(extractions[0])?.[1];
     assert.ok(tree !== undefined);

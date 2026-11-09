@@ -49,12 +49,33 @@ export const exportTree = Effect.fn("Git.exportTree")(function* (
   purpose = "for a local build",
 ) {
   const fs = yield* FileSystem.FileSystem;
-  yield* announce(dir, `${purpose} (${treeish})`, treeish.split(":")[0]);
   const archive = `${yield* fs.makeTempDirectoryScoped()}/tree.tar`;
-  yield* Exec.run("git", ["-C", dir, "archive", "--format=tar", "-o", archive, treeish]);
-  yield* fs.makeDirectory(destination, { recursive: true });
-  yield* Exec.run("tar", ["-xf", archive, "-C", destination]);
+  yield* exportArchive(dir, treeish, archive, purpose);
+  yield* unpack(archive, destination);
 }, Effect.scoped);
+
+/**
+ * Write `treeish` of `dir` as git's tar to the file `archive`. Each entry's mode comes from the
+ * commit and a fixed `tar.umask`, so every file is 0644 or 0755 and every folder 0755 whatever
+ * the operator's git config or umask, and the tar has no entry for its root folder.
+ */
+export const exportArchive = Effect.fn("Git.exportArchive")(function* (
+  dir: string,
+  treeish: string,
+  archive: string,
+  purpose = "for a local build",
+) {
+  yield* announce(dir, `${purpose} (${treeish})`, treeish.split(":")[0]);
+  yield* Exec.run("git", [
+    ...["-c", "tar.umask=0022", "-C", dir, "archive", "--format=tar", "-o", archive, treeish],
+  ]);
+});
+
+/** Unpack the tar `archive` into the folder `destination`. */
+export const unpack = Effect.fn("Git.unpack")(function* (archive: string, destination: string) {
+  yield* (yield* FileSystem.FileSystem).makeDirectory(destination, { recursive: true });
+  yield* Exec.run("tar", ["-xf", archive, "-C", destination]);
+});
 
 /** Name the commit about to be used, and how many changes it leaves out. */
 const announce = Effect.fn("Git.announce")(function* (
