@@ -3,7 +3,7 @@
 # public DNS names point at, with no gateway in the main table: replies from that
 # address go back out the public card through table 100, and everything else leaves
 # through the LAN.
-{ site, ... }:
+{ config, site, ... }:
 let
   cluster = site.cluster;
   host = site.hosts.atheist;
@@ -12,9 +12,9 @@ let
   # on-link.
   publicGateway = host.publicGateway;
   publicTable = 100;
-  # Same uid as services.nomadNode.builder in nomad-node.nix. Rootless Podman's pasta
-  # helper leaves the host as this user, so OUTPUT owner match fences the build.
-  builderUid = 1002;
+  # Rootless Podman's pasta helper leaves the host as the builder user, so an OUTPUT
+  # owner match fences the build.
+  builderUid = toString config.users.users.builder.uid;
 in
 {
   networking.useDHCP = false;
@@ -93,26 +93,41 @@ in
       iptables -A nixos-fw -i ${cluster.lanInterface} -s ${cluster.lanAddress} -p tcp -j nixos-fw-accept
 
       # Builder egress: DNS, the cluster registry, and public HTTP(S) only. Drop the LAN
-      # (except the registry allow above), the tailnet, and everything else — including
-      # OpenBao 8200, Nomad 4646/4647 and Garage's admin port on cynic.
+      # (except the registry), private ranges (the hypervisor is shared), the tailnet,
+      # and everything else — including OpenBao 8200, Nomad 4646/4647 and Garage's admin
+      # port on cynic. IPv6 gets DNS only: the host has a v6 default route and a tailnet
+      # v6 range, and the registry and public web are reached over v4.
       iptables -N builder-egress 2>/dev/null || true
       iptables -F builder-egress
-      iptables -D OUTPUT -m owner --uid-owner ${toString builderUid} -j builder-egress 2>/dev/null || true
-      iptables -I OUTPUT -m owner --uid-owner ${toString builderUid} -j builder-egress
+      iptables -D OUTPUT -m owner --uid-owner ${builderUid} -j builder-egress 2>/dev/null || true
+      iptables -I OUTPUT -m owner --uid-owner ${builderUid} -j builder-egress
       iptables -A builder-egress -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
       iptables -A builder-egress -p udp --dport 53 -j ACCEPT
       iptables -A builder-egress -p tcp --dport 53 -j ACCEPT
       iptables -A builder-egress -d ${cluster.lanAddress} -p tcp --dport ${toString cluster.registryPort} -j ACCEPT
       iptables -A builder-egress -d ${cluster.lanAddress}/${toString cluster.lanPrefixLength} -j DROP
-      iptables -A builder-egress -d 100.64.0.0/10 -j DROP
+      for range in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
+        iptables -A builder-egress -d "$range" -j DROP
+      done
       iptables -A builder-egress -p tcp --dport 80 -j ACCEPT
       iptables -A builder-egress -p tcp --dport 443 -j ACCEPT
       iptables -A builder-egress -j DROP
+
+      ip6tables -N builder-egress 2>/dev/null || true
+      ip6tables -F builder-egress
+      ip6tables -D OUTPUT -m owner --uid-owner ${builderUid} -j builder-egress 2>/dev/null || true
+      ip6tables -I OUTPUT -m owner --uid-owner ${builderUid} -j builder-egress
+      ip6tables -A builder-egress -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      ip6tables -A builder-egress -p udp --dport 53 -j ACCEPT
+      ip6tables -A builder-egress -p tcp --dport 53 -j ACCEPT
+      ip6tables -A builder-egress -j DROP
     '';
     extraStopCommands = ''
-      iptables -D OUTPUT -m owner --uid-owner ${toString builderUid} -j builder-egress 2>/dev/null || true
-      iptables -F builder-egress 2>/dev/null || true
-      iptables -X builder-egress 2>/dev/null || true
+      for ipt in iptables ip6tables; do
+        "$ipt" -D OUTPUT -m owner --uid-owner ${builderUid} -j builder-egress 2>/dev/null || true
+        "$ipt" -F builder-egress 2>/dev/null || true
+        "$ipt" -X builder-egress 2>/dev/null || true
+      done
     '';
   };
 }

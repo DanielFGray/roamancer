@@ -11,7 +11,6 @@ let
   nomad = pkgs.callPackage ./nomad-package.nix { };
   cluster = site.cluster;
   cfg = config.services.nomadNode;
-  builderUid = 1002;
   # After nomad's 100000–165535 range so the two users' containers never share host uids.
   builderSubIdStart = 165536;
 
@@ -34,45 +33,35 @@ let
 
   # Named sockets when the builder is on; socket_path alone when it is not. The two forms
   # are mutually exclusive in driver 0.6.5.
-  podmanPluginConfig =
+  podmanSockets =
     if cfg.builder.enable then ''
-      plugin "nomad-driver-podman" {
-        config {
-          socket {
-            name = "default"
-            socket_path = "unix:///run/user/1001/podman.sock"
-          }
-          socket {
-            name = "builder"
-            socket_path = "unix:///run/user/${toString builderUid}/podman.sock"
-          }
-          # Labels each container com.hashicorp.nomad.job_name and .task_name, so
-          # host tools (backups.nix) can find a job's container without a Nomad token.
-          extra_labels = ["job_name", "task_name"]
-          volumes {
-            enabled = true
-          }
-          networking {
-            default_rootless_mode = "pasta"
-          }
-        }
+      socket {
+        name = "default"
+        socket_path = "unix:///run/user/1001/podman.sock"
+      }
+      socket {
+        name = "builder"
+        socket_path = "unix:///run/user/${toString config.users.users.builder.uid}/podman.sock"
       }
     '' else ''
-      plugin "nomad-driver-podman" {
-        config {
-          socket_path = "unix:///run/user/1001/podman.sock"
-          # Labels each container com.hashicorp.nomad.job_name and .task_name, so
-          # host tools (backups.nix) can find a job's container without a Nomad token.
-          extra_labels = ["job_name", "task_name"]
-          volumes {
-            enabled = true
-          }
-          networking {
-            default_rootless_mode = "pasta"
-          }
+      socket_path = "unix:///run/user/1001/podman.sock"
+    '';
+  podmanPluginConfig = ''
+    plugin "nomad-driver-podman" {
+      config {
+        ${podmanSockets}
+        # Labels each container com.hashicorp.nomad.job_name and .task_name, so
+        # host tools (backups.nix) can find a job's container without a Nomad token.
+        extra_labels = ["job_name", "task_name"]
+        volumes {
+          enabled = true
+        }
+        networking {
+          default_rootless_mode = "pasta"
         }
       }
-    '';
+    }
+  '';
 in
 {
   imports = [ ./dev-postgres-volume.nix ];
@@ -100,7 +89,7 @@ in
 
     users.users.builder = lib.mkIf cfg.builder.enable {
       isSystemUser = true;
-      uid = builderUid;
+      uid = 1002;
       group = "builder";
       home = "/var/lib/builder";
       createHome = true;
@@ -108,7 +97,7 @@ in
       subUidRanges = [{ startUid = builderSubIdStart; count = 65536; }];
       subGidRanges = [{ startGid = builderSubIdStart; count = 65536; }];
     };
-    users.groups.builder = lib.mkIf cfg.builder.enable { gid = builderUid; };
+    users.groups.builder = lib.mkIf cfg.builder.enable { gid = config.users.users.builder.uid; };
 
     systemd.tmpfiles.rules = [
       # A unit bind mount would hide Nomad's secrets tmpfs from rootless Podman.
@@ -121,8 +110,8 @@ in
 
     # Cap every build on the node together and yield CPU to production containers under
     # the nomad user. user-<uid>.slice holds the lingering user manager and its Podman.
-    systemd.slices."user-${toString builderUid}" = lib.mkIf cfg.builder.enable {
-      sliceConfig = {
+    systemd.slices = lib.mkIf cfg.builder.enable {
+      "user-${toString config.users.users.builder.uid}".sliceConfig = {
         MemoryMax = "2560M";
         CPUWeight = 20;
       };
@@ -155,11 +144,13 @@ in
       description = "Nomad agent";
       restartTriggers = [ config.environment.etc."nomad.d/nomad.hcl".source ];
       wantedBy = [ "multi-user.target" ];
-      wants = [ "network-online.target" "tailscaled.service" ];
+      # The builder's manager is wanted, not required: a broken builder must not stop
+      # production jobs.
+      wants = [ "network-online.target" "tailscaled.service" ]
+        ++ lib.optionals cfg.builder.enable [ "user@${toString config.users.users.builder.uid}.service" ];
       after = [ "network-online.target" "tailscaled.service" "user@1001.service" ]
-        ++ lib.optionals cfg.builder.enable [ "user@${toString builderUid}.service" ];
-      requires = [ "user@1001.service" ]
-        ++ lib.optionals cfg.builder.enable [ "user@${toString builderUid}.service" ];
+        ++ lib.optionals cfg.builder.enable [ "user@${toString config.users.users.builder.uid}.service" ];
+      requires = [ "user@1001.service" ];
       serviceConfig = {
         ExecStart = "${nomad}/bin/nomad agent -config=/etc/nomad.d";
         Restart = "on-failure";

@@ -31,6 +31,8 @@ job "builder-probe" {
       config {
         image   = var.image
         socket  = "builder"
+        # The node's registry CA folder (site.toml registryCaDir), read-only.
+        volumes = ["/var/lib/registry-ca:/etc/containers/certs.d/registry.cluster:5000:ro"]
         command = "/bin/sh"
         args = [
           "-ec",
