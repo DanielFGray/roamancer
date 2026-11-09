@@ -67,6 +67,11 @@
         garage-image =
           import ./nixos/cynic/garage-image.nix { pkgs = nixpkgs.legacyPackages.${system}; };
 
+        # Buildah for Nomad batch builds on workers (continuous-deployment.md). The
+        # job mounts the cluster registry CA from the node.
+        buildah-image =
+          import ./nixos/cynic/buildah-image.nix { pkgs = nixpkgs.legacyPackages.${system}; };
+
         # Disposable QEMU image of the same host config. It lives here, not in a
         # nested flake, so the shared modules under nixos/modules are in its source.
         testground-vm = nixos-generators.nixosGenerate {

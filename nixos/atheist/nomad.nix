@@ -11,6 +11,10 @@ in
 {
   imports = [ ../modules/nomad-node.nix ];
 
+  # Worker-only: builds run here under the builder user, never on cynic
+  # (docs/design/continuous-deployment.md).
+  services.nomadNode.builder.enable = true;
+
   # The install copies these in (`ops install`) with the installer's owner and
   # modes; these rules set the ones the readers need.
   systemd.tmpfiles.rules = [
