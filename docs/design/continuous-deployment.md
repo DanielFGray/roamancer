@@ -52,14 +52,19 @@ gVisor was measured and not chosen. Buildah fails inside it (no `/proc/<pid>/set
 
 ### Check: a signoff keyed by tree
 
-The tests run where the developer runs them, and `ops signoff` records that they passed. In the app's repository, after the tests:
+`ops signoff [commit]` runs the app's checks on the developer's machine and records that they passed. It exports the commit's tree (`HEAD` by default) with `git archive`, runs `scripts/worktree-setup` there when the app has one, and then `scripts/verify`. These are the project scripts that foreman runs before it lands a branch, so one script says what "checked" means for both. Each project decides what its verify runs: unit tests, browser tests, a build, or nothing. The platform needs only an exit code of 0. The export holds only committed files, so uncommitted edits, ignored files such as `.env`, and the checkout's `node_modules` cannot change the result. The export has no `.git` folder, so a verify script must not need one.
+
+Verify runs once per tree. The developer runs `ops signoff` when the work is ready, or foreman runs it when it lands a branch. A push does not run the tests again. `ops signoff install` writes a git pre-push hook in the app's repository. The hook refuses a push to `main` when the tree of a commit it sends has no signoff on the control host, and it runs no tests itself:
 
 ```sh
-bun run test | tee test.log
-ops signoff --log test.log
+ops signoff install   # once per clone; linked worktrees share the hook
+ops signoff           # run scripts/verify on HEAD, and record that it passed
+git push              # the hook finds the signoff; reconcile releases within a minute
 ```
 
-`ops signoff` refuses when the working tree has uncommitted changes or `HEAD` is not on the remote, as `gh signoff` (basecamp/gh-signoff) does. It sends the app, the tree hash of `HEAD`, the commit and a summary of the log to the runner, which stores the record. Reconcile releases `main` only when its tree has a signoff.
+`git push --no-verify` skips the check. When the control host does not answer, the hook prints a warning and the push continues, so an outage of the homelab does not block a push to GitHub. Either way, reconcile releases that tree only after `ops signoff <commit>` records a signoff.
+
+The runner stores the app, the tree hash, the commit and the last lines of the verify output. Reconcile releases `main` only when its tree has a signoff. A signoff does not need the commit to be on the remote: the runner stores it by tree, and a tree that is never pushed is never released. So foreman can sign off a branch when it lands, before anyone pushes it.
 
 The record is keyed by tree, like the images. A squash merge makes a new commit with the same tree, so the signoff of the PR's last commit still applies. A GitHub commit status would not survive that, because it belongs to one commit.
 
@@ -75,7 +80,7 @@ Today the workstation shows each plan and asks before it submits the deploy (`ho
 
 ### Revision lock
 
-`ops` compares the workstation's `tools/alchemy` with the runner's revision because the runner reads what `ops` sends. Reconcile starts on the host and receives nothing from the workstation, so it skips that check. A platform commit then stops only the workstation's `ops` commands until the next rebuild, not releases started by a push.
+`ops` compares the workstation's `tools/alchemy` with the runner's revision because the runner reads what `ops` sends. Reconcile starts on the host and receives nothing from the workstation, so it skips that check. A platform commit then stops only the workstation's `ops` commands until the next rebuild, not releases started by a push. `ops signoff` skips the check too, because the runner only stores a signoff, so a platform commit does not stop a push either.
 
 ### Records
 
@@ -85,7 +90,7 @@ Each release goes into the deployment record as an `ops release` does, with its 
 
 1. Tag images by tree hash, and release an existing image by its key (step 1 of `pr-previews.md`).
 2. The build job: on worker nodes, the `builder` user, its Podman socket, its firewall rule and slice limits, and memory oversubscription; the Buildah platform image; the `builds` bucket; and the runner's build that submits the job, reads its digest, checks it and records it.
-3. `ops signoff` and the runner's signoff record.
+3. `ops signoff` and the runner's signoff record, and the pre-push hook that runs it.
 4. Reconcile of `live` for one app, run by `ops reconcile <app>` and by the timer, with `deploy` in the site policy.
 
 The previews of `pr-previews.md` (its steps 2 to 6) come after these.

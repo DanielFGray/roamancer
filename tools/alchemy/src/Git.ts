@@ -46,9 +46,10 @@ export const exportTree = Effect.fn("Git.exportTree")(function* (
   dir: string,
   treeish: string,
   destination: string,
+  purpose = "for a local build",
 ) {
   const fs = yield* FileSystem.FileSystem;
-  yield* announce(dir, `for a local build (${treeish})`);
+  yield* announce(dir, `${purpose} (${treeish})`, treeish.split(":")[0]);
   const archive = `${yield* fs.makeTempDirectoryScoped()}/tree.tar`;
   yield* Exec.run("git", ["-C", dir, "archive", "--format=tar", "-o", archive, treeish]);
   yield* fs.makeDirectory(destination, { recursive: true });
@@ -56,8 +57,12 @@ export const exportTree = Effect.fn("Git.exportTree")(function* (
 }, Effect.scoped);
 
 /** Name the commit about to be used, and how many changes it leaves out. */
-const announce = Effect.fn("Git.announce")(function* (dir: string, purpose: string) {
-  const commit = yield* Exec.output("git", ["-C", dir, "rev-parse", "--short", "HEAD"]).pipe(
+const announce = Effect.fn("Git.announce")(function* (
+  dir: string,
+  purpose: string,
+  revision = "HEAD",
+) {
+  const commit = yield* Exec.output("git", ["-C", dir, "rev-parse", "--short", revision]).pipe(
     Effect.mapError(
       () => new Exec.OpsError({ message: `${dir} is not a git repository with a commit` }),
     ),
