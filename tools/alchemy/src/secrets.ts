@@ -1,9 +1,9 @@
 /**
  * Workstation-side secret commands, run where the cartridge lives: an app's repository, or a
  * platform folder in this checkout. The cartridge is read and checked here; `alchemy-runner
- * secret` on the control host asks for the root token and talks to OpenBao. Only KV paths
- * and key names cross ssh as arguments; the token and a value go to the host's prompt, or
- * the token on piped stdin.
+ * secret` on the control host talks to OpenBao. Only KV paths and key names cross ssh as
+ * arguments. `list` and `check` take the root token, typed or piped. `set` uses the `ops login`
+ * token, and its value is typed at the host's prompt or piped through ssh's stdin.
  */
 import * as path from "node:path";
 import { Console, Effect } from "effect";
@@ -29,7 +29,7 @@ const set = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Store one secret the cartridge references; prompts for the root token and the value",
+    "Store one secret the cartridge references with the ops login token; the value is typed, or piped on stdin",
   ),
 );
 
