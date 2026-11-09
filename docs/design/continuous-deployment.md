@@ -34,7 +34,7 @@ Today `nodeBuild` (`Builder.ts`) runs an app's Dockerfile with rootless Podman a
 
 The build is a Nomad batch job. Nomad places it as it places every job: the scheduler algorithm is `spread` (`nixos/cynic/nomad-acl.nix`), so the build goes to the least-loaded eligible node, and a node added later takes builds with no change here. The image goes to the registry, which every node pulls from, and the runner's record maps the tree to the digest wherever the build ran.
 
-The build task runs Buildah (chroot isolation, `vfs` storage) in a platform image built by the root flake. The job mounts the node's registry CA folder read-only at `/run/registry-ca` and links it as `/etc/containers/certs.d/registry.cluster:5000` (a Nomad `volumes` string cannot hold that colon), so the image holds no site facts. The image holds a registries.conf that resolves short names on Docker Hub, as the hosts' Podman does today. Measured on atheist on 2026-11-08, nested in rootless Podman with default security options: dfg.rocks built in 111 s with a peak of 1.6 GB, and postgres.garden in 475 s with a peak of 2.0 GB, file cache included.
+The build task runs Buildah (chroot isolation, `vfs` storage) in a platform image built by the root flake. The job mounts the node's registry CA folder read-only and passes it to Buildah with `--cert-dir`, so the image holds no site facts. The image holds a registries.conf that resolves short names on Docker Hub, as the hosts' Podman does today. Measured on atheist on 2026-11-08, nested in rootless Podman with default security options: dfg.rocks built in 111 s with a peak of 1.6 GB, and postgres.garden in 475 s with a peak of 2.0 GB, file cache included.
 
 Isolation:
 

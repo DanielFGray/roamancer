@@ -1,7 +1,7 @@
 # Platform image for Nomad batch builds: Buildah nested in the builder user's rootless
 # Podman. Measured working with --isolation chroot and --storage-driver vfs
-# (docs/design/continuous-deployment.md, 2026-11-08). The image holds no site facts: the
-# job mounts the node's registry CA folder at /etc/containers/certs.d/registry.cluster:5000.
+# (docs/design/continuous-deployment.md, 2026-11-08). The image holds no site facts: a
+# job mounts the node's registry CA folder and passes it to buildah with --cert-dir.
 { pkgs }:
 let
   registriesConf = pkgs.writeText "registries.conf" ''

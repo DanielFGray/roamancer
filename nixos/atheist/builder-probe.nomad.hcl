@@ -1,6 +1,7 @@
-# Probe for ts-ba95f0: after `ops rebuild` of atheist and cynic, and after
-# `ops image buildah-image` prints the platform-buildah digest, run from cynic
-# (operator Nomad token):
+# Proves the builder user's Podman on a worker node: a batch job in the platform-buildah
+# image builds a two-line Dockerfile and pushes it to the cluster registry. After
+# `ops rebuild` of the nodes, and after `ops image buildah-image` prints the
+# platform-buildah digest, run from cynic with a Nomad token that can submit jobs:
 #
 #   nomad job run -var="image=registry.cluster:5000/platform-buildah@sha256:..." \
 #     nixos/atheist/builder-probe.nomad.hcl
@@ -29,21 +30,18 @@ job "builder-probe" {
       driver = "podman"
 
       config {
-        image   = var.image
-        socket  = "builder"
-        # The node's registry CA folder (site.toml registryCaDir), read-only. A volumes
-        # string cannot hold the colon in certs.d/registry.cluster:5000, so the script
-        # links the folder there, as the hosts' /etc/containers/certs.d does.
+        image  = var.image
+        socket = "builder"
+        # The node's registry CA folder (site.toml registryCaDir), read-only. buildah
+        # reads it with --cert-dir, so the image holds no site facts.
         volumes = ["/var/lib/registry-ca:/run/registry-ca:ro"]
         command = "/bin/sh"
         args = [
           "-ec",
           <<-EOT
-          mkdir -p /etc/containers/certs.d
-          ln -s /run/registry-ca /etc/containers/certs.d/registry.cluster:5000
           printf 'FROM busybox\nRUN echo probe > /probe\n' > /tmp/Dockerfile
-          buildah bud --isolation chroot --storage-driver vfs -t registry.cluster:5000/probe:probe /tmp
-          buildah push --storage-driver vfs registry.cluster:5000/probe:probe docker://registry.cluster:5000/probe:probe
+          buildah bud --isolation chroot --storage-driver vfs --cert-dir /run/registry-ca -t registry.cluster:5000/probe:probe /tmp
+          buildah push --storage-driver vfs --cert-dir /run/registry-ca registry.cluster:5000/probe:probe
           EOT
         ]
       }
