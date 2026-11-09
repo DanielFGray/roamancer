@@ -50,25 +50,42 @@ export const follow = (nomad: typeof Nomad.Service, job: string) =>
     ),
   );
 
+/** One line a task wrote, with the stream it wrote it to. */
+export interface Entry {
+  readonly timestamp: Date;
+  readonly stream: "stdout" | "stderr";
+  readonly text: string;
+}
+
 /**
  * Reads one line of a task log as the Nomad podman driver writes it, in podman's
- * k8s-file format: `<RFC 3339 time> <stdout|stderr> <F|P> <text>`. P marks a line
- * the container wrote without a newline yet; it is shown as its own entry.
+ * k8s-file format: `<RFC 3339 time> <stdout|stderr> <F|P> <text>`. The driver writes
+ * both of the container's streams this way into the task's stdout log, and Nomad's
+ * stderr log for the task stays empty, so only this prefix tells the streams apart.
+ * P marks a line the container wrote without a newline yet; it is its own entry.
  * Fails with the raw text when the line has no such prefix, which happens to the
  * first line of a log read from a byte offset that falls mid-line.
  */
+export const entry = (text: string): Result.Result<Entry, string> =>
+  Option.fromNullishOr(format.exec(text)).pipe(
+    Option.flatMap(([, time = "", stream, message = ""]) =>
+      Option.map(DateTime.make(time), (timestamp) => ({
+        timestamp: DateTime.toDate(timestamp),
+        stream: stream === "stderr" ? ("stderr" as const) : ("stdout" as const),
+        text: message,
+      })),
+    ),
+    Option.match({ onNone: () => Result.fail(text), onSome: Result.succeed }),
+  );
+
+/** A task log line as `entry` reads it, named by its task for output that mixes tasks. */
 export const parse =
   (task: string) =>
   (text: string): Result.Result<LogLine, string> =>
-    Option.fromNullishOr(format.exec(text)).pipe(
-      Option.flatMap(([, time = "", stream, message = ""]) =>
-        Option.map(DateTime.make(time), (timestamp) => ({
-          timestamp: DateTime.toDate(timestamp),
-          message: `${task}${stream === "stderr" ? " stderr" : ""}: ${message}`,
-        })),
-      ),
-      Option.match({ onNone: () => Result.fail(text), onSome: Result.succeed }),
-    );
+    Result.map(entry(text), (line) => ({
+      timestamp: line.timestamp,
+      message: `${task}${line.stream === "stderr" ? " stderr" : ""}: ${line.text}`,
+    }));
 
 const format = /^(\S+) (stdout|stderr) [FP] (.*)$/;
 
