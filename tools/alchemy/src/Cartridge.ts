@@ -1,3 +1,4 @@
+import { BuildMemoryMB } from "./BuildLimits.ts";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -98,6 +99,8 @@ export const Cartridge = S.Struct({
   ),
   postgres: cartridgeArray(PostgresEntry),
   valkey: S.optionalKey(ValkeyEntry),
+  // Only an app builds an image; the memory cap is for its build job (default 2048 MB).
+  build: S.optionalKey(S.Struct({ memoryMB: BuildMemoryMB })),
   objectStore: S.optionalKey(ObjectStoreEntry),
   services: S.Array(CartridgeJob),
   dashboards: S.optionalKey(DashboardsEntry),

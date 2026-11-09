@@ -7,7 +7,8 @@
  * answers with its exit code: its output is for the operator to read, because the journal
  * holds the job's stdout and stderr as one stream.
  */
-import { Context, Effect, Layer, Option, Schema as S, Stdio } from "effect";
+import { Context, Effect, Layer, Option, Schema as S, Stdio, type Stream } from "effect";
+import type { PlatformError } from "effect/PlatformError";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { ImageDigest, SignoffRecord } from "./queue/Protocol.ts";
@@ -46,6 +47,22 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       return yield* S.decodeUnknownEffect(S.NumberFromString)(printed.trim()).pipe(
         Effect.mapError(
           () => new Exec.OpsError({ message: `submit printed no job id: ${printed}` }),
+        ),
+      );
+    });
+
+    /**
+     * Queue a build: `request` is one build request line and then the tar it counts (see
+     * `Builder`). Returns the build job's id. Like submit, it needs the runner's revision.
+     */
+    const build = Effect.fn("Remote.build")(function* (
+      request: Stream.Stream<Uint8Array, PlatformError>,
+    ) {
+      yield* sameRevision;
+      const printed = yield* Exec.output("ssh", [yield* site.host, `${runner} build`], request);
+      return yield* S.decodeUnknownEffect(S.NumberFromString)(printed.trim()).pipe(
+        Effect.mapError(
+          () => new Exec.OpsError({ message: `build printed no job id: ${printed}` }),
         ),
       );
     });
@@ -108,22 +125,6 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       );
     });
 
-    /**
-     * Record `digest` on the host as the image of `image.key`. Only an image that `ops`
-     * pushed itself is recorded, so a release that reuses a record deploys what it built.
-     */
-    const recordImage = Effect.fn("Remote.recordImage")(function* (
-      image: { readonly repository: string; readonly key: string },
-      digest: string,
-    ) {
-      yield* sameRevision;
-      yield* Exec.output(
-        "ssh",
-        [yield* site.host, `${runner} image record`],
-        JSON.stringify({ _tag: "recordImage", ...image, digest }),
-      );
-    });
-
     /** The digest the host recorded for `image.key`, or none. */
     const findImage = Effect.fn("Remote.findImage")(function* (image: {
       readonly repository: string;
@@ -143,7 +144,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       return Option.some(printed);
     });
 
-    return { submit, signoff, listSignoffs, run, direct, recordImage, findImage };
+    return { submit, build, signoff, listSignoffs, run, direct, findImage };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);

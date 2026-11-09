@@ -4,7 +4,8 @@
  */
 import { Schema as S } from "effect";
 import { JobState } from "./Kinds.ts";
-import { Job, JobSubmit } from "./Schema.ts";
+import { BuildMemoryMB } from "../BuildLimits.ts";
+import { Job, JobSubmit, maxBuildBytes } from "./Schema.ts";
 
 /** A submit is a job payload under the `submit` tag; the front end stores it as sent. */
 export const Submit = S.Union(
@@ -24,12 +25,24 @@ export const ImageKey = S.String.check(S.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64
 export const ImageDigest = S.String.check(S.isPattern(/^sha256:[0-9a-f]{64}$/));
 const ImageName = { repository: S.NonEmptyString, key: ImageKey };
 /**
- * `ops` pushed `digest` as the image of `key` in `repository`. The record, not the
- * registry's tag, decides which image a later release of the same tree reuses: the registry
- * accepts pushes from every node without credentials, but a digest names fixed content.
+ * The digest recorded for `key` in `repository`. Only the runner's build job records one, after
+ * the registry answered for it: the registry accepts pushes from every node without
+ * credentials, so its tag proves nothing, but a recorded digest names fixed content.
  */
-export const RecordImage = S.TaggedStruct("recordImage", { ...ImageName, digest: ImageDigest });
 export const FindImage = S.TaggedStruct("findImage", ImageName);
+
+/**
+ * Build an app's tree. The request line is followed by exactly `size` bytes, a tar of the
+ * exported tree. The front end stores the tar and queues a `build` job; the answer is
+ * `submitted` with that job's id. A tar cannot ride in a JSON submit, which the queue keeps.
+ */
+export const BuildUpload = S.TaggedStruct("build", {
+  repository: S.NonEmptyString,
+  key: ImageKey,
+  memoryMaxMB: BuildMemoryMB,
+  size: S.Int.check(S.isBetween({ minimum: 1, maximum: maxBuildBytes })),
+});
+export type BuildUpload = typeof BuildUpload.Type;
 
 const Hex40 = S.String.check(S.isPattern(/^[0-9a-f]{40}$/));
 const Hex64 = S.String.check(S.isPattern(/^[0-9a-f]{64}$/));
@@ -67,10 +80,10 @@ export const Request = S.Union([
   Cancel,
   Token,
   Next,
-  RecordImage,
   FindImage,
   Signoff,
   Signoffs,
+  BuildUpload,
 ]);
 export type Request = typeof Request.Type;
 
@@ -86,7 +99,6 @@ export const Response = S.Union([
   S.TaggedStruct("canceled", { job: Job }),
   S.TaggedStruct("tokenStored", {}),
   S.TaggedStruct("next", { started: S.NullOr(S.Number) }),
-  S.TaggedStruct("imageRecorded", {}),
   S.TaggedStruct("imageFound", { digest: S.NullOr(ImageDigest) }),
   S.TaggedStruct("signedOff", { id: S.Number }),
   S.TaggedStruct("signoffsListed", { signoffs: S.Array(SignoffRecord) }),

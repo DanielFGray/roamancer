@@ -33,13 +33,6 @@ tlsDir = "/var/lib/cluster-tls"
 # every node. The registry checks no client certificate.
 registryCaDir = "/var/lib/registry-ca"
 
-# Optional. When set, `ops release`, `ops stage` and `ops promote` build on this host with
-# rootless Podman instead of Docker on the workstation. The node receives the commit as a
-# tar on ssh stdin, pushes to the cluster registry, and needs
-# no checkout of the app. Omit the table to keep building on the workstation.
-# [build]
-# node = "atheist"
-
 # Optional. The node that runs the dev Postgres server for `ops dev db`
 # (tools/alchemy/platform/dev-data). NixOS puts the server's volume on this node, which pins
 # the server there, and the dev database tunnel forwards to its address in [cluster.nodes].

@@ -91,8 +91,8 @@ const main = Effect.gen(function* () {
 }).pipe(
   Effect.tapErrorTag("OpsError", (error: OpsError) => Console.error(error.message)),
   Effect.provide(
-    Remote.layer.pipe(
-      Layer.provideMerge(Builder.layer),
+    Builder.layer.pipe(
+      Layer.provideMerge(Remote.layer),
       Layer.provideMerge(Site.layer),
       Layer.provideMerge(BunServices.layer),
     ),

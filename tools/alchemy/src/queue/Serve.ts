@@ -8,11 +8,12 @@ import { Effect, FileSystem, Layer, Option, Schedule, Schema as S } from "effect
 import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
 import { QueueProtocolError, TokenWriteError } from "./Errors.ts";
-import type { Paths } from "./Paths.ts";
-import { Request, Response } from "./Protocol.ts";
+import { spoolFile, type Paths } from "./Paths.ts";
+import { type BuildUpload, Request, Response } from "./Protocol.ts";
 import { unitName } from "./Schema.ts";
 import { tryStart } from "./Starter.ts";
 import { Store } from "./Store.ts";
+import type { Units } from "./Units.ts";
 
 const decodeRequest = S.decodeUnknownEffect(S.fromJsonString(Request));
 const encodeResponse = S.encodeUnknownEffect(S.fromJsonString(Response));
@@ -54,7 +55,7 @@ const storeToken = (paths: Paths, value: string) =>
       .pipe(Effect.mapError((error) => new TokenWriteError({ message: error.message })));
   });
 
-const fulfill = (paths: Paths, request: Request) =>
+const fulfill = (paths: Paths, request: Exclude<Request, BuildUpload>) =>
   Effect.gen(function* () {
     const store = yield* Store;
     switch (request._tag) {
@@ -108,11 +109,6 @@ const fulfill = (paths: Paths, request: Request) =>
           started: Option.getOrNull(started),
         };
       }
-      case "recordImage": {
-        const { _tag, ...image } = request;
-        yield* store.recordImage(image);
-        return { _tag: "imageRecorded" as const };
-      }
       case "findImage": {
         const digest = yield* store.findImage(request);
         return { _tag: "imageFound" as const, digest: Option.getOrNull(digest) };
@@ -136,18 +132,95 @@ const fulfill = (paths: Paths, request: Request) =>
     }
   });
 
+/**
+ * Store the `size` bytes that follow a build request line (`first` holds those already read
+ * with the line), then queue the build job. A partial upload is removed, so the spool holds
+ * only complete trees.
+ */
+const receiveBuild = (
+  paths: Paths,
+  request: BuildUpload,
+  first: Uint8Array,
+  pull: Effect.Effect<ReadonlyArray<Uint8Array>, Socket.SocketError>,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const store = yield* Store;
+    const spool = crypto.randomUUID();
+    const file = spoolFile(paths, spool);
+    const partial = `${file}.partial`;
+    yield* fs.makeDirectory(paths.spool, { recursive: true, mode: 0o700 });
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const out = yield* fs.open(partial, { flag: "w", mode: 0o600 });
+        let received = 0;
+        const accept = Effect.fnUntraced(function* (chunk: Uint8Array) {
+          received += chunk.length;
+          if (received > request.size) {
+            return yield* new QueueProtocolError({ message: "the upload is longer than its size" });
+          }
+          yield* out.writeAll(chunk);
+        });
+        yield* accept(first);
+        while (received < request.size) {
+          for (const chunk of yield* pull) yield* accept(chunk);
+        }
+      }),
+    ).pipe(Effect.tapError(() => fs.remove(partial, { force: true }).pipe(Effect.ignore)));
+    yield* fs.rename(partial, file);
+    const job = yield* store.enqueue({
+      command: "build",
+      repository: request.repository,
+      key: request.key,
+      spool,
+      memoryMaxMB: request.memoryMaxMB,
+    });
+    yield* tryStart();
+    return { _tag: "submitted" as const, id: job.id };
+  });
+
+/**
+ * Remove spool files that no queued or running build job names: a canceled or interrupted
+ * build never reaches its own cleanup.
+ */
+export const sweepSpool = Effect.fn("queue.sweepSpool")(function* (paths: Paths) {
+  const fs = yield* FileSystem.FileSystem;
+  const store = yield* Store;
+  const live = new Set(
+    (yield* store.list())
+      .filter((job) => ["queued", "starting", "running"].includes(job.state))
+      .flatMap((job) => (job.submit.command === "build" ? [`${job.submit.spool}.tar`] : [])),
+  );
+  const names = yield* fs.readDirectory(paths.spool).pipe(Effect.orElseSucceed(() => []));
+  yield* Effect.forEach(
+    names.filter((name) => !live.has(name)),
+    (name) => fs.remove(`${paths.spool}/${name}`, { force: true }),
+    { discard: true },
+  );
+});
+
+/** What answering one request needs and may fail with; the connection turns any failure into an error response. */
+type Handled = Effect.Effect<Response, unknown, Store | Units | FileSystem.FileSystem>;
+
 const handleConnection = (paths: Paths, socket: Socket.Socket) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const pull = yield* Socket.readerString(socket);
-      let buffer = "";
-      while (!buffer.includes("\n")) {
+      const pull = yield* Socket.readerBytes(socket);
+      // The request line is text; a build request is followed by raw tar bytes, so bytes are
+      // read and only the line is decoded.
+      let buffered = new Uint8Array(0);
+      while (!buffered.includes(10)) {
         const batch = yield* pull;
-        buffer += batch.join("");
+        buffered = concat([buffered, ...batch]);
       }
-      const line = buffer.slice(0, buffer.indexOf("\n"));
+      const end = buffered.indexOf(10);
+      const line = new TextDecoder().decode(buffered.subarray(0, end));
       const response: Response = yield* decodeRequest(line).pipe(
-        Effect.flatMap((request) => fulfill(paths, request)),
+        Effect.flatMap((request): Handled =>
+          request._tag === "build"
+            ? receiveBuild(paths, request, buffered.subarray(end + 1), pull)
+            : fulfill(paths, request),
+        ),
         Effect.catch((error: unknown) =>
           Effect.succeed({
             _tag: "error" as const,
@@ -171,6 +244,7 @@ const handleConnection = (paths: Paths, socket: Socket.Socket) =>
 export const serve = (paths: Paths) =>
   Effect.gen(function* () {
     yield* recover();
+    yield* sweepSpool(paths);
     yield* tryStart();
     yield* Effect.repeat(tryStart(), Schedule.spaced("30 seconds")).pipe(
       Effect.forkDetach,
@@ -192,3 +266,13 @@ export const layerServer = (paths: Paths) =>
       return BunSocketServer.layer({ path: paths.socket });
     }),
   );
+
+const concat = (parts: ReadonlyArray<Uint8Array>) => {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+};

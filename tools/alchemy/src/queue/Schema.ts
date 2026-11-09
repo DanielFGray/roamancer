@@ -4,6 +4,7 @@
  */
 import { Option, Schema as S } from "effect";
 import { DevDbClusterSubmit, DevDbSubmit } from "../devdb/Declaration.ts";
+import { BuildMemoryMB } from "../BuildLimits.ts";
 import { JobState } from "./Kinds.ts";
 
 /**
@@ -83,6 +84,24 @@ export const PlaceQueuedSubmit = S.Struct({
   command: S.Literals(["place-queued"]),
 });
 
+/** The most bytes of one exported tree the front end accepts. */
+export const maxBuildBytes = 1024 * 1024 * 1024;
+
+/**
+ * build: build the tree that the front end stored under `spool`. The front end names the spool
+ * file after a random id, and the job derives its path from the id, so no submit names a path.
+ */
+export const BuildSubmit = S.Struct({
+  command: S.Literals(["build"]),
+  repository: S.NonEmptyString,
+  key: S.NonEmptyString,
+  spool: S.String.check(
+    S.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+  ),
+  memoryMaxMB: BuildMemoryMB,
+});
+export type BuildSubmit = typeof BuildSubmit.Type;
+
 export const StagelessSubmit = S.Union([
   StateListSubmit,
   StateReadSubmit,
@@ -90,6 +109,7 @@ export const StagelessSubmit = S.Union([
   StatusSubmit,
   StageImageSubmit,
   PlaceQueuedSubmit,
+  BuildSubmit,
   DevDbSubmit,
   DevDbClusterSubmit,
 ]);
@@ -133,6 +153,8 @@ export const subject = (submit: JobSubmit): string | null => {
       return submit.name;
     case "state":
       return submit.path;
+    case "build":
+      return submit.repository;
     case "dev-db":
       return submit.request.app;
     case "dev-db-cluster":

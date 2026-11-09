@@ -39,12 +39,10 @@ describe("release commands and the image key", () => {
     assert.deepEqual(new Set(images), new Set([`${repositoryName}@${digest}`]));
   });
 
-  it("stage builds when the host recorded no image for the tree, and records the push", async () => {
+  it("stage builds when the host recorded no image for the tree, and sends no record: the runner records after its registry check", async () => {
     const { builds, records, tree } = await runOps("stage", { recorded: Option.none() });
     assert.deepEqual(builds, [{ repository: repositoryName, key: tree }]);
-    assert.deepEqual(records, [
-      { _tag: "recordImage", repository: repositoryName, key: tree, digest },
-    ]);
+    assert.deepEqual(records, []);
   });
 
   it("promote refuses and builds nothing when no image has HEAD's tree", async () => {

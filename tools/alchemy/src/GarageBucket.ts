@@ -58,7 +58,7 @@ export class GarageError extends S.TaggedError<GarageError>()("GarageError", {
 }
 
 /** What OpenBao keeps at `objectStoreCredentialPath`; Job.ts renders these keys into a task. */
-const StoredKey = S.Struct({
+export const StoredKey = S.Struct({
   accessKeyId: S.String,
   secretAccessKey: S.String,
   bucket: S.String,

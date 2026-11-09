@@ -7,7 +7,6 @@
  */
 import { Config, Console, Effect, FileSystem, Option, Path, Schema as S, Stdio } from "effect";
 import { Prompt } from "effect/cli";
-import { dockerPush } from "./Builder.ts";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { Remote } from "./Remote.ts";
@@ -207,3 +206,25 @@ const confirmErase = Effect.fn("Nixos.confirmErase")(function* (host: string, ta
   ).pipe(Effect.mapError(() => new Exec.OpsError({ message: "not confirmed" })));
   if (answer !== host) return yield* new Exec.OpsError({ message: "not confirmed" });
 });
+
+/**
+ * Push `tagged`, an image in this machine's Docker named `repository:tag`, and return
+ * `repository:tag@digest`. Docker learns the digest from the registry during the push.
+ */
+const dockerPush = (repository: string, tagged: string) =>
+  Effect.gen(function* () {
+    // Without --quiet, docker prints its progress on stdout, where `ops image` prints only the
+    // reference to pin.
+    yield* Exec.output("docker", ["push", "--quiet", tagged]);
+    const digests = yield* Exec.output("docker", [
+      "inspect",
+      "--format",
+      "{{range .RepoDigests}}{{println .}}{{end}}",
+      tagged,
+    ]);
+    const pinned = digests.split("\n").find((digest) => digest.startsWith(`${repository}@`));
+    if (pinned === undefined) {
+      return yield* new Exec.OpsError({ message: `docker records no digest for ${tagged}` });
+    }
+    return `${tagged}@${pinned.slice(repository.length + 1)}`;
+  });
