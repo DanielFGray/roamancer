@@ -102,6 +102,17 @@ export const BuildSubmit = S.Struct({
 });
 export type BuildSubmit = typeof BuildSubmit.Type;
 
+/**
+ * reconcile: release the tree at the head of an app's `main` when the site policy allows it
+ * and the tree is signed off. The policy names the app's repository, so a submit carries
+ * only the app.
+ */
+export const ReconcileSubmit = S.Struct({
+  command: S.Literals(["reconcile"]),
+  app: S.NonEmptyString,
+});
+export type ReconcileSubmit = typeof ReconcileSubmit.Type;
+
 export const StagelessSubmit = S.Union([
   StateListSubmit,
   StateReadSubmit,
@@ -110,6 +121,7 @@ export const StagelessSubmit = S.Union([
   StageImageSubmit,
   PlaceQueuedSubmit,
   BuildSubmit,
+  ReconcileSubmit,
   DevDbSubmit,
   DevDbClusterSubmit,
 ]);
@@ -153,6 +165,8 @@ export const subject = (submit: JobSubmit): string | null => {
       return submit.name;
     case "state":
       return submit.path;
+    case "reconcile":
+      return submit.app;
     case "build":
       return submit.repository;
     case "dev-db":

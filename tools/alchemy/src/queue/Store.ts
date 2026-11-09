@@ -16,7 +16,7 @@ import {
   JobNotStarting,
   PlanStale,
 } from "./Errors.ts";
-import { JobCommand, JobState, type JobState as JobStateT } from "./Kinds.ts";
+import { JobCommand, JobState, ReconcileStatus, type JobState as JobStateT } from "./Kinds.ts";
 import {
   JobSubmit,
   type DeploySubmit,
@@ -74,6 +74,52 @@ const toSignoff = (row: typeof SignoffRow.Type): Signoff => ({
   summary: row.summary,
   logSha256: row.log_sha256,
   createdAt: row.created_at,
+});
+
+const ReconcileRow = S.Struct({
+  app: S.String,
+  seen_commit: S.NullOr(S.String),
+  seen_tree: S.NullOr(S.String),
+  tried_tree: S.NullOr(S.String),
+  tried_commit: S.NullOr(S.String),
+  tried_result: S.NullOr(S.Literals(["released", "failed"])),
+  tried_job: S.NullOr(S.Number),
+  status: ReconcileStatus,
+  detail: S.String,
+  checked_at: S.String,
+});
+
+/**
+ * What reconcile knows about one app. `tried*` is the last tree it released or failed to
+ * release; a tree that only waited for a signoff or a login is not in it.
+ */
+export type Reconcile = {
+  readonly app: string;
+  /** The head of `main` reconcile last read, and its tree. */
+  readonly seenCommit: string | null;
+  readonly seenTree: string | null;
+  readonly triedTree: string | null;
+  readonly triedCommit: string | null;
+  readonly triedResult: "released" | "failed" | null;
+  /** The queue job of that try. */
+  readonly triedJob: number | null;
+  /** The last outcome of any kind, with the sentence `ops dash` shows for it. */
+  readonly status: ReconcileStatus;
+  readonly detail: string;
+  readonly checkedAt: string;
+};
+
+const toReconcile = (row: typeof ReconcileRow.Type): Reconcile => ({
+  app: row.app,
+  seenCommit: row.seen_commit,
+  seenTree: row.seen_tree,
+  triedTree: row.tried_tree,
+  triedCommit: row.tried_commit,
+  triedResult: row.tried_result,
+  triedJob: row.tried_job,
+  status: row.status,
+  detail: row.detail,
+  checkedAt: row.checked_at,
 });
 
 const decodePayload = S.decodeUnknownEffect(S.fromJsonString(JobSubmit));
@@ -180,6 +226,27 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       applied.add(5);
     }
 
+    // What reconcile saw and tried per app: the head of `main` it last read, the tree it
+    // last released or tried (a failed build or deploy is a try), and its last outcome.
+    if (!applied.has(6)) {
+      yield* sql`
+        CREATE TABLE reconciles (
+          app TEXT PRIMARY KEY NOT NULL,
+          seen_commit TEXT,
+          seen_tree TEXT,
+          tried_tree TEXT,
+          tried_commit TEXT,
+          tried_result TEXT CHECK (tried_result IN ('released','failed')),
+          tried_job INTEGER,
+          status TEXT NOT NULL,
+          detail TEXT NOT NULL,
+          checked_at TEXT NOT NULL
+        )
+      `;
+      yield* sql`INSERT INTO schema_migrations (version) VALUES (6)`;
+      applied.add(6);
+    }
+
     const selectJob = SqlSchema.findOne({
       Request: S.Number,
       Result: JobRow,
@@ -200,7 +267,38 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       );
     });
 
+    /**
+     * Queue a job. An app has at most one reconcile job waiting or running, so a second
+     * request returns that job: the timer fires every minute whatever a release takes. A new
+     * reconcile also removes the app's finished reconcile jobs that tried nothing, so a minute
+     * timer does not fill the queue's list; the journal keeps their output.
+     */
     const enqueue = Effect.fn("Store.enqueue")(function* (submit: JobSubmitT) {
+      if (submit.command !== "reconcile") return yield* insert(submit);
+      const app = submit.app;
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const active = yield* sql<{ id: number }>`
+            SELECT id FROM jobs
+            WHERE command = 'reconcile'
+              AND json_extract(payload, '$.app') = ${app}
+              AND state IN ('queued', 'starting', 'running')
+            LIMIT 1
+          `;
+          if (active[0] !== undefined) return yield* get(active[0].id);
+          yield* sql`
+            DELETE FROM jobs
+            WHERE command = 'reconcile'
+              AND json_extract(payload, '$.app') = ${app}
+              AND state IN ('succeeded', 'canceled')
+              AND id NOT IN (SELECT tried_job FROM reconciles WHERE tried_job IS NOT NULL)
+          `;
+          return yield* insert(submit);
+        }),
+      );
+    });
+
+    const insert = Effect.fn("Store.insert")(function* (submit: JobSubmitT) {
       const payload = yield* encodePayload(submit).pipe(Effect.orDie);
       const rows = yield* sql<{ id: number }>`
         INSERT INTO jobs (command, payload, state, created_at)
@@ -418,6 +516,45 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       return rows.map(toSignoff);
     });
 
+    /** What reconcile last recorded for `app`; none before its first run. */
+    const getReconcile = Effect.fn("Store.getReconcile")(function* (app: string) {
+      const rows = yield* sql<typeof ReconcileRow.Type>`
+        SELECT * FROM reconciles WHERE app = ${app}
+      `;
+      return Option.fromNullishOr(rows[0]).pipe(Option.map(toReconcile));
+    });
+
+    /** Every app reconcile has run for, by name. */
+    const listReconciles = Effect.fn("Store.listReconciles")(function* () {
+      const rows = yield* sql<typeof ReconcileRow.Type>`SELECT * FROM reconciles ORDER BY app`;
+      return rows.map(toReconcile);
+    });
+
+    /** Replace the app's record; the store stamps `checkedAt`. */
+    const saveReconcile = Effect.fn("Store.saveReconcile")(function* (
+      next: Omit<Reconcile, "checkedAt">,
+    ) {
+      yield* sql`
+        INSERT INTO reconciles (
+          app, seen_commit, seen_tree, tried_tree, tried_commit, tried_result, tried_job,
+          status, detail, checked_at
+        ) VALUES (
+          ${next.app}, ${next.seenCommit}, ${next.seenTree}, ${next.triedTree},
+          ${next.triedCommit}, ${next.triedResult}, ${next.triedJob},
+          ${next.status}, ${next.detail}, ${sql.literal(nowSql)}
+        )
+        ON CONFLICT (app) DO UPDATE SET
+          seen_commit = excluded.seen_commit,
+          seen_tree = excluded.seen_tree,
+          tried_tree = excluded.tried_tree,
+          tried_commit = excluded.tried_commit,
+          tried_result = excluded.tried_result,
+          tried_job = excluded.tried_job,
+          status = excluded.status,
+          detail = excluded.detail,
+          checked_at = excluded.checked_at
+      `;
+    });
     /**
      * Deploy gate: the named plan must be a succeeded plan of the same stage and
      * cartridge, run by the same runner revision, with no later finished job.
@@ -498,6 +635,9 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       list,
       recordSignoff,
       listSignoffs,
+      getReconcile,
+      listReconciles,
+      saveReconcile,
       requireFreshPlan,
     } as const;
   }),

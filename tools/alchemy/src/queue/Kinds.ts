@@ -18,6 +18,7 @@ export const JobCommand = S.Literals([
   "dev-db",
   "dev-db-cluster",
   "build",
+  "reconcile",
 ]);
 export type JobCommand = typeof JobCommand.Type;
 
@@ -31,3 +32,18 @@ export const JobState = S.Literals([
   "canceled",
 ]);
 export type JobState = typeof JobState.Type;
+
+/**
+ * Where reconcile left an app on its last run (docs/design/continuous-deployment.md).
+ * `released` and `failed` are tries; the others are not, so the same tree is looked at again.
+ */
+export const ReconcileStatus = S.Literals([
+  "manual",
+  "no-main",
+  "unreachable",
+  "waiting-signoff",
+  "waiting-login",
+  "released",
+  "failed",
+]);
+export type ReconcileStatus = typeof ReconcileStatus.Type;

@@ -52,10 +52,16 @@ export const runJob = Effect.fn("queue.runJob")(function* (
   const store = yield* Store;
   const fs = yield* FileSystem.FileSystem;
 
-  yield* store.get(id).pipe(Effect.catchTag("JobNotFound", () => new JobNotFound({ id })));
+  const queued = yield* store
+    .get(id)
+    .pipe(Effect.catchTag("JobNotFound", () => new JobNotFound({ id })));
 
+  // A reconcile job decides for itself what a missing token means: it records "run ops login"
+  // and exits 0, so the timer does not fill the queue with failed rows while nobody is logged in.
   const token = yield* readToken(paths).pipe(
-    Effect.tapErrorTag("LoginRequired", () => store.abandon(id, "failed", 1)),
+    queued.submit.command === "reconcile"
+      ? Effect.catchTag("LoginRequired", () => Effect.succeed(""))
+      : Effect.tapErrorTag("LoginRequired", () => store.abandon(id, "failed", 1)),
   );
 
   const runnerRevision = yield* Config.option(Config.String("ALCHEMY_RUNNER_REVISION")).pipe(
@@ -78,7 +84,7 @@ export const runJob = Effect.fn("queue.runJob")(function* (
   }
 
   const env: Record<string, string> = {
-    OPENBAO_TOKEN: token,
+    ...(token === "" ? {} : { OPENBAO_TOKEN: token }),
     OPENBAO_TOKEN_FILE: paths.tokenFile,
   };
 
