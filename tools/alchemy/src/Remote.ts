@@ -51,11 +51,12 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
     });
 
     /**
-     * Record a local-test signoff on the host (not a job) and return its id. Keeps the same
-     * runner revision check as submit.
+     * Record a signoff on the host (not a job) and return its id. It skips the runner revision
+     * check that submit makes: the runner executes a job's plan, but only stores a signoff, and
+     * its protocol schema refuses a record it cannot read. With the check, a platform commit
+     * here would stop every app's push to main until the next rebuild.
      */
     const signoff = Effect.fn("Remote.signoff")(function* (record: SignoffSend) {
-      yield* sameRevision;
       const host = yield* site.host;
       const printed = yield* Exec.output(
         "ssh",
@@ -67,9 +68,8 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       );
     });
 
-    /** The app's signoffs on the host, newest first. */
+    /** The app's signoffs on the host, newest first. Like signoff, it skips the revision check. */
     const listSignoffs = Effect.fn("Remote.listSignoffs")(function* (app: string) {
-      yield* sameRevision;
       const host = yield* site.host;
       const printed = yield* Exec.output("ssh", [host, `${runner} signoffs`, app]);
       return yield* S.decodeUnknownEffect(S.fromJsonString(S.Array(SignoffRecord)))(

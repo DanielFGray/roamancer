@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,7 +12,7 @@ import { Command } from "effect/cli";
 import * as Spawner from "effect/process/ChildProcessSpawner";
 import { OpsError } from "./Exec.ts";
 import { Remote } from "./Remote.ts";
-import { commands as signoffCommands, summarizeLog } from "./Signoff.ts";
+import { commands as signoffCommands, deployPushes, summarizeLog } from "./Signoff.ts";
 import { Site } from "./Site.ts";
 
 describe("summarizeLog", () => {
@@ -41,49 +41,97 @@ describe("summarizeLog", () => {
   }
 });
 
-describe("ops signoff refusals", () => {
+describe("deployPushes", () => {
+  const zero = "0".repeat(40);
+  const a = "a".repeat(40);
+  const b = "b".repeat(40);
+  const cases: Array<{ name: string; stdin: string; want: ReadonlyArray<string> }> = [
+    { name: "a push to main", stdin: `refs/heads/main ${a} refs/heads/main ${b}\n`, want: [a] },
+    {
+      name: "another branch to main",
+      stdin: `refs/heads/fix ${a} refs/heads/main ${zero}\n`,
+      want: [a],
+    },
+    {
+      name: "a push to another branch",
+      stdin: `refs/heads/main ${a} refs/heads/dev ${b}\n`,
+      want: [],
+    },
+    { name: "a deletion of main", stdin: `(delete) ${zero} refs/heads/main ${b}\n`, want: [] },
+    {
+      name: "the same commit pushed twice",
+      stdin: `refs/heads/main ${a} refs/heads/main ${b}\nrefs/heads/x ${a} refs/heads/main ${b}\n`,
+      want: [a],
+    },
+    { name: "nothing pushed", stdin: "", want: [] },
+  ];
+  for (const { name, stdin, want } of cases) {
+    it(name, () => {
+      assert.deepEqual(deployPushes(stdin), want);
+    });
+  }
+});
+
+describe("ops signoff", () => {
   const signoff = signoffCommands[0]!;
-  const run = (repo: string) =>
-    Command.runWith(signoff, { version: "test" })(["--log", join(repo, "test.log"), repo]);
+  const run = (...args: Array<string>) => Command.runWith(signoff, { version: "test" })(args);
+  const sent = (log: ReadonlyArray<string>) =>
+    log.some((line) => line.endsWith("alchemy-runner signoff"));
 
-  it("refuses when a tracked file differs from HEAD", async () => {
-    const repo = gitFixture();
+  it("verifies the committed tree, not the working tree, and records it without the revision check", async () => {
+    const repo = gitFixture('#!/bin/sh\ngrep -qx ok status.txt && echo "12 pass"\n');
     try {
-      writeFileSync(join(repo, "cartridge.json"), `${cartridgeJson.slice(0, -2)} \n`);
-      const { error, log } = await execute(run(repo));
-      assert.ok(error instanceof OpsError);
-      assert.match(error.message, /tracked files differ from HEAD/);
-      assert.ok(!log.some((line) => line.includes("alchemy-runner signoff")));
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-      rmSync(join(repo, ".."), { recursive: true, force: true });
-    }
-  });
-
-  it("refuses when HEAD is not on @{push}", async () => {
-    const repo = gitFixture();
-    try {
-      writeFileSync(join(repo, "extra.txt"), "x\n");
-      git(repo, "add", "extra.txt");
-      git(repo, "commit", "-m", "local only");
-      writeFileSync(join(repo, "test.log"), "ok\n");
-      const { error, log } = await execute(run(repo));
-      assert.ok(error instanceof OpsError);
-      assert.match(error.message, /not on the push remote/);
-      assert.ok(!log.some((line) => line.includes("alchemy-runner signoff")));
+      writeFileSync(join(repo, "status.txt"), "edited\n");
+      const { error, log, inputs } = await execute(run(repo));
+      assert.equal(error, undefined);
+      assert.ok(!log.some((line) => line.endsWith("alchemy-runner version")));
+      const record = JSON.parse(inputs.at(-1)!);
+      assert.equal(record.app, "signoff-probe");
+      assert.equal(record.tree, git(repo, "rev-parse", "HEAD^{tree}").trim());
+      assert.equal(record.commit, git(repo, "rev-parse", "HEAD").trim());
+      assert.equal(record.summary.trim(), "12 pass");
     } finally {
       rmSync(join(repo, ".."), { recursive: true, force: true });
     }
   });
 
-  it("refuses an empty log file", async () => {
-    const repo = gitFixture();
+  it("records nothing when scripts/verify fails", async () => {
+    const repo = gitFixture("#!/bin/sh\necho 1 fail\nexit 1\n");
     try {
-      writeFileSync(join(repo, "test.log"), "");
       const { error, log } = await execute(run(repo));
       assert.ok(error instanceof OpsError);
-      assert.match(error.message, /empty/);
-      assert.ok(!log.some((line) => line.includes("alchemy-runner signoff")));
+      assert.match(error.message, /scripts\/verify exited 1/);
+      assert.ok(!sent(log));
+    } finally {
+      rmSync(join(repo, ".."), { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an app without scripts/verify", async () => {
+    const repo = gitFixture(undefined);
+    try {
+      const { error, log } = await execute(run(repo));
+      assert.ok(error instanceof OpsError);
+      assert.match(error.message, /no scripts\/verify/);
+      assert.ok(!sent(log));
+    } finally {
+      rmSync(join(repo, ".."), { recursive: true, force: true });
+    }
+  });
+
+  it("install writes its hook, and refuses to replace another", async () => {
+    const repo = gitFixture(undefined);
+    try {
+      const path = join(repo, ".git/hooks/pre-push");
+      assert.equal((await execute(run("install", repo))).error, undefined);
+      assert.match(readFileSync(path, "utf8"), /exec ops signoff pre-push/);
+      assert.equal(statSync(path).mode & 0o111, 0o111);
+      assert.equal((await execute(run("install", repo))).error, undefined);
+      writeFileSync(path, "#!/bin/sh\nexit 0\n");
+      const { error } = await execute(run("install", repo));
+      assert.ok(error instanceof OpsError);
+      assert.match(error.message, /another pre-push hook/);
+      assert.equal(readFileSync(path, "utf8"), "#!/bin/sh\nexit 0\n");
     } finally {
       rmSync(join(repo, ".."), { recursive: true, force: true });
     }
@@ -115,20 +163,20 @@ const cartridgeJson = JSON.stringify(
   2,
 );
 
-/** A real git repo with a bare push remote and HEAD already on @{push}. */
-const gitFixture = (): string => {
+/**
+ * A real git repo with one commit: the cartridge, status.txt = "ok", and `verify` as an
+ * executable scripts/verify when given. The caller removes its parent folder.
+ */
+const gitFixture = (verify: string | undefined): string => {
   const root = mkdtempSync(join(tmpdir(), "ops-signoff-"));
-  const bare = join(root, "remote.git");
   const repo = join(root, "app");
-  mkdirSync(repo);
-  git(root, "init", "--bare", bare);
-  git(repo, "init", "-b", "main");
+  mkdirSync(join(repo, "scripts"), { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
   writeFileSync(join(repo, "cartridge.json"), `${cartridgeJson}\n`);
-  writeFileSync(join(repo, "test.log"), "ok\n");
-  git(repo, "add", "cartridge.json");
-  git(repo, "commit", "-m", "init");
-  git(repo, "remote", "add", "origin", bare);
-  git(repo, "push", "-u", "origin", "main");
+  writeFileSync(join(repo, "status.txt"), "ok\n");
+  if (verify !== undefined) writeFileSync(join(repo, "scripts/verify"), verify, { mode: 0o755 });
+  git(repo, "add", ".");
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
   return repo;
 };
 
@@ -141,8 +189,8 @@ const git = (cwd: string, ...args: Array<string>) => {
 };
 
 /**
- * Run a program with a recording spawner and a site whose server is `ctl`. Signoff refusals
- * must not reach ssh; when they do, the host answers a fake id.
+ * Run a program with a recording spawner and a site whose server is `ctl`. ssh to the host
+ * is faked (a signoff answers id 1); every other program, git and the app's scripts, runs.
  */
 const execute = <A, E, R>(program: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -176,7 +224,7 @@ const execute = <A, E, R>(program: Effect.Effect<A, E, R>) =>
     Effect.runPromise,
   );
 
-const handle = (code: number, stdout: string) =>
+const handle = (code: number, stdout: string, all = stdout) =>
   Spawner.makeHandle({
     pid: Spawner.ProcessId(1),
     exitCode: Effect.succeed(Spawner.ExitCode(code)),
@@ -185,7 +233,7 @@ const handle = (code: number, stdout: string) =>
     stdin: Sink.drain,
     stdout: Stream.make(new TextEncoder().encode(stdout)),
     stderr: Stream.empty,
-    all: Stream.empty,
+    all: Stream.make(new TextEncoder().encode(all)),
     getInputFd: () => Sink.drain,
     getOutputFd: () => Stream.empty,
     unref: Effect.succeed(Effect.void),
@@ -206,12 +254,15 @@ const recordingSpawner = (log: Array<string>, inputs: Array<string>) =>
         if (Stream.isStream(stdin)) inputs.push(yield* Stream.mkString(Stream.decodeText(stdin)));
         if (line.endsWith("alchemy-runner version")) return handle(0, "abc123\n");
         if (line.endsWith("alchemy-runner signoff")) return handle(0, "1\n");
-        // Real git must run: fall through is wrong for a recording spawner. Call the real binary.
         const result = spawnSync(command.command, [...command.args], {
+          cwd: command.options.cwd,
           encoding: "utf8",
-          input: undefined,
         });
-        return handle(result.status ?? 1, result.stdout ?? "");
+        return handle(
+          result.status ?? 1,
+          result.stdout ?? "",
+          `${result.stdout ?? ""}${result.stderr ?? ""}`,
+        );
       }),
     ),
   );
