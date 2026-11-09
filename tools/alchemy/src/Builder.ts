@@ -1,15 +1,14 @@
 /**
- * Build an exported commit tree and push it to the cluster registry, tagged with its image
- * key. The workstation uses Docker (Local); a node named in site.toml uses rootless Podman
- * over one ssh call that receives the tree as a tar on stdin (Node). Both return the same
- * pinned reference `repository:key@digest`. The tag only names the tree for people; a
- * deploy pins the digest.
+ * Build an exported commit tree through the runner. The tree goes to the runner as a tar over
+ * ssh; the runner uploads it, builds it as a Nomad job on a worker node, checks the digest the
+ * job prints against the registry, and records it. Every image, from `ops release` or from a
+ * push, comes from that one build path with one set of limits. This returns the pinned
+ * reference `repository:key@digest`; the tag only names the tree for people, and a deploy pins
+ * the digest.
  */
-import { Array as Arr, Context, Effect, Layer, Option, Stream } from "effect";
-import { ChildProcess } from "effect/process";
-import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
-import { OpsError, output, quote, run } from "./Exec.ts";
-import { Site } from "./Site.ts";
+import { Context, Effect, FileSystem, Layer, Option, Stream } from "effect";
+import { OpsError, run } from "./Exec.ts";
+import { Remote } from "./Remote.ts";
 
 export interface BuildImage {
   readonly repository: string;
@@ -20,98 +19,50 @@ export interface BuildImage {
   readonly key: string;
 }
 
-/**
- * The file both builders build, named so they agree: Podman would otherwise prefer a
- * Containerfile in the same tree, and an app may keep one for another purpose.
- */
-const buildFile = "Dockerfile";
-
-/** Docker build and push on this machine from the exported tree. */
-const localBuild = (tree: string, image: BuildImage) =>
-  Effect.gen(function* () {
-    const tagged = `${image.repository}:${image.key}`;
-    yield* run("docker", ["build", "-f", `${tree}/${buildFile}`, "-t", tagged, tree]);
-    return yield* dockerPush(image.repository, tagged);
-  });
-
-/**
- * Push `tagged`, an image in this machine's Docker named `repository:tag`, and return
- * `repository:tag@digest`. Docker learns the digest from the registry during the push.
- */
-export const dockerPush = (repository: string, tagged: string) =>
-  Effect.gen(function* () {
-    // Without --quiet, docker prints its progress on stdout, where `ops image` prints only the
-    // reference to pin.
-    yield* output("docker", ["push", "--quiet", tagged]);
-    const digests = yield* output("docker", [
-      "inspect",
-      "--format",
-      "{{range .RepoDigests}}{{println .}}{{end}}",
-      tagged,
-    ]);
-    const pinned = yield* Arr.findFirst(digests.split("\n"), (digest) =>
-      digest.startsWith(`${repository}@`),
-    ).pipe(
-      Option.match({
-        onNone: () =>
-          Effect.fail(new OpsError({ message: `docker records no digest for ${tagged}` })),
-        onSome: Effect.succeed,
-      }),
-    );
-    const digest = pinned.slice(repository.length + 1);
-    return `${tagged}@${digest}`;
-  });
-
-/**
- * Rootless Podman on `host`: one ssh call whose stdin is a tar of the exported tree, which
- * builds, pushes, and prints the digest file. podman build prints its steps and the image ID
- * on stdout, so build and push write to stderr and stdout carries only the digest.
- */
-const nodeBuild = (host: string) => (tree: string, image: BuildImage) =>
-  Effect.gen(function* () {
-    const tagged = `${image.repository}:${image.key}`;
-    const spawner = yield* ChildProcessSpawner;
-    const remote = [
-      "tmp=$(mktemp)",
-      `trap 'rm -f "$tmp"' EXIT`,
-      `podman build -f ${buildFile} -t ${quote(tagged)} - >&2`,
-      `podman push --digestfile "$tmp" ${quote(tagged)} >&2`,
-      `cat "$tmp"`,
-    ].join(" && ");
-    const handle = yield* spawner
-      .spawn(
-        ChildProcess.make("tar", ["-C", tree, "-cf", "-", "."]).pipe(
-          ChildProcess.pipeTo(ChildProcess.make("ssh", [host, remote], { stderr: "inherit" })),
-        ),
-      )
-      .pipe(Effect.catchTag("PlatformError", (error) => Effect.fail(opsError(error))));
-    const text = yield* Stream.mkString(Stream.decodeText(handle.stdout)).pipe(
-      Effect.catchTag("PlatformError", (error) => Effect.fail(opsError(error))),
-    );
-    const code = yield* handle.exitCode.pipe(
-      Effect.catchTag("PlatformError", (error) => Effect.fail(opsError(error))),
-    );
-    if (code !== 0) {
-      return yield* new OpsError({
-        message: `tar | ssh ${host} exited ${code}`,
-      });
-    }
-    return `${tagged}@${text.trim()}`;
-  }).pipe(Effect.scoped);
-
-const opsError = (error: { readonly message: string }) => new OpsError({ message: error.message });
-
 export class Builder extends Context.Service<Builder>()("ops/Builder", {
   make: Effect.gen(function* () {
-    const node = yield* (yield* Site).buildNode;
-    return {
-      build: Option.match(node, {
-        onNone: () => localBuild,
-        onSome: (host) => nodeBuild(host),
-      }),
-    };
+    const remote = yield* Remote;
+    const fs = yield* FileSystem.FileSystem;
+
+    /**
+     * Send `tree` and wait for the build job. `memoryMaxMB` is the most memory the build may
+     * use, which the app's cartridge sets.
+     */
+    const build = Effect.fn("Builder.build")(function* (
+      tree: string,
+      image: BuildImage,
+      memoryMaxMB: number,
+    ) {
+      const tar = yield* fs.makeTempFileScoped({ suffix: ".tar" });
+      yield* run("tar", ["-C", tree, "-cf", tar, "."]);
+      const { size } = yield* fs.stat(tar);
+      // One request line, then the tar it counts: the runner's front end stores the tar and
+      // queues the build.
+      const request = JSON.stringify({
+        _tag: "build",
+        repository: image.repository,
+        key: image.key,
+        memoryMaxMB,
+        size: Number(size),
+      });
+      const id = yield* remote.build(
+        Stream.concat(Stream.make(new TextEncoder().encode(`${request}\n`)), fs.stream(tar)),
+      );
+      yield* remote.direct(["wait", `${id}`]);
+      const digest = yield* remote.findImage(image);
+      return yield* Option.match(digest, {
+        onNone: () =>
+          Effect.fail(
+            new OpsError({
+              message: `build job ${id} ended without recording an image for ${image.repository}:${image.key}`,
+            }),
+          ),
+        onSome: (value) => Effect.succeed(`${image.repository}:${image.key}@${value}`),
+      });
+    }, Effect.scoped);
+
+    return { build };
   }),
 }) {
-  /** Local when site.toml has no `[build] node`, otherwise Node on that host. */
   static readonly layer = Layer.effect(this, this.make);
 }

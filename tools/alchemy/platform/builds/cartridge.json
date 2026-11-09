@@ -1,0 +1,6 @@
+{
+  "apiVersion": "server-ansible/v2",
+  "name": "builds",
+  "objectStore": {},
+  "services": []
+}

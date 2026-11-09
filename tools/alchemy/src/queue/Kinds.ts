@@ -17,6 +17,7 @@ export const JobCommand = S.Literals([
   "place-queued",
   "dev-db",
   "dev-db-cluster",
+  "build",
 ]);
 export type JobCommand = typeof JobCommand.Type;
 

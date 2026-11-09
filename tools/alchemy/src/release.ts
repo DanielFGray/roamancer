@@ -13,6 +13,7 @@ import { deployStage, destroyStage } from "./Jobs.ts";
 import { Remote } from "./Remote.ts";
 import { imageDigest } from "./ReleaseImage.ts";
 import { commands as signoffCommands } from "./Signoff.ts";
+import { defaultBuildMemoryMB } from "./BuildLimits.ts";
 
 const folder = Argument.String("folder").pipe(
   Argument.withDescription(
@@ -115,7 +116,7 @@ const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string, tree: 
     yield* Console.log(`Reusing the image of tree ${head.image.key.slice(0, 12)}`);
     return pinnedImage(head, found.value);
   }
-  const pinnedRef = yield* (yield* Builder).build(tree, head.image);
+  const pinnedRef = yield* (yield* Builder).build(tree, head.image, head.memoryMaxMB);
   const digest = yield* Option.match(imageDigest(pinnedRef), {
     onNone: () =>
       Effect.fail(
@@ -125,7 +126,6 @@ const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string, tree: 
       ),
     onSome: Effect.succeed,
   });
-  yield* remote.recordImage(head.image, digest);
   return pinnedImage(head, digest);
 });
 
@@ -150,7 +150,8 @@ const headImage = Effect.fn("headImage")(function* (folder: string, tree: string
   const repository = yield* oneRepository(cartridge, cartridgePath(tree));
   const commit = (yield* output("git", ["-C", folder, "rev-parse", "--short", "HEAD"])).trim();
   const key = (yield* output("git", ["-C", folder, "rev-parse", "HEAD^{tree}"])).trim();
-  return { name: cartridge.name, commit, image: { repository, key } };
+  const memoryMaxMB = cartridge.build?.memoryMB ?? defaultBuildMemoryMB;
+  return { name: cartridge.name, commit, image: { repository, key }, memoryMaxMB };
 });
 
 const pinnedImage = (

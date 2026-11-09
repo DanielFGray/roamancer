@@ -25,7 +25,7 @@ export type Execute = (
 ) => Effect.Effect<
   void,
   LoginRequired | JobExit | JobCommandError,
-  FileSystem.FileSystem | ChildProcessSpawner
+  FileSystem.FileSystem | ChildProcessSpawner | Store
 >;
 
 const readToken = (paths: Paths) =>

@@ -16,7 +16,6 @@ const SiteFile = S.Struct({
     registryPort: S.optionalKey(S.Number),
     nodes: S.optionalKey(S.Record(S.String, S.String)),
   }),
-  build: S.optionalKey(S.Struct({ node: S.String })),
   devdb: S.optionalKey(S.Struct({ node: S.String })),
 });
 
@@ -46,7 +45,7 @@ export class Site extends Context.Service<Site>()("ops/Site", {
         Effect.mapError(
           (cause) =>
             new OpsError({
-              message: `${file} must set cluster.server, cluster.lanAddress and, when present, [build] node and [devdb] node: ${cause}`,
+              message: `${file} must set cluster.server, cluster.lanAddress and, when present, [devdb] node: ${cause}`,
             }),
         ),
       );
@@ -58,14 +57,6 @@ export class Site extends Context.Service<Site>()("ops/Site", {
       if (Option.isSome(override)) return override.value;
       return (yield* siteFile).cluster.server;
     });
-
-    /**
-     * The build node in `[build] node` of the site.toml, when set. Absence means the
-     * workstation builds with Docker.
-     */
-    const buildNode = Effect.map(siteFile, (site) =>
-      Option.fromNullishOr(site.build).pipe(Option.map((build) => build.node)),
-    );
 
     /**
      * The LAN address of the node in `[devdb] node`, where Nomad binds the dev Postgres
@@ -97,7 +88,7 @@ export class Site extends Context.Service<Site>()("ops/Site", {
       return `${registryName}:${registryPort}`;
     });
 
-    return { folder, host, buildNode, devDbAddress, registry };
+    return { folder, host, devDbAddress, registry };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);

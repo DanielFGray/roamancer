@@ -35,15 +35,15 @@ export const run = Effect.fn("Exec.run")(function* (
 
 /**
  * A program's standard output; its standard error stays on this terminal. `input`, when
- * given, is its standard input.
+ * given, is its standard input: text, or bytes to stream.
  */
 export const output = Effect.fn("Exec.output")(function* (
   command: string,
   args: ReadonlyArray<string>,
-  input?: string,
+  input?: string | Stream.Stream<Uint8Array, PlatformError>,
 ) {
   const spawner = yield* ChildProcessSpawner;
-  const stdin = input === undefined ? undefined : Stream.make(new TextEncoder().encode(input));
+  const stdin = typeof input === "string" ? Stream.make(new TextEncoder().encode(input)) : input;
   const handle = yield* spawner
     .spawn(ChildProcess.make(command, args, { stdin, stderr: "inherit" }))
     .pipe(Effect.mapError(couldNotStart(command)));

@@ -28,6 +28,9 @@ import { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import type { PlatformError } from "effect/PlatformError";
 import * as path from "node:path";
+import * as BuildJobs from "./BuildJob.ts";
+import * as BuildStoreLive from "./BuildStore.ts";
+import * as RegistryLive from "./Registry.ts";
 import * as Cartridge from "./Cartridge.ts";
 import { HttpApiClient } from "effect/http-api";
 import * as Deployments from "./Deployments.ts";
@@ -48,6 +51,7 @@ import * as QueueRun from "./queue/Run.ts";
 import * as QueueSignoff from "./queue/Signoff.ts";
 import type {
   DeploySubmit,
+  BuildSubmit,
   Job as QueuedJob,
   RollbackSubmit,
   StageSubmit,
@@ -57,6 +61,7 @@ import * as StagelessJobs from "./queue/StagelessJobs.ts";
 import * as DevDbHost from "./devdb/Host.ts";
 import { layer as queueStoreLayer } from "./queue/Store.ts";
 import * as QueueSubmit from "./queue/Submit.ts";
+import * as QueueUpload from "./queue/Upload.ts";
 import * as QueueUnits from "./queue/Units.ts";
 
 /** A failure the operator can act on: printed as its message alone, without a stack trace. */
@@ -137,9 +142,10 @@ const readOnlyNomad = (file: string) =>
     ),
   );
 
-/** OpenBao, Nomad and Deployments over `env`, for a job's body. */
+/** OpenBao, Nomad, Deployments and the build services over `env`, for a job's body. */
 const jobServices = (env: Record<string, string>) =>
-  Layer.mergeAll(OpenBao.layer, NomadLive.layer(), Deployments.layer()).pipe(
+  Layer.mergeAll(BuildStoreLive.layer, RegistryLive.layer).pipe(
+    Layer.provideMerge(Layer.mergeAll(OpenBao.layer, NomadLive.layer(), Deployments.layer())),
     Layer.provideMerge(FetchHttpClient.layer),
     Layer.provideMerge(
       ConfigProvider.layerAdd(ConfigProvider.fromEnvRecord(env), {
@@ -159,6 +165,7 @@ const makeCli = () =>
       wait,
       signoff,
       signoffs,
+      build,
       version,
       login,
       secret,
@@ -201,6 +208,22 @@ const signoff = Command.make(
   ),
 );
 
+const build = Command.make(
+  "build",
+  {},
+  Effect.fn(function* () {
+    const stdio = yield* Stdio.Stdio;
+    const id = yield* QueueUpload.forwardBuild(stdio.stdin, QueuePaths.production.socket).pipe(
+      Effect.mapError((error) => new CliError({ message: error.message })),
+    );
+    yield* Console.log(id);
+  }),
+).pipe(
+  Command.withDescription(
+    "Queue a build: stdin is one build request JSON line, then the exported tree's tar; print the job id",
+  ),
+);
+
 const signoffs = Command.make(
   "signoffs",
   { app: Argument.String("app").pipe(Argument.withDescription("The cartridge name to list")) },
@@ -225,9 +248,9 @@ const wait = Command.make(
   ),
 );
 
-/** Send one image request to the runner socket and fail on its error answer. */
+/** Send the image request to the runner socket and fail on its error answer. */
 const imageRequest = Effect.fn("imageRequest")(function* (
-  request: typeof QueueProtocol.RecordImage.Type | typeof QueueProtocol.FindImage.Type,
+  request: typeof QueueProtocol.FindImage.Type,
 ) {
   const answer = yield* queueRequest(QueuePaths.production.socket, request).pipe(
     Effect.mapError((error) => new CliError({ message: error.message })),
@@ -235,23 +258,6 @@ const imageRequest = Effect.fn("imageRequest")(function* (
   if (answer._tag === "error") return yield* new CliError({ message: answer.message });
   return answer;
 });
-
-const imageRecord = Command.make(
-  "record",
-  {},
-  Effect.fn(function* () {
-    const stdio = yield* Stdio.Stdio;
-    const text = yield* Stream.mkString(Stream.decodeText(stdio.stdin));
-    const record = yield* S.decodeUnknownEffect(S.fromJsonString(QueueProtocol.RecordImage))(
-      text.trim(),
-    ).pipe(Effect.mapError((error) => new CliError({ message: `image record: ${error.message}` })));
-    yield* imageRequest(record);
-  }),
-).pipe(
-  Command.withDescription(
-    "Record the pushed digest of an image key; one recordImage JSON request on stdin",
-  ),
-);
 
 const imageFind = Command.make(
   "find",
@@ -273,8 +279,8 @@ const imageFind = Command.make(
 );
 
 const image = Command.make("image").pipe(
-  Command.withDescription("Record and find the image each tree of an app was built as"),
-  Command.withSubcommands([imageRecord, imageFind]),
+  Command.withDescription("Find the image each tree of an app was built as"),
+  Command.withSubcommands([imageFind]),
 );
 
 const version = Command.make(
@@ -631,6 +637,8 @@ export const executeQueuedJob: QueueRun.Execute = (job: QueuedJob, env) =>
           return yield* StagelessJobs.stageImage(submit.name, submit.stable, submit.expect);
         case "place-queued":
           return yield* StagelessJobs.placeQueued();
+        case "build":
+          return yield* buildJob(submit, job.id);
         case "dev-db":
           return yield* DevDbHost.devDbJob(submit);
         case "dev-db-cluster":
@@ -916,3 +924,27 @@ const main = Effect.gen(function* () {
 );
 
 if (import.meta.main) main.pipe(BunRuntime.runMain);
+
+/**
+ * A `build` job: build the tree the front end stored, record its digest, and remove the spool
+ * file whatever the outcome. The registry's name and CA folder are site settings that the
+ * unit's environment carries.
+ */
+const buildJob = Effect.fn("buildJob")(function* (submit: BuildSubmit, jobId: number) {
+  const site = {
+    registry: yield* Config.String("REGISTRY"),
+    registryCaDir: yield* Config.String("REGISTRY_CA_DIR"),
+  };
+  const fs = yield* FileSystem.FileSystem;
+  const tarFile = QueuePaths.spoolFile(QueuePaths.production, submit.spool);
+  yield* BuildJobs.runBuild(
+    {
+      repository: submit.repository,
+      key: submit.key,
+      jobId,
+      tarFile,
+      memoryMaxMB: submit.memoryMaxMB,
+    },
+    site,
+  ).pipe(Effect.ensuring(fs.remove(tarFile, { force: true }).pipe(Effect.ignore)));
+});

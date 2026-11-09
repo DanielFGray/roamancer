@@ -30,7 +30,7 @@ The runner uploads the exported tree to a `builds` bucket in Garage and gives th
 
 ### Build: a Nomad batch job in the builder's Podman, on worker nodes
 
-Today `nodeBuild` (`Builder.ts`) runs an app's Dockerfile with rootless Podman as the operator, over ssh from the workstation. An unattended build runs code from anyone who can push to `main`, so it runs apart from both.
+An unattended build runs code from anyone who can push to `main`, so it runs apart from the workstation and from the operator's account.
 
 The build is a Nomad batch job. Nomad places it as it places every job: the scheduler algorithm is `spread` (`nixos/cynic/nomad-acl.nix`), so the build goes to the least-loaded eligible node, and a node added later takes builds with no change here. The image goes to the registry, which every node pulls from, and the runner's record maps the tree to the digest wherever the build ran.
 
@@ -46,7 +46,7 @@ Isolation:
 
 The runner reads the digest that the job prints, with its own Nomad token. It treats that output as untrusted: it records a digest only after the registry answers for `<repository>@<digest>`, and only under the repository and key it chose for that job. The builder cannot reach the runner socket, so a Dockerfile cannot record an image under another app's tree.
 
-`ops release` and `ops stage` use the same build job: `ops` sends the exported tree to the runner, which uploads it and submits the job. The ssh build as the operator (`nodeBuild`, `[build] node` in site.toml) and the Docker build on the workstation (`localBuild`) are then removed, so every image, manual or unattended, comes from one build path with one set of limits.
+`ops release` and `ops stage` use the same build job: `ops` sends the exported tree to the runner, which uploads it and submits the job. The ssh build as the operator and the Docker build on the workstation no longer exist, so every image, manual or unattended, comes from one build path with one set of limits.
 
 gVisor was measured and not chosen. Buildah fails inside it (no `/proc/<pid>/setgroups`), Kaniko builds dfg.rocks there in 407 s, and the container's memory limit is not enforced under rootless Podman. It would let builds run on cynic.
 

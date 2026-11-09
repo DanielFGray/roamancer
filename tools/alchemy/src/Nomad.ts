@@ -196,7 +196,7 @@ export type NodeStats = typeof NodeStatsSchema.Type;
 export type LogStream = "stdout" | "stderr";
 
 type JobRequest = {
-  readonly Job: ReturnType<typeof toJobSpec> | ReleaseJobSpec;
+  readonly Job: ReturnType<typeof toJobSpec> | ReleaseJobSpec | Readonly<Record<string, unknown>>;
   readonly Diff?: boolean;
   readonly EnforceIndex?: boolean;
   readonly JobModifyIndex?: number;
@@ -221,6 +221,13 @@ export class Nomad extends Context.Service<
       name: string,
       job: ReleaseJobSpec,
       expectedModifyIndex: number,
+    ) => Effect.Effect<Registration, NomadError>;
+    /**
+     * Run a batch job from its Nomad JSON spec, such as a build. It carries no Alchemy owner
+     * metadata, so no Alchemy resource adopts it or plans its removal.
+     */
+    readonly registerBatch: (
+      spec: Readonly<Record<string, unknown>>,
     ) => Effect.Effect<Registration, NomadError>;
     readonly deployment: (name: string) => Effect.Effect<Option.Option<Deployment>, NomadError>;
     readonly service: (name: string) => Effect.Effect<ReadonlyArray<ServiceLocation>, NomadError>;
@@ -357,6 +364,10 @@ export const layer = () =>
             EnforceIndex: true,
             JobModifyIndex: expectedModifyIndex,
           }).pipe(Effect.flatMap((response) => decode("registerRelease", response, Registration))),
+        registerBatch: (spec) =>
+          requestJson("registerBatch", "POST", "/v1/jobs", { Job: spec }).pipe(
+            Effect.flatMap((response) => decode("registerBatch", response, Registration)),
+          ),
         deployment: (name) =>
           lookup("deployment", `/v1/job/${encodeURIComponent(name)}/deployment`, Deployment),
         service: (name) =>

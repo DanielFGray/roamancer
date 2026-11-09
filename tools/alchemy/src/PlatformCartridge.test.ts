@@ -101,3 +101,17 @@ describe("platform ingress cartridge", () => {
     assert.ok(args.includes("--entrypoints.web.asDefault=true"));
   });
 });
+
+describe("platform builds cartridge", () => {
+  it("declares the builds bucket and a key named builds, which the runner reads at secret/data/garage/builds", async () => {
+    const cartridge = await Effect.runPromise(
+      decodeFile(
+        fileURLToPath(new URL("../platform/builds/cartridge.json", import.meta.url)),
+        Cartridge,
+      ).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    assert.deepEqual(expand(cartridge), [
+      { _tag: "GarageBucket", bucket: { server: "garage", bucket: "builds", key: "builds" } },
+    ]);
+  });
+});

@@ -1,22 +1,40 @@
 import { describe, it } from "node:test";
 import { spawnSync } from "node:child_process";
 import * as assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as BunServices from "@effect/platform-bun/BunServices";
-import { ConfigProvider, Effect, Fiber, Layer, Option, Schedule, Sink, Stream } from "effect";
+import {
+  ConfigProvider,
+  Effect,
+  Fiber,
+  FileSystem as FileSystemModule,
+  Layer,
+  Option,
+  Schedule,
+  Sink,
+  Stream,
+} from "effect";
 import { ChildProcess } from "effect/process";
 import * as Spawner from "effect/process/ChildProcessSpawner";
 import { request } from "./Client.ts";
 import { finished } from "./Finished.ts";
-import { under, type Paths } from "./Paths.ts";
+import { spoolFile, under, type Paths } from "./Paths.ts";
 import { decodeRequest } from "./Protocol.ts";
 import { runJob } from "./Run.ts";
 import { unitName } from "./Schema.ts";
-import { layerServer, recover, serve } from "./Serve.ts";
+import { layerServer, recover, serve, sweepSpool } from "./Serve.ts";
 import { tryStart } from "./Starter.ts";
 import { layer as storeLayer, Store } from "./Store.ts";
 import { submitJob, waitJob } from "./Submit.ts";
@@ -66,7 +84,7 @@ const storeUnits = (paths: Paths, units: Layer.Layer<Units>) =>
 const withStore = <A, E>(
   paths: Paths,
   units: Layer.Layer<Units>,
-  effect: Effect.Effect<A, E, Store | Units>,
+  effect: Effect.Effect<A, E, Store | Units | FileSystemModule.FileSystem>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(storeUnits(paths, units))));
 
 const runServe = async (paths: Paths, units: Layer.Layer<Units>) => {
@@ -324,13 +342,17 @@ describe("queue signoffs", () => {
     }
   });
 
-  it("refuses an image record whose key or digest is not a hash", () => {
-    const record = { _tag: "recordImage", repository: "r/app", key: "a".repeat(40) };
-    assert.throws(() => decodeRequest({ ...record, digest: "latest" }));
-    assert.throws(() =>
-      decodeRequest({ ...record, key: "main", digest: `sha256:${"b".repeat(64)}` }),
-    );
+  it("refuses an image lookup whose key is not a hash, and has no request that records an image", () => {
     assert.throws(() => decodeRequest({ _tag: "findImage", repository: "r/app", key: "HEAD" }));
+    // Only the runner's build job records an image, after the registry answered for it.
+    assert.throws(() =>
+      decodeRequest({
+        _tag: "recordImage",
+        repository: "r/app",
+        key: "a".repeat(40),
+        digest: `sha256:${"b".repeat(64)}`,
+      }),
+    );
   });
 });
 
@@ -571,7 +593,7 @@ describe("queue socket", () => {
     }
   });
 
-  it("finds the digest recorded for an image key, and a later record replaces it", async () => {
+  it("finds the digest the store recorded for an image key, and a later record replaces it", async () => {
     const { root, paths } = tempRoot();
     const server = await runServe(paths, fakeUnits().layer);
     const image = { repository: "registry.cluster:5000/shop", key: "c".repeat(40) };
@@ -579,10 +601,11 @@ describe("queue socket", () => {
     try {
       assert.deepEqual(await find(), { _tag: "imageFound", digest: null });
       for (const digest of [`sha256:${"1".repeat(64)}`, `sha256:${"2".repeat(64)}`]) {
-        const recorded = await Effect.runPromise(
-          request(paths.socket, { _tag: "recordImage", ...image, digest }),
+        await withStore(
+          paths,
+          fakeUnits().layer,
+          Effect.flatMap(Store, (store) => store.recordImage({ ...image, digest })),
         );
-        assert.deepEqual(recorded, { _tag: "imageRecorded" });
         assert.deepEqual(await find(), { _tag: "imageFound", digest });
       }
       const other = await Effect.runPromise(
@@ -1256,5 +1279,95 @@ describe("queue protocol deploy", () => {
     });
     assert.equal(ok._tag, "submit");
     if (ok._tag === "submit" && ok.command === "deploy") assert.equal(ok.planJobId, 3);
+  });
+});
+
+describe("build upload", () => {
+  const upload = {
+    _tag: "build",
+    repository: "registry.cluster:5000/shop",
+    key: "e".repeat(40),
+    memoryMaxMB: 2048,
+  };
+
+  /** Send the request line and `bytes` raw bytes, then read the one response line. */
+  const send = (paths: Paths, header: object, bytes: Buffer) =>
+    new Promise<{ _tag: string; id?: number; message?: string }>((resolve, reject) => {
+      const sock = createConnection(paths.socket);
+      let raw = "";
+      sock.on("data", (chunk) => {
+        raw += chunk.toString("utf8");
+        if (raw.includes("\n")) {
+          sock.end();
+          resolve(JSON.parse(raw));
+        }
+      });
+      sock.on("error", reject);
+      sock.write(`${JSON.stringify(header)}\n`);
+      sock.write(bytes);
+    });
+
+  it("stores the tar byte for byte under the spool id and queues a build job that names it", async () => {
+    const { root, paths } = tempRoot();
+    const server = await runServe(paths, fakeUnits().layer);
+    // Every byte value, so a text decoder anywhere on the path would change the file.
+    const tar = Buffer.from(Array.from({ length: 70_000 }, (_, index) => index % 256));
+    try {
+      const answer = await send(paths, { ...upload, size: tar.length }, tar);
+      assert.equal(answer._tag, "submitted");
+      const job = await withStore(
+        paths,
+        fakeUnits().layer,
+        Effect.flatMap(Store, (store) => store.get(answer.id!)),
+      );
+      assert.ok(job.submit.command === "build");
+      assert.equal(job.submit.repository, upload.repository);
+      assert.deepEqual(readFileSync(spoolFile(paths, job.submit.spool)), tar);
+    } finally {
+      await server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an upload longer than its size, and leaves no file in the spool", async () => {
+    const { root, paths } = tempRoot();
+    const server = await runServe(paths, fakeUnits().layer);
+    try {
+      const answer = await send(paths, { ...upload, size: 10 }, Buffer.alloc(50, 1));
+      assert.equal(answer._tag, "error");
+      assert.deepEqual(readdirSync(paths.spool), []);
+    } finally {
+      await server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("sweeps spool files that no live build job names", async () => {
+    const { root, paths } = tempRoot();
+    mkdirSync(paths.spool, { recursive: true });
+    const live = "11111111-1111-1111-1111-111111111111";
+    const orphan = "22222222-2222-2222-2222-222222222222";
+    writeFileSync(spoolFile(paths, live), "x");
+    writeFileSync(spoolFile(paths, orphan), "x");
+    try {
+      await withStore(
+        paths,
+        fakeUnits().layer,
+        Effect.gen(function* () {
+          const store = yield* Store;
+          yield* store.enqueue({
+            command: "build",
+            repository: upload.repository,
+            key: upload.key,
+            spool: live,
+            memoryMaxMB: 2048,
+          });
+          yield* sweepSpool(paths);
+        }),
+      );
+      assert.deepEqual(readdirSync(paths.spool), [`${live}.tar`]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
