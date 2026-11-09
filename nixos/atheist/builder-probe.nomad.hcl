@@ -31,12 +31,20 @@ job "builder-probe" {
       config {
         image   = var.image
         socket  = "builder"
-        # The node's registry CA folder (site.toml registryCaDir), read-only.
-        volumes = ["/var/lib/registry-ca:/etc/containers/certs.d/registry.cluster:5000:ro"]
+        # The node's registry CA folder (site.toml registryCaDir), read-only. A volumes
+        # string cannot hold the colon in certs.d/registry.cluster:5000, so the script
+        # links the folder there, as the hosts' /etc/containers/certs.d does.
+        volumes = ["/var/lib/registry-ca:/run/registry-ca:ro"]
         command = "/bin/sh"
         args = [
           "-ec",
-          "printf 'FROM scratch\\nCOPY Dockerfile /\\n' > /tmp/Dockerfile; buildah bud --isolation chroot --storage-driver vfs -t registry.cluster:5000/probe:probe /tmp; buildah push --storage-driver vfs registry.cluster:5000/probe:probe docker://registry.cluster:5000/probe:probe",
+          <<-EOT
+          mkdir -p /etc/containers/certs.d
+          ln -s /run/registry-ca /etc/containers/certs.d/registry.cluster:5000
+          printf 'FROM busybox\nRUN echo probe > /probe\n' > /tmp/Dockerfile
+          buildah bud --isolation chroot --storage-driver vfs -t registry.cluster:5000/probe:probe /tmp
+          buildah push --storage-driver vfs registry.cluster:5000/probe:probe docker://registry.cluster:5000/probe:probe
+          EOT
         ]
       }
 
