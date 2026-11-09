@@ -30,6 +30,8 @@ import type { PlatformError } from "effect/PlatformError";
 import * as path from "node:path";
 import * as BuildJobs from "./BuildJob.ts";
 import * as BuildStoreLive from "./BuildStore.ts";
+import * as Policy from "./Policy.ts";
+import * as Reconcile from "./Reconcile.ts";
 import * as RegistryLive from "./Registry.ts";
 import * as Cartridge from "./Cartridge.ts";
 import { HttpApiClient } from "effect/http-api";
@@ -53,6 +55,7 @@ import type {
   DeploySubmit,
   BuildSubmit,
   Job as QueuedJob,
+  ReconcileSubmit,
   RollbackSubmit,
   StageSubmit,
 } from "./queue/Schema.ts";
@@ -175,6 +178,7 @@ const makeCli = () =>
       queue,
       job,
       image,
+      reconcile,
     ]),
   );
 
@@ -608,9 +612,11 @@ export const executeQueuedJob: QueueRun.Execute = (job: QueuedJob, env) =>
     );
     const jobEnv = { ...controller, ...env };
     yield* Effect.gen(function* () {
+      const submit = job.submit;
+      // Reconcile records a missing login as its outcome, so it checks the token itself.
+      if (submit.command === "reconcile") return yield* reconcileJob(submit, job.id, jobEnv);
       const bao = yield* OpenBao;
       yield* bao.checkToken().pipe(Effect.catchTag("OpenBaoError", () => new LoginRequired()));
-      const submit = job.submit;
       switch (submit.command) {
         case "plan":
         case "deploy":
@@ -713,12 +719,13 @@ export const planOrDeploy = Effect.fn("planOrDeploy")(function* (
   const cartridgeFile = env["CARTRIDGE_FILE"];
   const origin = env["ORIGIN"];
   const revision = env["REVISION"];
+  const signoff = env["SIGNOFF"] === undefined ? null : Number(env["SIGNOFF"]);
   const recorded = cartridgeFile !== undefined && origin !== undefined && revision !== undefined;
   if (recorded) yield* checkDeployment(stage, cartridgeFile, origin, revision);
   yield* checkSecrets(stage, cartridgeFile);
   yield* runAlchemy(stageArgv(command, stage), env);
   if (recorded && command === "deploy") {
-    yield* recordDeployment(stage, cartridgeFile, origin, revision);
+    yield* recordDeployment(stage, cartridgeFile, origin, revision, signoff);
   }
 });
 
@@ -829,10 +836,11 @@ const recordDeployment = Effect.fn("recordDeployment")(function* (
   file: string,
   origin: string,
   revision: string,
+  signoff: number | null,
 ) {
   const sent = yield* sentDeployment(name, file, origin, revision);
   const deployments = yield* Deployments.Deployments;
-  const recorded = yield* deployments.record({ name, ...sent });
+  const recorded = yield* deployments.record({ name, ...sent, signoff });
   yield* Console.log(`Recorded deployment ${recorded.id} of ${name} at ${recorded.revision}.`);
 });
 
@@ -915,6 +923,104 @@ const runAlchemy = Effect.fn("cli.runAlchemy")(function* (
   if (code !== 0) return yield* new AlchemyFailed({ code });
 });
 
+/** The registry's name and CA folder, which the job unit's environment carries (nixos/modules/alchemy-runner.nix). */
+const buildSite = Effect.all({
+  registry: Config.String("REGISTRY"),
+  registryCaDir: Config.String("REGISTRY_CA_DIR"),
+});
+
+/**
+ * A `reconcile` job: release the head of the app's `main` when Reconcile.decide allows it.
+ * It deploys through `planOrDeploy`, as `ops release` does, with the job's `env` plus the
+ * pinned cartridge and the commit.
+ */
+const reconcileJob = Effect.fn("reconcileJob")(function* (
+  submit: ReconcileSubmit,
+  jobId: number,
+  env: Record<string, string>,
+) {
+  const paths = QueuePaths.production;
+  const bao = yield* OpenBao;
+  const context = yield* Effect.context<
+    ChildProcessSpawner | FileSystem.FileSystem | OpenBao | Deployments.Deployments
+  >();
+  yield* Reconcile.reconcileApp(submit.app, {
+    policy: yield* Policy.load(),
+    jobId,
+    cacheDir: paths.reconcileCache,
+    site: yield* buildSite,
+    gitEnvironment: (app) => Reconcile.sshEnvironment(Reconcile.keyFile(paths.deployKeys, app)),
+    // An absent, expired or revoked token all read as "run ops login".
+    tokenValid: bao.checkToken().pipe(
+      Effect.exit,
+      Effect.map((exit) => exit._tag === "Success"),
+    ),
+    deploy: (app, extra) =>
+      planOrDeploy("deploy", app, { ...env, ...extra }).pipe(Effect.provide(context)),
+  });
+});
+
+const reconcileEnqueue = Command.make(
+  "enqueue",
+  {},
+  Effect.fn(function* () {
+    // One job per app the policy releases unattended. The front end hands back the job an
+    // app already has waiting or running, so a slow release is not queued twice.
+    const policy = yield* Policy.load().pipe(
+      Effect.mapError((error) => new CliError({ message: `policy: ${error.message}` })),
+    );
+    yield* Effect.forEach(
+      Policy.autoApps(policy),
+      ({ app }) =>
+        QueueSubmit.submitJob(
+          JSON.stringify({ _tag: "submit", command: "reconcile", app }),
+          QueuePaths.production.socket,
+        ).pipe(
+          Effect.flatMap((id) => Console.log(`${app}: job ${id}`)),
+          Effect.mapError((error) => new CliError({ message: `${app}: ${error.message}` })),
+        ),
+      { discard: true },
+    );
+  }),
+).pipe(
+  Command.withDescription("Queue one reconcile job for each app the policy releases on a push"),
+);
+
+const reconcileKey = Command.make(
+  "key",
+  { app: Argument.String("app").pipe(Argument.withDescription("An app in the site policy")) },
+  Effect.fn(function* ({ app }) {
+    const policy = yield* Policy.load().pipe(
+      Effect.mapError((error) => new CliError({ message: `policy: ${error.message}` })),
+    );
+    if (!Policy.apps(policy).some((entry) => entry.app === app)) {
+      return yield* new CliError({
+        message: `'${app}' is not in the site policy (policy.toml). Add it and run \`ops rebuild\`.`,
+      });
+    }
+    const fs = yield* FileSystem.FileSystem;
+    const file = `${Reconcile.keyFile(QueuePaths.production.deployKeys, app)}.pub`;
+    const key = yield* fs.readFileString(file).pipe(
+      Effect.mapError(
+        () =>
+          new CliError({
+            message: `${file} does not exist yet. The alchemy-deploy-keys service makes it on the next \`ops rebuild\`.`,
+          }),
+      ),
+    );
+    yield* Console.log(key.trim());
+  }),
+).pipe(
+  Command.withDescription(
+    "Print an app's public deploy key, to add to GitHub as a read-only deploy key",
+  ),
+);
+
+const reconcile = Command.make("reconcile").pipe(
+  Command.withDescription("Release pushes to an app's main branch"),
+  Command.withSubcommands([reconcileEnqueue, reconcileKey]),
+);
+
 const main = Effect.gen(function* () {
   const args = yield* (yield* Stdio.Stdio).args;
   yield* Command.runWith(makeCli(), { version: "1" })(args);
@@ -931,10 +1037,7 @@ if (import.meta.main) main.pipe(BunRuntime.runMain);
  * unit's environment carries.
  */
 const buildJob = Effect.fn("buildJob")(function* (submit: BuildSubmit, jobId: number) {
-  const site = {
-    registry: yield* Config.String("REGISTRY"),
-    registryCaDir: yield* Config.String("REGISTRY_CA_DIR"),
-  };
+  const site = yield* buildSite;
   const fs = yield* FileSystem.FileSystem;
   const tarFile = QueuePaths.spoolFile(QueuePaths.production, submit.spool);
   yield* BuildJobs.runBuild(

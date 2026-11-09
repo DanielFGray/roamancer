@@ -28,11 +28,12 @@ import type {
   Health,
   JobStatus,
   NodeStatus,
+  ReconcileOutcome,
   RunnerJob,
   Snapshot,
 } from "./fleet/Snapshot.ts";
 import { type Job, subject } from "./queue/Schema.ts";
-import { Store } from "./queue/Store.ts";
+import { type Reconcile, Store } from "./queue/Store.ts";
 
 const runnerJobs = 20;
 
@@ -45,12 +46,13 @@ export const snapshot = Effect.fn("FleetStatus.snapshot")(function* () {
   const state = yield* yield* State;
   // Both sections read the stages: where jobs answer, and where dashboards open.
   const stages = yield* Effect.cached(DeployedStages.readStages(state));
-  const [jobs, nodes, apps, runner, dashboards, endpoints] = yield* Effect.all(
+  const [jobs, nodes, apps, runner, reconciles, dashboards, endpoints] = yield* Effect.all(
     [
       available(readJobs(nomad, allocations)),
       available(readNodes(nomad, allocations)),
       available(deployments.newest().pipe(Effect.flatMap(Effect.forEach(appRelease)))),
       available(store.list({ limit: runnerJobs }).pipe(Effect.map(Arr.map(runnerJob)))),
+      available(store.listReconciles().pipe(Effect.map(Arr.map(reconcileOutcome)))),
       available(Effect.flatMap(stages, DeployedStages.dashboards)),
       available(Effect.flatMap(stages, DeployedStages.endpoints)),
     ],
@@ -62,9 +64,18 @@ export const snapshot = Effect.fn("FleetStatus.snapshot")(function* () {
     nodes,
     apps,
     runner,
+    reconciles,
     dashboards,
     endpoints,
   } satisfies Snapshot;
+});
+
+/** An app's reconcile record as the snapshot shows it. */
+export const reconcileOutcome = (row: Reconcile): ReconcileOutcome => ({
+  app: row.app,
+  status: row.status,
+  detail: row.detail,
+  checkedAt: row.checkedAt,
 });
 
 /** A runner job as the snapshot shows it; the payload is reduced to what it acts on. */
@@ -334,6 +345,11 @@ export const render = (snapshot: Snapshot): string =>
     ...renderSection(snapshot.runner, (job) => [
       `  #${String(job.id).padEnd(5)} ${job.state.padEnd(11)} ${job.command.padEnd(14)} ${(job.subject ?? "").padEnd(24)} ${minute(job.createdAt)}` +
         (job.exitCode === null || job.exitCode === 0 ? "" : `  exit ${job.exitCode}`),
+    ]),
+    ``,
+    `reconcile`,
+    ...renderSection(snapshot.reconciles, (outcome) => [
+      `  ${outcome.app.padEnd(24)} ${outcome.status.padEnd(16)} ${minute(outcome.checkedAt)}  ${outcome.detail}`,
     ]),
     ``,
     `apps`,

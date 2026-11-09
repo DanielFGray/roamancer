@@ -35,9 +35,16 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       }),
     );
 
-    /** Queue `job` on the host and return its id. */
-    const submit = Effect.fn("Remote.submit")(function* (job: JobSubmit) {
-      yield* sameRevision;
+    /**
+     * Queue `job` on the host and return its id. A job whose request holds no file or
+     * cartridge from this checkout may pass `sameRevision: false`: the runner reads only what
+     * it was built to read, so a platform commit here need not stop it.
+     */
+    const submit = Effect.fn("Remote.submit")(function* (
+      job: JobSubmit,
+      options: { readonly sameRevision: boolean } = { sameRevision: true },
+    ) {
+      if (options.sameRevision) yield* sameRevision;
       const host = yield* site.host;
       const printed = yield* Exec.output(
         "ssh",
@@ -144,7 +151,18 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       return Option.some(printed);
     });
 
-    return { submit, build, signoff, listSignoffs, run, direct, findImage };
+    /**
+     * Queue a reconcile job for `app` and stream its output. Reconcile receives nothing from
+     * this checkout (it reads the site policy and the app's repository on the host), so it
+     * skips the revision check, as the timer's jobs do.
+     */
+    const reconcile = Effect.fn("Remote.reconcile")(function* (app: string) {
+      const id = yield* submit({ command: "reconcile", app }, { sameRevision: false });
+      yield* direct(["wait", `${id}`]);
+      return id;
+    });
+
+    return { submit, build, signoff, listSignoffs, run, direct, findImage, reconcile };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);
