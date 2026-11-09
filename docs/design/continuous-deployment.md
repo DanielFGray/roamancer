@@ -24,7 +24,7 @@ An app with `deploy = "manual"` in the site policy is never released by reconcil
 
 ### Fetch
 
-The host reads each watched repository with a read-only deploy key for that repository. Reconcile exports `main`'s tree with `git archive` and builds from that tree. `pr-previews.md` already requires a build from an exported tree, because the host has no checkout.
+The host reads each watched repository with a read-only deploy key for that repository. The runner holds one key per repository, because GitHub refuses one deploy key on two repositories. A oneshot unit on the control host makes a missing key and the private half never leaves the host. `ops reconcile key <app>` prints the public half, which the operator adds to GitHub. Reconcile fetches `main` into a bare cache repository under the runner's state, with its whole history and not one commit: a release records the repository's root commit as the app's origin, and a shallow clone has no root. Later fetches bring only what is new. Reconcile exports `main`'s tree with `git archive` and builds from that tree. `pr-previews.md` already requires a build from an exported tree, because the host has no checkout.
 
 The runner uploads the exported tree to a `builds` bucket in Garage and gives the build job a presigned URL for it that expires after a few minutes. Nomad's `artifact` block fetches and unpacks the tree before the task starts, so the build container receives no credential. A batch job has no stdin, which is how today's ssh build receives its tree.
 
@@ -82,6 +82,10 @@ Today the workstation shows each plan and asks before it submits the deploy (`ho
 
 `ops` compares the workstation's `tools/alchemy` with the runner's revision because the runner reads what `ops` sends. Reconcile starts on the host and receives nothing from the workstation, so it skips that check. A platform commit then stops only the workstation's `ops` commands until the next rebuild, not releases started by a push. `ops signoff` skips the check too, because the runner only stores a signoff, so a platform commit does not stop a push either.
 
+### Site policy and timer
+
+`policy.toml` beside `site.toml` lists the watched repositories (`[apps.<cartridge name>]` with `repository`, an ssh URL, and `deploy`). The flake passes it to the runner module, which writes `/etc/alchemy/policy.json` and makes the keys and the timer. Adding an app to unattended release therefore needs `ops rebuild`. A systemd timer queues one `reconcile` job per `deploy = "auto"` app every minute; the queue keeps at most one waiting or running reconcile job per app, so a slow release is not queued twice. The runner trusts only github.com's host key (`programs.ssh.knownHosts` in the runner module); a repository on another host stays unreachable until that host's key is added there. A repository that cannot be read is an outcome shown in `ops dash`, not a failed job, so the timer does not fill the queue with failures.
+
 ### Records
 
 Each release goes into the deployment record as an `ops release` does, with its commit and its signoff. A failed build or deploy is a failed job in `ops dash`, with its log.
@@ -91,6 +95,6 @@ Each release goes into the deployment record as an `ops release` does, with its 
 1. Tag images by tree hash, and release an existing image by its key (step 1 of `pr-previews.md`).
 2. The build job: on worker nodes, the `builder` user, its Podman socket, its firewall rule and slice limits, and memory oversubscription; the Buildah platform image; the `builds` bucket; and the runner's build that submits the job, reads its digest, checks it and records it.
 3. `ops signoff` and the runner's signoff record, and the pre-push hook that runs it.
-4. Reconcile of `live` for one app, run by `ops reconcile <app>` and by the timer, with `deploy` in the site policy.
+4. Reconcile of `live` for one app, run by `ops reconcile <app>` and by the timer, with `deploy` in the site policy. Done.
 
 The previews of `pr-previews.md` (its steps 2 to 6) come after these.
