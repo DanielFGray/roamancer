@@ -242,6 +242,7 @@ const record = (options: {
               deployedAt: "now",
               name: deployment.name,
               origin: deployment.origin,
+              signoff: deployment.signoff ?? null,
               revision: deployment.revision,
               cartridge: deployment.cartridge,
             };

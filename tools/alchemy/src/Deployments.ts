@@ -26,6 +26,8 @@ export const Deployment = S.Struct({
   revision: S.String,
   cartridge: S.String,
   deployedAt: S.String,
+  // The signoff a reconcile release rested on; null for a release `ops release` made.
+  signoff: S.NullOr(S.Number),
 });
 export type Deployment = typeof Deployment.Type;
 
@@ -60,7 +62,9 @@ export class Deployments extends Context.Service<
       origin: string,
     ) => Effect.Effect<void, DeploymentsError | OriginMismatch>;
     readonly record: (
-      deployment: Omit<Deployment, "id" | "deployedAt">,
+      deployment: Omit<Deployment, "id" | "deployedAt" | "signoff"> & {
+        readonly signoff?: number | null;
+      },
     ) => Effect.Effect<Deployment, DeploymentsError | OriginMismatch>;
   }
 >()("alchemy/Deployments") {}
@@ -75,9 +79,14 @@ const make = Effect.gen(function* () {
     cartridge TEXT NOT NULL,
     deployed_at TEXT NOT NULL
   )`;
+  // A table made before releases recorded their signoff lacks the column.
+  const columns = yield* sql<{ name: string }>`PRAGMA table_info(deployments)`;
+  if (!columns.some((column) => column.name === "signoff")) {
+    yield* sql`ALTER TABLE deployments ADD COLUMN signoff INTEGER`;
+  }
   const rows = S.decodeUnknownEffect(S.Array(Deployment));
   const select = (where: ReturnType<typeof sql.and>) =>
-    sql`SELECT id, name, origin, revision, cartridge, deployed_at AS "deployedAt"
+    sql`SELECT id, name, origin, revision, cartridge, deployed_at AS "deployedAt", signoff
         FROM deployments WHERE ${where} ORDER BY id DESC`.pipe(Effect.flatMap(rows));
 
   const list = (name: string) => select(sql.and([sql`name = ${name}`]));
@@ -113,6 +122,7 @@ const make = Effect.gen(function* () {
         revision: deployment.revision,
         cartridge: deployment.cartridge,
         deployed_at: deployedAt,
+        signoff: deployment.signoff ?? null,
       })}`;
       return Option.getOrThrow(yield* latest(deployment.name));
     }),
