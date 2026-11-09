@@ -52,16 +52,17 @@ gVisor was measured and not chosen. Buildah fails inside it (no `/proc/<pid>/set
 
 ### Check: a signoff keyed by tree
 
-`ops signoff [commit]` runs the app's checks on the developer's machine and records that they passed. It exports the commit's tree (`HEAD` by default) with `git archive`, runs `scripts/worktree-setup` there when the app has one, and then `scripts/verify`. These are the project scripts that foreman runs before it lands a branch, so one script says what "checked" means for both. The export holds only committed files, so uncommitted edits, ignored files such as `.env`, and the checkout's `node_modules` cannot change the result. The export has no `.git` folder, so a verify script must not need one.
+`ops signoff [commit]` runs the app's checks on the developer's machine and records that they passed. It exports the commit's tree (`HEAD` by default) with `git archive`, runs `scripts/worktree-setup` there when the app has one, and then `scripts/verify`. These are the project scripts that foreman runs before it lands a branch, so one script says what "checked" means for both. Each project decides what its verify runs: unit tests, browser tests, a build, or nothing. The platform needs only an exit code of 0. The export holds only committed files, so uncommitted edits, ignored files such as `.env`, and the checkout's `node_modules` cannot change the result. The export has no `.git` folder, so a verify script must not need one.
 
-`ops signoff install` writes a git pre-push hook in the app's repository. A push then runs `ops signoff` on each commit that it sends to `main`, and a failing verify stops the push:
+Verify runs once per tree. The developer runs `ops signoff` when the work is ready, or foreman runs it when it lands a branch. A push does not run the tests again. `ops signoff install` writes a git pre-push hook in the app's repository. The hook refuses a push to `main` when the tree of a commit it sends has no signoff on the control host, and it runs no tests itself:
 
 ```sh
 ops signoff install   # once per clone; linked worktrees share the hook
-git push              # verify, sign off, push; reconcile releases within a minute
+ops signoff           # run scripts/verify on HEAD, and record that it passed
+git push              # the hook finds the signoff; reconcile releases within a minute
 ```
 
-`git push --no-verify` skips the hook. When the control host does not answer, the hook prints a warning and the push continues: an outage of the homelab does not block a push to GitHub. Either way, that push lands without a signoff, and reconcile waits until `ops signoff <commit>` records one.
+`git push --no-verify` skips the check. When the control host does not answer, the hook prints a warning and the push continues, so an outage of the homelab does not block a push to GitHub. Either way, reconcile releases that tree only after `ops signoff <commit>` records a signoff.
 
 The runner stores the app, the tree hash, the commit and the last lines of the verify output. Reconcile releases `main` only when its tree has a signoff. A signoff does not need the commit to be on the remote: the runner stores it by tree, and a tree that is never pushed is never released. So foreman can sign off a branch when it lands, before anyone pushes it.
 

@@ -3,11 +3,13 @@
  * record on the control host that the tree passed. Reconcile releases `main` only when its
  * tree has a signoff (docs/design/continuous-deployment.md).
  *
- * `ops signoff install` writes a git pre-push hook that runs `ops signoff pre-push`, so a
- * push to `main` signs off the pushed commit first, and a failing verify stops the push.
+ * What verify checks is the project's own choice; the platform only needs it to exit 0.
+ *
+ * `ops signoff install` writes a git pre-push hook that runs `ops signoff pre-push`. It refuses
+ * a push to `main` whose tree has no signoff, and runs no tests itself.
  */
 import { createHash } from "node:crypto";
-import { Console, Effect, FileSystem, Stdio, Stream } from "effect";
+import { Console, Effect, FileSystem, Option, Stdio, Stream } from "effect";
 import { Argument, Command } from "effect/cli";
 import { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
@@ -64,35 +66,24 @@ const signoff = Command.make(
       }),
     ).pipe(
       Command.withDescription(
-        "Write a pre-push hook in this repository that signs off each push to main",
+        "Write a pre-push hook in this repository that refuses a push to main with no signoff",
       ),
     ),
     Command.make(
       "pre-push",
-      {},
-      Effect.fn(function* () {
+      { folder },
+      Effect.fn(function* ({ folder }) {
         const stdin = yield* Stdio.Stdio;
         const lines = yield* Stream.mkString(Stream.decodeText(stdin.stdin)).pipe(
           Effect.mapError(
             (error) => new OpsError({ message: `read the hook's stdin: ${error.message}` }),
           ),
         );
-        for (const commit of deployPushes(lines)) {
-          const record = yield* verify(".", commit);
-          // A failed check stops the push; a control host that does not answer does not, so
-          // an outage here never blocks a push to GitHub. Reconcile waits for the signoff.
-          yield* send(record).pipe(
-            Effect.catchTag("OpsError", (error) =>
-              Console.error(
-                `ops signoff: ${error.message}\nThe push continues unsigned; run \`ops signoff ${commit}\` once the control host answers.`,
-              ),
-            ),
-          );
-        }
+        for (const commit of deployPushes(lines)) yield* requireSignoff(folder, commit);
       }),
     ).pipe(
       Command.withDescription(
-        "The pre-push hook's body: sign off each commit that git is pushing to main",
+        "The pre-push hook's body: refuse a push to main whose tree has no signoff",
       ),
     ),
   ]),
@@ -198,12 +189,41 @@ const script = Effect.fn("Signoff.script")(function* (directory: string, path: s
   return text;
 }, Effect.scoped);
 
+/**
+ * Refuse `commit` unless the control host has a signoff of its tree. A host that does not
+ * answer only warns: an outage never blocks a push to GitHub, nothing releases while the host
+ * is down, and afterwards reconcile still waits for a signoff of that tree.
+ */
+const requireSignoff = Effect.fn("Signoff.requireSignoff")(function* (
+  folder: string,
+  commit: string,
+) {
+  const tree = (yield* output("git", ["-C", folder, "rev-parse", `${commit}^{tree}`])).trim();
+  const cartridge = yield* Cartridge.decodeText(
+    yield* output("git", ["-C", folder, "show", `${commit}:cartridge.json`]),
+    Cartridge.AppCartridge,
+  );
+  const signoffs = yield* (yield* Remote).listSignoffs(cartridge.name).pipe(
+    Effect.map(Option.some),
+    Effect.catchTag("OpsError", (error) =>
+      Console.error(
+        `ops signoff: ${error.message}\nThe push continues: the control host did not answer, so tree ${tree.slice(0, 12)} was not checked. Reconcile releases it only after a signoff.`,
+      ).pipe(Effect.as(Option.none<ReadonlyArray<{ readonly tree: string }>>())),
+    ),
+  );
+  if (Option.isSome(signoffs) && !signoffs.value.some((row) => row.tree === tree)) {
+    return yield* new OpsError({
+      message: `${cartridge.name} tree ${tree.slice(0, 12)} has no signoff, so this push to main is refused. Run \`ops signoff ${commit}\`, which runs scripts/verify on it, and push again.`,
+    });
+  }
+});
+
 /** The hook `install` writes; the marker line lets `install` replace its own hook only. */
 const hookMarker = "# Written by `ops signoff install`.";
 const hook = `#!/bin/sh
-${hookMarker} A push to main runs scripts/verify on the pushed
-# commit and records a signoff, which reconcile needs before it releases that tree.
-# \`git push --no-verify\` skips it; run \`ops signoff <commit>\` afterwards.
+${hookMarker} It refuses a push to main whose tree has no
+# signoff on the control host; \`ops signoff <commit>\` runs scripts/verify and records one.
+# \`git push --no-verify\` skips the check, and reconcile still waits for a signoff.
 exec ops signoff pre-push
 `;
 

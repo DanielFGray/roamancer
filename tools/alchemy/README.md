@@ -13,7 +13,7 @@ ops stage ../my-app                  # deploy that commit at its tailnet-only st
 ops promote ../my-app                # promote the exact staged digest, then discard it
 ops discard giglist                        # destroy the staged instance
 ops signoff                          # in an app repository: run scripts/verify on HEAD's exported tree, and record that it passed
-ops signoff install                  # once per clone: a push to main first signs off each commit it sends there
+ops signoff install                  # once per clone: refuse a push to main whose tree has no signoff
 ops signoff list giglist             # that app's signoffs on the control host, newest first
 ops deployment list giglist                # the recorded deployments, newest first
 ops rollback giglist 12                    # deploy recorded deployment 12 again

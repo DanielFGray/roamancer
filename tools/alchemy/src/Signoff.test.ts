@@ -119,6 +119,61 @@ describe("ops signoff", () => {
     }
   });
 
+  describe("pre-push", () => {
+    const push = (repo: string, signoffs: string | undefined) => {
+      const commit = git(repo, "rev-parse", "HEAD").trim();
+      return execute(run("pre-push", repo), {
+        stdin: `refs/heads/main ${commit} refs/heads/main ${"0".repeat(40)}\n`,
+        signoffs,
+      });
+    };
+    const row = (tree: string) =>
+      JSON.stringify([
+        {
+          id: 1,
+          app: "signoff-probe",
+          tree,
+          commit: "c",
+          summary: "",
+          logSha256: "",
+          createdAt: "",
+        },
+      ]);
+
+    it("lets a signed-off tree through without running verify", async () => {
+      const repo = gitFixture("#!/bin/sh\nexit 1\n");
+      try {
+        const { error, log } = await push(repo, row(git(repo, "rev-parse", "HEAD^{tree}").trim()));
+        assert.equal(error, undefined);
+        assert.ok(!log.some((line) => line.includes("scripts/verify")));
+      } finally {
+        rmSync(join(repo, ".."), { recursive: true, force: true });
+      }
+    });
+
+    it("refuses a tree with no signoff", async () => {
+      const repo = gitFixture("#!/bin/sh\nexit 0\n");
+      try {
+        const { error, log } = await push(repo, row("f".repeat(40)));
+        assert.ok(error instanceof OpsError);
+        assert.match(error.message, /has no signoff, so this push to main is refused/);
+        assert.ok(!log.some((line) => line.includes("scripts/verify")));
+      } finally {
+        rmSync(join(repo, ".."), { recursive: true, force: true });
+      }
+    });
+
+    it("lets the push through when the control host does not answer", async () => {
+      const repo = gitFixture("#!/bin/sh\nexit 0\n");
+      try {
+        const { error } = await push(repo, undefined);
+        assert.equal(error, undefined);
+      } finally {
+        rmSync(join(repo, ".."), { recursive: true, force: true });
+      }
+    });
+  });
+
   it("install writes its hook, and refuses to replace another", async () => {
     const repo = gitFixture(undefined);
     try {
@@ -192,7 +247,14 @@ const git = (cwd: string, ...args: Array<string>) => {
  * Run a program with a recording spawner and a site whose server is `ctl`. ssh to the host
  * is faked (a signoff answers id 1); every other program, git and the app's scripts, runs.
  */
-const execute = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+/**
+ * `stdin` is what the program reads on standard input. `signoffs` is the host's answer to
+ * `alchemy-runner signoffs`; undefined means the host does not answer.
+ */
+const execute = <A, E, R>(
+  program: Effect.Effect<A, E, R>,
+  options: { readonly stdin?: string; readonly signoffs?: string } = {},
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const site = yield* fs.makeTempDirectoryScoped();
@@ -203,8 +265,11 @@ const execute = <A, E, R>(program: Effect.Effect<A, E, R>) =>
     const log: Array<string> = [];
     const inputs: Array<string> = [];
     const environment = Layer.mergeAll(
-      recordingSpawner(log, inputs),
-      Stdio.layerTest({ stdinIsTerminal: Effect.succeed(false) }),
+      recordingSpawner(log, inputs, options.signoffs),
+      Stdio.layerTest({
+        stdinIsTerminal: Effect.succeed(false),
+        stdin: Stream.make(new TextEncoder().encode(options.stdin ?? "")),
+      }),
       ConfigProvider.layer(ConfigProvider.fromEnvRecord({ OPS_SITE: site })),
     );
     const error = yield* (
@@ -239,7 +304,11 @@ const handle = (code: number, stdout: string, all = stdout) =>
     unref: Effect.succeed(Effect.void),
   });
 
-const recordingSpawner = (log: Array<string>, inputs: Array<string>) =>
+const recordingSpawner = (
+  log: Array<string>,
+  inputs: Array<string>,
+  signoffs: string | undefined,
+) =>
   Layer.succeed(
     Spawner.ChildProcessSpawner,
     Spawner.make(
@@ -254,6 +323,9 @@ const recordingSpawner = (log: Array<string>, inputs: Array<string>) =>
         if (Stream.isStream(stdin)) inputs.push(yield* Stream.mkString(Stream.decodeText(stdin)));
         if (line.endsWith("alchemy-runner version")) return handle(0, "abc123\n");
         if (line.endsWith("alchemy-runner signoff")) return handle(0, "1\n");
+        if (line.includes("alchemy-runner signoffs")) {
+          return signoffs === undefined ? handle(255, "") : handle(0, signoffs);
+        }
         const result = spawnSync(command.command, [...command.args], {
           cwd: command.options.cwd,
           encoding: "utf8",
