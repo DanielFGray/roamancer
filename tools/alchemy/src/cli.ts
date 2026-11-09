@@ -57,6 +57,7 @@ import type {
   StageSubmit,
 } from "./queue/Schema.ts";
 import * as QueueServe from "./queue/Serve.ts";
+import { pipedValue, SecretWriter } from "./queue/Secrets.ts";
 import * as StagelessJobs from "./queue/StagelessJobs.ts";
 import * as DevDbHost from "./devdb/Host.ts";
 import { layer as queueStoreLayer } from "./queue/Store.ts";
@@ -363,19 +364,31 @@ const secretSet = Command.make(
   },
   Effect.fn(function* ({ path: kvPath, key }) {
     const stdio = yield* Stdio.Stdio;
-    // Piped stdin holds the root token, so the value needs the prompt.
-    if (!(yield* stdio.stdinIsTerminal)) {
-      return yield* new CliError({
-        message: "secret set prompts for the root token and the value: run it in a terminal.",
-      });
-    }
-    yield* withRootToken(promptAndWrite(kvPath, key));
+    const value = (yield* stdio.stdinIsTerminal)
+      ? Redacted.value(
+          yield* Prompt.run(Prompt.Password({ message: `Value for ${kvPath} ${key}` })),
+        )
+      : pipedValue(yield* Stream.mkString(Stream.decodeText(stdio.stdin)));
+    if (value === "") return yield* new CliError({ message: `No value for ${key}.` });
+    const answer = yield* queueRequest(QueuePaths.production.socket, {
+      _tag: "setSecret",
+      path: kvPath,
+      key,
+      value,
+    }).pipe(Effect.mapError((error) => new CliError({ message: error.message })));
+    if (answer._tag === "error") return yield* new CliError({ message: answer.message });
     yield* Console.log(`Set ${key} at ${kvPath}. Running tasks restart with the new value.`);
   }),
-).pipe(Command.withDescription("Store one secret; prompts for the root token and the value"));
+).pipe(
+  Command.withDescription(
+    "Store one secret with the ops login token; the value is typed, or piped on stdin",
+  ),
+);
 
 const secret = Command.make("secret").pipe(
-  Command.withDescription("Read and set KV secrets with the root token, typed or piped on stdin"),
+  Command.withDescription(
+    "List and check KV secrets with the root token, and set them with the ops login token",
+  ),
   Command.withSubcommands([secretList, secretCheck, secretSet]),
 );
 
@@ -542,7 +555,16 @@ const queueLayer = (paths: typeof QueuePaths.production) =>
     queueStoreLayer(paths.database),
     QueueUnits.layer,
     QueueServe.layerServer(paths),
+    secretWriterLayer,
   ).pipe(Layer.provideMerge(BunServices.layer));
+
+/** The front end's secret writes, each with the token it is given and nothing else. */
+const secretWriterLayer = Layer.succeed(SecretWriter, {
+  write: (token, path, key, value) =>
+    Effect.flatMap(OpenBao, (bao) => bao.writeKvKey(path, key, value)).pipe(
+      Effect.provide(openBaoWith(token)),
+    ),
+});
 
 const queueServe = Command.make(
   "serve",
@@ -791,13 +813,6 @@ const storedKeys = Effect.fn("storedKeys")(function* (references: Cartridge.KvRe
         ),
     ),
   );
-});
-
-/** Ask for one secret's value and store it at `kvPath`, keeping the path's other keys. */
-const promptAndWrite = Effect.fn("promptAndWrite")(function* (kvPath: string, key: string) {
-  const bao = yield* OpenBao;
-  const value = yield* Prompt.run(Prompt.Password({ message: `Value for ${kvPath} ${key}` }));
-  yield* bao.writeKvKey(kvPath, key, value);
 });
 
 const decodeReferences = (text: string) =>

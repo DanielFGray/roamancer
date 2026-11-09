@@ -57,6 +57,17 @@ export const Signoff = S.TaggedStruct("signoff", {
 });
 export type Signoff = typeof Signoff.Type;
 
+/**
+ * Set one key at a KV v2 path with the `ops login` token, which the front end holds. Not a job:
+ * the front end writes it at once and stores nothing, so the value never reaches the queue.
+ */
+export const SetSecret = S.TaggedStruct("setSecret", {
+  path: S.String.check(S.isPattern(/^secret\/data\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/)),
+  key: S.String.check(S.isPattern(/^[A-Za-z0-9._-]+$/)),
+  value: S.NonEmptyString,
+});
+export type SetSecret = typeof SetSecret.Type;
+
 /** List stored signoffs for one app, newest first. */
 export const Signoffs = S.TaggedStruct("signoffs", { app: S.String });
 export type Signoffs = typeof Signoffs.Type;
@@ -83,6 +94,7 @@ export const Request = S.Union([
   FindImage,
   Signoff,
   Signoffs,
+  SetSecret,
   BuildUpload,
 ]);
 export type Request = typeof Request.Type;
@@ -102,6 +114,7 @@ export const Response = S.Union([
   S.TaggedStruct("imageFound", { digest: S.NullOr(ImageDigest) }),
   S.TaggedStruct("signedOff", { id: S.Number }),
   S.TaggedStruct("signoffsListed", { signoffs: S.Array(SignoffRecord) }),
+  S.TaggedStruct("secretSet", {}),
   S.TaggedStruct("error", { message: S.String }),
 ]);
 export type Response = typeof Response.Type;
