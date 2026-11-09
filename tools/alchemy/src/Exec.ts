@@ -41,11 +41,19 @@ export const output = Effect.fn("Exec.output")(function* (
   command: string,
   args: ReadonlyArray<string>,
   input?: string | Stream.Stream<Uint8Array, PlatformError>,
+  env?: Record<string, string>,
 ) {
   const spawner = yield* ChildProcessSpawner;
   const stdin = typeof input === "string" ? Stream.make(new TextEncoder().encode(input)) : input;
   const handle = yield* spawner
-    .spawn(ChildProcess.make(command, args, { stdin, stderr: "inherit" }))
+    .spawn(
+      ChildProcess.make(command, args, {
+        stdin,
+        stderr: "inherit",
+        env,
+        extendEnv: env !== undefined,
+      }),
+    )
     .pipe(Effect.mapError(couldNotStart(command)));
   const text = yield* Stream.mkString(Stream.decodeText(handle.stdout)).pipe(
     Effect.mapError(couldNotStart(command)),
