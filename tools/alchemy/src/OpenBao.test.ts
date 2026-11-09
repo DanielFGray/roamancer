@@ -1,4 +1,5 @@
 import { after, before, describe, it } from "node:test";
+import { waitReady } from "./testing/waitReady.ts";
 import * as assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
@@ -108,17 +109,19 @@ describe("writeKvKey against OpenBao", () => {
     const log: Array<string> = [];
     server.stdout.on("data", (chunk: Buffer) => log.push(chunk.toString()));
     server.stderr.on("data", (chunk: Buffer) => log.push(chunk.toString()));
-    for (let attempt = 0; attempt < 40; attempt++) {
-      try {
-        const response = await fetch(`${address}/v1/sys/health`);
-        if (response.ok || response.status === 429 || response.status === 472) return;
-      } catch {
-        // not listening yet
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    try {
+      await waitReady("bao -dev", async () => {
+        try {
+          const response = await fetch(`${address}/v1/sys/health`);
+          return response.ok || response.status === 429 || response.status === 472;
+        } catch {
+          return false; // not listening yet
+        }
+      });
+    } catch (error) {
+      server.kill("SIGTERM");
+      assert.fail(`${String(error)}:\n${log.join("")}`);
     }
-    server.kill("SIGTERM");
-    assert.fail(`bao -dev did not become ready:\n${log.join("")}`);
   });
 
   after(() => {

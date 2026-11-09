@@ -1,5 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import * as assert from "node:assert/strict";
+import { waitReady } from "../testing/waitReady.ts";
 import { spawnSync } from "node:child_process";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
@@ -88,16 +89,15 @@ describe("ops dev db host job", () => {
       { encoding: "utf8" },
     );
     assert.equal(started.status, 0, started.stderr);
-    for (let attempt = 0; attempt < 40; attempt++) {
-      const ready = spawnSync(
-        "docker",
-        ["exec", CONTAINER, "pg_isready", "-U", "postgres", "-h", "127.0.0.1"],
-        { encoding: "utf8" },
-      );
-      if (ready.status === 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    assert.fail("test postgres did not become ready");
+    await waitReady(
+      "test postgres",
+      () =>
+        spawnSync(
+          "docker",
+          ["exec", CONTAINER, "pg_isready", "-U", "postgres", "-h", "127.0.0.1"],
+          { encoding: "utf8" },
+        ).status === 0,
+    );
   });
 
   after(() => {
