@@ -12,3 +12,31 @@ export const sameImageDigest = (left: string, right: string) =>
     onNone: () => false,
     onSome: (digest) => imageDigest(right).pipe(Option.contains(digest)),
   });
+
+/** The reference every service of a cartridge runs, with duplicates kept out. */
+export const serviceImages = (cartridge: {
+  readonly services: ReadonlyArray<{ readonly image: string }>;
+}) => [...new Set(cartridge.services.map((service) => service.image))];
+
+/** The distinct registry repositories a cartridge's images come from, without tag or digest. */
+export const repositoriesOf = (cartridge: {
+  readonly services: ReadonlyArray<{ readonly image: string }>;
+}): ReadonlyArray<string> => [
+  ...new Set(
+    serviceImages(cartridge).map((image) => image.replace(/@.*$/, "").replace(/:[^/:]+$/, "")),
+  ),
+];
+
+/**
+ * The cartridge file's text with every service image replaced by `pinned`. The app's own
+ * repository keeps naming its image without a digest; the host records the pinned copy.
+ */
+export const pinCartridgeText = (
+  text: string,
+  cartridge: { readonly services: ReadonlyArray<{ readonly image: string }> },
+  pinned: string,
+) =>
+  serviceImages(cartridge).reduce(
+    (contents, reference) => contents.replaceAll(`"${reference}"`, `"${pinned}"`),
+    text,
+  );

@@ -66,8 +66,20 @@ export const exportArchive = Effect.fn("Git.exportArchive")(function* (
   purpose = "for a local build",
 ) {
   yield* announce(dir, `${purpose} (${treeish})`, treeish.split(":")[0]);
+  yield* archiveOf(dir, treeish, archive);
+});
+
+/**
+ * `git archive` of `treeish` in `gitDir`, a checkout or a bare repository, into the file
+ * `archive`. The one place the export's fixed modes are set.
+ */
+export const archiveOf = Effect.fn("Git.archiveOf")(function* (
+  gitDir: string,
+  treeish: string,
+  archive: string,
+) {
   yield* Exec.run("git", [
-    ...["-c", "tar.umask=0022", "-C", dir, "archive", "--format=tar", "-o", archive, treeish],
+    ...["-c", "tar.umask=0022", "-C", gitDir, "archive", "--format=tar", "-o", archive, treeish],
   ]);
 });
 

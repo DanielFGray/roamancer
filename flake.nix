@@ -29,6 +29,12 @@
     let
       system = "x86_64-linux";
       siteConfig = builtins.fromTOML (builtins.readFile "${site}/site.toml");
+      # Which repositories the runner releases on a push. A site folder made before the policy
+      # existed has none, and then nothing releases unattended.
+      policy =
+        if builtins.pathExists "${site}/policy.toml"
+        then builtins.fromTOML (builtins.readFile "${site}/policy.toml")
+        else { };
       pkgs = import nixpkgs {
         inherit system;
         overlays = [
@@ -39,7 +45,7 @@
       # One flake for every host, so shared modules and tools/alchemy are inside its source.
       host = configuration: nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = { site = siteConfig; siteDir = site; };
+        specialArgs = { site = siteConfig; siteDir = site; inherit policy; };
         modules = [
           disko.nixosModules.disko
           configuration
@@ -77,7 +83,7 @@
         testground-vm = nixos-generators.nixosGenerate {
           inherit system;
           format = "qcow";
-          specialArgs = { site = siteConfig; siteDir = site; };
+          specialArgs = { site = siteConfig; siteDir = site; inherit policy; };
           modules = [
             ./nixos/testground/configuration.nix
             ./nixos/modules/alchemy-runner.nix

@@ -7,7 +7,7 @@
  * reason, so a failing node-stats read still shows the jobs.
  */
 import * as S from "effect/Schema";
-import { JobCommand, JobState } from "../queue/Kinds.ts";
+import { JobCommand, JobState, ReconcileStatus } from "../queue/Kinds.ts";
 
 export const Health = S.Literals(["healthy", "degraded", "down", "stopped"]);
 export type Health = typeof Health.Type;
@@ -95,6 +95,16 @@ export const RunnerJob = S.Struct({
   finishedAt: S.NullOr(S.String),
 });
 export type RunnerJob = typeof RunnerJob.Type;
+
+/** What reconcile last did for one app watched for pushes to `main`. */
+export const ReconcileOutcome = S.Struct({
+  app: S.String,
+  status: ReconcileStatus,
+  // One sentence: the commit, and why it waits or what it released or failed on.
+  detail: S.String,
+  checkedAt: S.String,
+});
+export type ReconcileOutcome = typeof ReconcileOutcome.Type;
 
 /** A dashboard that Alchemy deployed to OpenObserve, and where it opens on the tailnet. */
 export const DashboardLink = S.Struct({ name: S.String, title: S.String, url: S.String });
@@ -189,6 +199,8 @@ export const Snapshot = S.Struct({
   apps: section(AppRelease),
   // The newest runner jobs, newest first: what is running, waiting, and what just ended.
   runner: section(RunnerJob),
+  // The last reconcile result of each app the site policy watches.
+  reconciles: section(ReconcileOutcome),
   // The deployed OpenObserve dashboards; the page links each job to its view of the job dashboard.
   dashboards: section(DashboardLink),
   // Where every deployed job answers, live and staged.

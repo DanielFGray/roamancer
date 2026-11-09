@@ -156,6 +156,9 @@ the Traefik routes for static sites. `nixos/site` holds placeholder values. Host
 `testground/` still hold some installation-specific names (see [Status](#status)).
 
 1. Copy `nixos/site` to a private git repository and commit it. Edit `site.toml` and the files under `routes/`.
+   Edit `policy.toml` too: it names the app repositories the control host watches and whether a push to
+   `main` releases them (`deploy = "auto"` or `"manual"`). It reaches the host only through `ops rebuild`,
+   so an agent that can push to an app repository cannot widen what releases unattended.
    Do not put secrets there, because the Nix store is readable by every user on a host.
 2. Set `OPS_SITE` to that folder in your shell.
 

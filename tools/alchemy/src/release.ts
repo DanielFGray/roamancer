@@ -11,7 +11,7 @@ import { OpsError, output } from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { deployStage, destroyStage } from "./Jobs.ts";
 import { Remote } from "./Remote.ts";
-import { imageDigest } from "./ReleaseImage.ts";
+import { imageDigest, pinCartridgeText, repositoriesOf } from "./ReleaseImage.ts";
 import { commands as signoffCommands } from "./Signoff.ts";
 import { defaultBuildMemoryMB } from "./BuildLimits.ts";
 
@@ -183,10 +183,7 @@ const deployPinned = Effect.fn("deployPinned")(function* (
   const fs = yield* FileSystem.FileSystem;
   const cartridge = yield* Cartridge.decodeFile(cartridgePath(tree), Cartridge.AppCartridge);
   const text = yield* fs.readFileString(cartridgePath(tree));
-  const pinnedText = [...new Set(images(cartridge))].reduce(
-    (contents, reference) => contents.replaceAll(`"${reference}"`, `"${image.pinned}"`),
-    text,
-  );
+  const pinnedText = pinCartridgeText(text, cartridge, image.pinned);
   // The repository's root commit names it whatever its remotes are called.
   const roots = yield* output("git", ["-C", folder, "rev-list", "--max-parents=0", "HEAD"]);
   const origin = roots.trim().split("\n").sort()[0];
@@ -197,15 +194,9 @@ const deployPinned = Effect.fn("deployPinned")(function* (
   );
 });
 
-/** Every image reference in the cartridge's services. */
-const images = (cartridge: Cartridge.Cartridge) =>
-  cartridge.services.map((service) => service.image);
-
 /** The one registry repository the cartridge's images come from, without tag or digest. */
 const oneRepository = (cartridge: Cartridge.Cartridge, path: string) => {
-  const repositories = [
-    ...new Set(images(cartridge).map((image) => image.replace(/@.*$/, "").replace(/:[^/:]+$/, ""))),
-  ];
+  const repositories = repositoriesOf(cartridge);
   return repositories.length === 1
     ? Effect.succeed(repositories[0])
     : Effect.fail(

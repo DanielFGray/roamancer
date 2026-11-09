@@ -1,0 +1,19 @@
+# The site policy: which app repositories the runner watches, and whether a push to `main`
+# releases them. It sits beside site.toml in the site folder and is read when Nix builds the
+# control host (nixos/modules/alchemy-runner.nix), so a change needs `ops rebuild`, which asks
+# for the operator's password. An app repository never holds it: a push could change it, and
+# agents can push to app repositories but must not widen what releases unattended.
+#
+# These are placeholder values. The app is inert because its deploy is "manual".
+#
+# [apps.<cartridge name>]
+# repository: an ssh URL of the app's repository. The runner reads it with a read-only deploy
+#             key that stays on the control host. `ops reconcile key <app>` prints the public
+#             half, which you add to the repository on GitHub as a read-only deploy key (one
+#             key per repository: GitHub refuses a deploy key on two). Only github.com has a
+#             known host key on the control host.
+# deploy:     "auto" releases each new, signed-off tree on `main` within a minute of the push.
+#             "manual" never releases from a push; `ops release` still works. Default "auto".
+[apps.example-app]
+repository = "git@github.com:example/example-app.git"
+deploy = "manual"

@@ -17,6 +17,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import {
   ConfigProvider,
+  type Context,
   Effect,
   Fiber,
   FileSystem as FileSystemModule,
@@ -1374,6 +1375,146 @@ describe("build upload", () => {
       );
       assert.deepEqual(readdirSync(paths.spool), [`${live}.tar`]);
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("queue reconcile jobs", () => {
+  const reconcileOf = (app: string) => ({ command: "reconcile" as const, app });
+  const state = (
+    app: string,
+    patch: Partial<Parameters<Context.Service.Shape<typeof Store>["saveReconcile"]>[0]> = {},
+  ) => ({
+    app,
+    seenCommit: null,
+    seenTree: null,
+    triedTree: null,
+    triedCommit: null,
+    triedResult: null,
+    triedJob: null,
+    status: "waiting-signoff" as const,
+    detail: "",
+    ...patch,
+  });
+
+  it("migration 6 adds the reconciles table to an existing v5 database", async () => {
+    const { root, paths } = tempRoot();
+    try {
+      await withStore(paths, fakeUnits().layer, Effect.void);
+      const reset = spawnSync(
+        process.execPath,
+        [
+          "-e",
+          `
+          const { Database } = require("bun:sqlite");
+          const db = new Database(${JSON.stringify(paths.database)});
+          db.run("DELETE FROM schema_migrations WHERE version = 6");
+          db.run("DROP TABLE reconciles");
+          db.close();
+          `,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(reset.status, 0, reset.stderr);
+      await withStore(
+        paths,
+        fakeUnits().layer,
+        Effect.gen(function* () {
+          const store = yield* Store;
+          assert.deepEqual(yield* store.listReconciles(), []);
+          yield* store.saveReconcile(state("shop", { status: "released", triedTree: "t1" }));
+          yield* store.saveReconcile(state("shop", { status: "failed", triedTree: "t2" }));
+          const rows = yield* store.listReconciles();
+          assert.equal(rows.length, 1);
+          assert.equal(rows[0]?.triedTree, "t2");
+          assert.equal(rows[0]?.status, "failed");
+          assert.equal(Option.isNone(yield* store.getReconcile("other")), true);
+        }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("queues one reconcile job per app while one waits or runs", async () => {
+    const { root, paths } = tempRoot();
+    try {
+      await withStore(
+        paths,
+        fakeUnits().layer,
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const first = yield* store.enqueue(reconcileOf("shop"));
+          const again = yield* store.enqueue(reconcileOf("shop"));
+          assert.equal(again.id, first.id);
+          const other = yield* store.enqueue(reconcileOf("blog"));
+          assert.notEqual(other.id, first.id);
+
+          // A job that is starting or running still counts.
+          yield* store.reserveNext();
+          assert.equal((yield* store.enqueue(reconcileOf("shop"))).id, first.id);
+          yield* store.claim(first.id, null);
+          assert.equal((yield* store.enqueue(reconcileOf("shop"))).id, first.id);
+
+          // Once it ends, the next request queues a new job.
+          yield* store.finish(first.id, 0);
+          const next = yield* store.enqueue(reconcileOf("shop"));
+          assert.notEqual(next.id, first.id);
+          assert.equal(next.state, "queued");
+        }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("drops finished reconcile jobs that tried nothing, and keeps the one that tried", async () => {
+    const { root, paths } = tempRoot();
+    try {
+      await withStore(
+        paths,
+        fakeUnits().layer,
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const finishNext = Effect.fn(function* (app: string, exitCode: number) {
+            const job = yield* store.enqueue(reconcileOf(app));
+            yield* store.reserveNext();
+            yield* store.claim(job.id, null);
+            yield* store.finish(job.id, exitCode);
+            return job.id;
+          });
+          const idle = yield* finishNext("shop", 0);
+          const failed = yield* finishNext("shop", 1);
+          const tried = yield* finishNext("shop", 0);
+          const blog = yield* finishNext("blog", 0);
+          yield* store.saveReconcile(state("shop", { triedJob: tried, triedResult: "released" }));
+
+          yield* store.enqueue(reconcileOf("shop"));
+          const kept = (yield* store.list()).map((job) => job.id);
+          assert.equal(kept.includes(idle), false);
+          assert.equal(kept.includes(failed), true);
+          assert.equal(kept.includes(tried), true);
+          assert.equal(kept.includes(blog), true);
+        }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a reconcile submit over the socket and returns the waiting job on a repeat", async () => {
+    const { root, paths } = tempRoot();
+    const server = await runServe(paths, fakeUnits({ active: new Set([99]) }).layer);
+    try {
+      const body = { _tag: "submit" as const, command: "reconcile" as const, app: "shop" };
+      const first = await Effect.runPromise(request(paths.socket, body));
+      const second = await Effect.runPromise(request(paths.socket, body));
+      assert.equal(first._tag, "submitted");
+      assert.deepEqual(second, first);
+      assert.equal(decodeRequest(body)._tag, "submit");
+    } finally {
+      await server.stop();
       rmSync(root, { recursive: true, force: true });
     }
   });
