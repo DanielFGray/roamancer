@@ -32,8 +32,8 @@ const release = Command.make(
   "release",
   { folder, yes },
   Effect.fn(function* ({ folder, yes }) {
-    const tree = yield* committedTree(folder);
-    const image = yield* buildAndPush(folder, tree);
+    const { tree, archive } = yield* committedTree(folder);
+    const image = yield* buildAndPush(folder, tree, archive);
     yield* deployPinned(folder, tree, image, yes);
     yield* Console.log(`Released ${image.pinned}`);
   }, Effect.scoped),
@@ -43,8 +43,8 @@ const stage = Command.make(
   "stage",
   { folder, yes },
   Effect.fn(function* ({ folder, yes }) {
-    const tree = yield* committedTree(folder);
-    const image = yield* buildAndPush(folder, tree);
+    const { tree, archive } = yield* committedTree(folder);
+    const image = yield* buildAndPush(folder, tree, archive);
     const stageName = `${image.name}-staged`;
     const cartridge = yield* (yield* FileSystem.FileSystem).readFileString(cartridgePath(tree));
     // A staged deploy is not a release: it sends no origin, so the host records nothing. Its
@@ -62,7 +62,7 @@ const promote = Command.make(
   "promote",
   { folder, yes },
   Effect.fn(function* ({ folder, yes }) {
-    const tree = yield* committedTree(folder);
+    const { tree } = yield* committedTree(folder);
     const image = yield* stagedImage(folder, tree);
     // The host fails this job unless every staged job is stable and runs this digest.
     yield* (yield* Remote).run({
@@ -95,11 +95,17 @@ export const commands = [release, stage, promote, discard, ...signoffCommands];
 
 const cartridgePath = (folder: string) => `${folder}/cartridge.json`;
 
-/** The committed HEAD of `folder` exported to a temporary folder, so a dirty working tree is never built. */
+/**
+ * The committed HEAD of `folder`, so a dirty working tree is never built: git's archive of it,
+ * which a build sends, and the archive unpacked in a temporary folder, which the commands read.
+ */
 const committedTree = Effect.fn("committedTree")(function* (folder: string) {
-  const tree = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped();
-  yield* Git.exportTree(folder, "HEAD", tree);
-  return tree;
+  const fs = yield* FileSystem.FileSystem;
+  const archive = `${yield* fs.makeTempDirectoryScoped()}/tree.tar`;
+  yield* Git.exportArchive(folder, "HEAD", archive);
+  const tree = yield* fs.makeTempDirectoryScoped();
+  yield* Git.unpack(archive, tree);
+  return { tree, archive };
 });
 
 /**
@@ -108,7 +114,11 @@ const committedTree = Effect.fn("committedTree")(function* (folder: string) {
  * from every node without credentials. Jobs name the image by digest alone: Nomad's Podman driver refuses a reference
  * that carries both a tag and a digest.
  */
-const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string, tree: string) {
+const buildAndPush = Effect.fn("buildAndPush")(function* (
+  folder: string,
+  tree: string,
+  archive: string,
+) {
   const head = yield* headImage(folder, tree);
   const remote = yield* Remote;
   const found = yield* remote.findImage(head.image);
@@ -116,7 +126,7 @@ const buildAndPush = Effect.fn("buildAndPush")(function* (folder: string, tree: 
     yield* Console.log(`Reusing the image of tree ${head.image.key.slice(0, 12)}`);
     return pinnedImage(head, found.value);
   }
-  const pinnedRef = yield* (yield* Builder).build(tree, head.image, head.memoryMaxMB);
+  const pinnedRef = yield* (yield* Builder).build(archive, head.image, head.memoryMaxMB);
   const digest = yield* Option.match(imageDigest(pinnedRef), {
     onNone: () =>
       Effect.fail(

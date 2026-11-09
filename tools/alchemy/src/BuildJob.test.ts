@@ -18,6 +18,17 @@ const request = {
 };
 const digest = `sha256:${"d".repeat(64)}`;
 
+/** A line of the task log in the Podman driver's k8s-file format (TaskLog.entry). */
+const logLine = (stream: "stdout" | "stderr", text: string, mark = "F") =>
+  `2026-11-09T19:20:41.834870449+00:00 ${stream} ${mark} ${text}`;
+// A successful build's log: it starts mid-line at the read offset, then Buildah's progress
+// on stderr, then the digest, which `cat` writes with no newline.
+const builtLog = [
+  "870449+00:00 stderr F Copying config",
+  logLine("stderr", "Writing manifest to image destination"),
+  logLine("stdout", digest, "P"),
+].join("\n");
+
 describe("buildJobSpec", () => {
   const spec = buildJobSpec({
     nomadJob: "build-7",
@@ -70,7 +81,7 @@ describe("buildJobSpec", () => {
 
 describe("runBuild", () => {
   it("records the digest under the repository and key it chose, then removes the tree and the job", async () => {
-    const run = await build({ printed: `${digest}\n`, registryHas: true });
+    const run = await build({ printed: builtLog, registryHas: true });
     assert.equal(run.error, undefined);
     assert.deepEqual(run.recorded, [{ repository: request.repository, key: request.key, digest }]);
     assert.deepEqual(run.uploaded, ["7-" + request.key + ".tar"]);
@@ -79,24 +90,33 @@ describe("runBuild", () => {
   });
 
   it("refuses a digest the registry does not have, records nothing, and still removes the tree", async () => {
-    const run = await build({ printed: `${digest}\n`, registryHas: false });
+    const run = await build({ printed: builtLog, registryHas: false });
     assert.ok(run.error instanceof BuildFailed);
     assert.match(run.error.message, /registry has no/);
     assert.deepEqual(run.recorded, []);
     assert.deepEqual(run.removed, ["7-" + request.key + ".tar"]);
   });
 
-  it("reads only the last stdout line, and refuses output that is no digest", async () => {
-    const bad = await build({ printed: "sha256:short\n", registryHas: true });
-    assert.ok(bad.error instanceof BuildFailed);
-    assert.match(bad.error.message, /printed no image digest/);
-    assert.deepEqual(bad.recorded, []);
+  it("takes the digest only from stdout, and refuses text that is no digest", async () => {
+    for (const printed of [logLine("stdout", "sha256:short"), logLine("stderr", digest)]) {
+      const bad = await build({ printed, registryHas: true });
+      assert.ok(bad.error instanceof BuildFailed);
+      assert.match(bad.error.message, /printed no image digest/);
+      assert.deepEqual(bad.recorded, []);
+    }
   });
 
-  it("fails a build whose allocation failed", async () => {
-    const run = await build({ printed: "", registryHas: true, status: "failed" });
+  it("fails a build whose allocation failed, and prints its stderr lines and task events", async () => {
+    const run = await build({
+      printed: logLine("stderr", "Error: stat /local/tree/Dockerfile: permission denied"),
+      registryHas: true,
+      status: "failed",
+    });
     assert.ok(run.error instanceof BuildFailed);
     assert.match(run.error.message, /ended failed/);
+    assert.deepEqual(run.errors, [
+      "Error: stat /local/tree/Dockerfile: permission denied\nTerminated: Exit Code: 125",
+    ]);
     assert.deepEqual(run.recorded, []);
   });
 
@@ -111,7 +131,7 @@ describe("runBuild", () => {
   });
 
   it("deletes the tree even when stopping the Nomad job fails", async () => {
-    const run = await build({ printed: `${digest}\n`, registryHas: true, stopFails: true });
+    const run = await build({ printed: builtLog, registryHas: true, stopFails: true });
     assert.equal(run.error, undefined);
     assert.deepEqual(run.removed, ["7-" + request.key + ".tar"]);
   });
@@ -143,7 +163,15 @@ const build = async (options: {
   const allocation = {
     ID: "alloc-1",
     ClientStatus: options.status ?? "complete",
-  } as AllocationSummary;
+    TaskStates: {
+      buildah: {
+        State: "dead",
+        Failed: options.status === "failed",
+        Restarts: 0,
+        Events: [{ Type: "Terminated", DisplayMessage: "Exit Code: 125", Time: 0 }],
+      },
+    },
+  } as unknown as AllocationSummary;
   const evaluation = {
     Status: "blocked",
     FailedTGAllocs: { build: { ConstraintFiltered: null, DimensionExhausted: { memory: 1 } } },
@@ -153,7 +181,7 @@ const build = async (options: {
     allocations: () => Effect.succeed(options.unplaced ? [] : [allocation]),
     evaluations: () => Effect.succeed([evaluation]),
     logs: (_id: string, _task: string, stream: string) =>
-      Effect.succeed(stream === "stdout" ? options.printed : "step 3 failed"),
+      Effect.succeed(stream === "stdout" ? options.printed : ""),
     stop: (name: string) =>
       options.stopFails
         ? Effect.fail(new NomadError({ op: "stop", cause: "no such job" }))
@@ -181,7 +209,7 @@ const build = async (options: {
     );
     // Polling sleeps on the clock; move it past the placement limit and the poll spacing.
     yield* TestClock.adjust("6 minutes");
-    return yield* Fiber.join(fiber);
+    return { error: yield* Fiber.join(fiber), errors: yield* TestConsole.errorLines };
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
@@ -194,6 +222,6 @@ const build = async (options: {
       ),
     ),
   );
-  const error = await Effect.runPromise(Effect.scoped(program));
-  return { error, uploaded, removed, stopped, recorded };
+  const { error, errors } = await Effect.runPromise(Effect.scoped(program));
+  return { error, errors, uploaded, removed, stopped, recorded };
 };

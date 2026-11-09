@@ -7,12 +7,14 @@
  * `<repository>@<digest>`, and only under the repository and key it chose for this job.
  */
 import { Console, Effect, Option, Schedule, Schema as S } from "effect";
+import * as Arr from "effect/Array";
 import { BuildStore } from "./BuildStore.ts";
 import type { Evaluation } from "./Nomad.ts";
 import { Nomad } from "./Nomad.ts";
 import { ImageDigest, ImageKey } from "./queue/Protocol.ts";
 import { Registry } from "./Registry.ts";
 import { Store } from "./queue/Store.ts";
+import * as TaskLog from "./TaskLog.ts";
 
 /**
  * The Buildah platform image (`ops image buildah-image`, built from nixos/cynic/buildah-image.nix).
@@ -30,6 +32,11 @@ const artifactSeconds = 600;
 /** A job nothing placed within this time fails, so a blocked build cannot stall the queue. */
 const placementLimit = "5 minutes";
 const buildLimit = "30 minutes";
+
+/** The job's one task; its log holds the build's output. */
+const buildTask = "buildah";
+/** How much of the end of the task's log the runner reads: the digest, or the last of Buildah's progress. */
+const logBytes = 16_000;
 
 export class BuildFailed extends S.TaggedError<BuildFailed>()("BuildFailed", {
   message: S.String,
@@ -85,7 +92,7 @@ export const buildJobSpec = (input: {
         ReschedulePolicy: { Attempts: 0, Unlimited: false },
         Tasks: [
           {
-            Name: "buildah",
+            Name: buildTask,
             Driver: "podman",
             Config: {
               image: buildahImage,
@@ -209,20 +216,37 @@ const waitForDigest = Effect.fn("waitForDigest")(function* (nomadJob: string) {
     return yield* new BuildFailed({ message: `${nomadJob} did not end within ${buildLimit}` });
   }
   const allocation = ended.value.value;
+  const output = buildOutput(yield* nomad.logs(allocation.ID, buildTask, "stdout", logBytes));
   if (allocation.ClientStatus !== "complete") {
-    const stderr = yield* nomad.logs(allocation.ID, "buildah", "stderr", 4000);
-    yield* Console.error(stderr);
+    // A failure before the task starts, such as a failed tree download, writes no output, and
+    // only Nomad's task events name it. The runner stops the job, so this is their one record.
+    const events = (allocation.TaskStates?.[buildTask]?.Events ?? []).map(
+      (event) => `${event.Type}: ${event.DisplayMessage}`,
+    );
+    yield* Console.error([...output.stderr, ...events].join("\n"));
     return yield* new BuildFailed({
-      message: `${nomadJob} ended ${allocation.ClientStatus}; its stderr is above`,
+      message: `${nomadJob} ended ${allocation.ClientStatus}; its output and Nomad's task events are above`,
     });
   }
-  const stdout = yield* nomad.logs(allocation.ID, "buildah", "stdout", 4000);
-  const last = stdout.trim().split("\n").at(-1)?.trim() ?? "";
-  if (!S.is(ImageDigest)(last)) {
-    return yield* new BuildFailed({ message: `${nomadJob} printed no image digest` });
-  }
-  return last;
+  return yield* Option.match(output.digest, {
+    onNone: () => Effect.fail(new BuildFailed({ message: `${nomadJob} printed no image digest` })),
+    onSome: Effect.succeed,
+  });
 });
+
+/**
+ * The build's output from the task's one log (TaskLog.entry): Buildah's progress, which the
+ * script sends to stderr, and the digest, which is the last text on stdout.
+ */
+export const buildOutput = (log: string) => {
+  const lines = Arr.filterMap(log.split("\n"), TaskLog.entry);
+  const texts = (stream: TaskLog.Entry["stream"]) =>
+    lines.filter((line) => line.stream === stream).map((line) => line.text);
+  return {
+    stderr: texts("stderr"),
+    digest: Option.filter(Option.fromNullishOr(texts("stdout").at(-1)?.trim()), S.is(ImageDigest)),
+  };
+};
 
 /** Record `digest` only when the registry holds it under the repository this job pushed to. */
 const acceptDigest = Effect.fn("acceptDigest")(function* (request: BuildRequest, digest: string) {
