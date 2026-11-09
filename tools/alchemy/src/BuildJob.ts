@@ -140,8 +140,14 @@ export const runBuild = Effect.fn("runBuild")(function* (request: BuildRequest, 
     return yield* waitForDigest(nomadJob);
   }).pipe(
     Effect.ensuring(
-      Effect.all([nomad.stop(nomadJob), store.remove(object)], { discard: true }).pipe(
-        Effect.catch((error) => Console.error(`cleanup failed: ${error.message}`)),
+      // Each step runs on its own: a job that never registered makes the stop fail, and the
+      // tree must leave the bucket anyway.
+      Effect.all(
+        [
+          nomad.stop(nomadJob).pipe(Effect.catch(report("stop Nomad job"))),
+          store.remove(object).pipe(Effect.catch(report("delete tree"))),
+        ],
+        { discard: true },
       ),
     ),
   );
@@ -252,3 +258,7 @@ export const placementFailure = (evaluations: ReadonlyArray<Evaluation>): string
     ])
     .join("; ");
 };
+
+/** Report a cleanup failure on the job's output and carry on. */
+const report = (step: string) => (error: { readonly message: string }) =>
+  Console.error(`cleanup: ${step} failed: ${error.message}`);

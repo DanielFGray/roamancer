@@ -103,7 +103,7 @@ describe("platform ingress cartridge", () => {
 });
 
 describe("platform builds cartridge", () => {
-  it("declares the builds bucket and a key named builds, which the runner reads at secret/data/garage/builds", async () => {
+  it("declares the builds bucket and a key named platform-builds, which the runner reads at secret/data/garage/platform-builds", async () => {
     const cartridge = await Effect.runPromise(
       decodeFile(
         fileURLToPath(new URL("../platform/builds/cartridge.json", import.meta.url)),
@@ -111,7 +111,10 @@ describe("platform builds cartridge", () => {
       ).pipe(Effect.provide(NodeFileSystem.layer)),
     );
     assert.deepEqual(expand(cartridge), [
-      { _tag: "GarageBucket", bucket: { server: "garage", bucket: "builds", key: "builds" } },
+      {
+        _tag: "GarageBucket",
+        bucket: { server: "garage", bucket: "builds", key: "platform-builds" },
+      },
     ]);
   });
 });

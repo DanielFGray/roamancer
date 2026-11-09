@@ -34,12 +34,12 @@ A **cartridge** is a versioned JSON file that lists an app's services, images, p
 routes, secret references, and database needs. The platform turns each service into one Nomad job
 and orders the jobs by their dependencies.
 
-`ops release`, `ops stage` and `ops promote` build an app's committed HEAD and push it to the
-cluster registry. By default that build runs on the workstation with Docker. Set
-`[build] node = "<host>"` in the site folder's `site.toml` to build on that host with rootless
-Podman instead; the node receives the tree as a tar on ssh stdin and needs no app checkout.
-Both paths build the repository's `Dockerfile`, even when a `Containerfile` sits beside it, and pin the same
-`repository:commit@digest` in the cartridge.
+`ops release`, `ops stage` and `ops promote` build an app's committed `HEAD` and push it to the
+cluster registry. The build is a Nomad batch job on a worker node: `ops` sends the exported tree
+to the runner on the control host, which uploads it to the `builds` bucket and runs Buildah in
+the builder user's rootless Podman. The runner records the digest only after the registry
+answers for it. The build uses the repository's `Dockerfile`, even when a `Containerfile` sits
+beside it.
 
 ## What you get
 

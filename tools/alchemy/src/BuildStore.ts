@@ -1,8 +1,8 @@
 /**
  * The `builds` bucket in Garage, as the runner uses it: it uploads an exported tree, makes a
  * short-lived URL that the Nomad client fetches the tree from, and deletes the tree after the
- * build. Only the runner holds the bucket's key (OpenBao `secret/data/garage/builds`, written
- * by the `builds` platform cartridge), so a build job never sees a credential.
+ * build. Only the runner holds the bucket's key (OpenBao `secret/data/garage/platform-builds`, written
+ * by the `platform-builds` cartridge), so a build job never sees a credential.
  */
 import { Context, Effect, FileSystem, Layer, Option, Schema as S } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -11,8 +11,9 @@ import { Nomad } from "./Nomad.ts";
 import { OpenBao } from "./OpenBao.ts";
 import { presign } from "./Presign.ts";
 
-/** The bucket, and the cartridge name whose key writes it. */
+/** The bucket, and the platform cartridge whose key writes it (it names the key and its OpenBao path). */
 export const buildsBucket = "builds";
+const buildsKey = "platform-builds";
 
 /** The Nomad service of Garage's S3 API (`GarageServer` in platform/data). */
 const garageService = "garage";
@@ -54,14 +55,14 @@ export const layer = Layer.effect(
       const fail = (operation: string) => (cause: { readonly message: string }) =>
         new BuildStoreError({ operation, detail: cause.message });
       const stored = yield* openBao
-        .readKvData(objectStoreCredentialPath(buildsBucket))
+        .readKvData(objectStoreCredentialPath(buildsKey))
         .pipe(Effect.mapError(fail("read key")));
       const key = yield* Option.match(Option.flatMap(stored, S.decodeUnknownOption(StoredKey)), {
         onNone: () =>
           Effect.fail(
             new BuildStoreError({
               operation: "read key",
-              detail: `OpenBao has no key at ${objectStoreCredentialPath(buildsBucket)}; deploy the platform-builds cartridge`,
+              detail: `OpenBao has no key at ${objectStoreCredentialPath(buildsKey)}; deploy the platform-builds cartridge`,
             }),
           ),
         onSome: Effect.succeed,

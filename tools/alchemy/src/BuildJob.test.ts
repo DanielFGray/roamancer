@@ -4,7 +4,7 @@ import { Context, Effect, Fiber, Layer } from "effect";
 import { TestClock, TestConsole } from "effect/testing";
 import { BuildFailed, buildJobSpec, buildahImage, runBuild } from "./BuildJob.ts";
 import { BuildStore } from "./BuildStore.ts";
-import { Nomad, type AllocationSummary, type Evaluation } from "./Nomad.ts";
+import { Nomad, NomadError, type AllocationSummary, type Evaluation } from "./Nomad.ts";
 import { Store } from "./queue/Store.ts";
 import { Registry } from "./Registry.ts";
 
@@ -110,6 +110,12 @@ describe("runBuild", () => {
     assert.deepEqual(run.uploaded, []);
   });
 
+  it("deletes the tree even when stopping the Nomad job fails", async () => {
+    const run = await build({ printed: `${digest}\n`, registryHas: true, stopFails: true });
+    assert.equal(run.error, undefined);
+    assert.deepEqual(run.removed, ["7-" + request.key + ".tar"]);
+  });
+
   it("fails a job that nothing places, naming the scheduler's reason", async () => {
     const run = await build({ printed: "", registryHas: true, unplaced: true });
     assert.ok(run.error instanceof BuildFailed);
@@ -128,6 +134,7 @@ const build = async (options: {
   readonly status?: string;
   readonly repository?: string;
   readonly unplaced?: boolean;
+  readonly stopFails?: boolean;
 }) => {
   const uploaded: Array<string> = [];
   const removed: Array<string> = [];
@@ -147,7 +154,10 @@ const build = async (options: {
     evaluations: () => Effect.succeed([evaluation]),
     logs: (_id: string, _task: string, stream: string) =>
       Effect.succeed(stream === "stdout" ? options.printed : "step 3 failed"),
-    stop: (name: string) => Effect.sync(() => void stopped.push(name)),
+    stop: (name: string) =>
+      options.stopFails
+        ? Effect.fail(new NomadError({ op: "stop", cause: "no such job" }))
+        : Effect.sync(() => void stopped.push(name)),
   } as unknown as Context.Service.Shape<typeof Nomad>;
   const store = {
     put: (object: string) => Effect.sync(() => void uploaded.push(object)),
