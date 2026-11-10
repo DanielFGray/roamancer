@@ -149,7 +149,7 @@ under its 128 MB limit. Measured on 2026-11-01.
 Nomad reads a host's memory when its agent starts. On a virtual machine with memory ballooning,
 the hypervisor can take memory back later, so give each host a guaranteed minimum (on Proxmox,
 Minimum memory) at least as large as what its jobs and reserve need, and set the client's
-`memory_total_mb` to that minimum. Here cynic is guaranteed 4096 MB and atheist 5120 MB.
+`memory_total_mb` to that minimum. Here cynic and atheist are each guaranteed 6144 MB.
 
 ## Configure your installation
 
