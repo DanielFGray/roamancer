@@ -119,4 +119,20 @@ export const Response = S.Union([
 ]);
 export type Response = typeof Response.Type;
 
-export const decodeRequest = S.decodeUnknownSync(Request);
+/**
+ * A request fails on a key its schema does not declare. `ops` runs from the operator's
+ * checkout and the runner from the commit of the last `ops rebuild`, so a request can be
+ * newer than the runner that reads it. Dropping the unknown key would run that request with
+ * an older meaning; failing makes the operator rebuild first.
+ */
+const exactKeys = { onExcessProperty: "error" } as const;
+
+export const decodeRequest = S.decodeUnknownSync(Request, exactKeys);
+
+/** Appended to a refused request's message: the usual cause is a runner older than `ops`. */
+export const newerRequestHint =
+  " (if ops here is newer than this runner, run `ops rebuild` for this host)";
+
+/** Decode one JSON request line against `schema`, failing on undeclared keys. */
+export const decodeRequestLine = <Schema extends S.Constraint>(schema: Schema) =>
+  S.decodeUnknownEffect(S.fromJsonString(schema), exactKeys);

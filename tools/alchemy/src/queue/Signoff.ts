@@ -2,13 +2,13 @@
  * `alchemy-runner signoff` stores one record from a JSON line on stdin; `alchemy-runner
  * signoffs <app>` prints that app's rows as JSON. Neither is a job.
  */
-import { Console, Effect, Schema as S } from "effect";
+import { Console, Effect } from "effect";
 import { request } from "./Client.ts";
 import { QueueProtocolError } from "./Errors.ts";
 import { production } from "./Paths.ts";
-import { Signoff, Signoffs } from "./Protocol.ts";
+import { decodeRequestLine, newerRequestHint, Signoff, Signoffs } from "./Protocol.ts";
 
-const decodeSignoff = S.decodeUnknownEffect(S.fromJsonString(Signoff));
+const decodeSignoff = decodeRequestLine(Signoff);
 
 /** Store the signoff that `text` describes; return its id. */
 export const recordSignoff = Effect.fn("queue.recordSignoff")(function* (
@@ -17,7 +17,10 @@ export const recordSignoff = Effect.fn("queue.recordSignoff")(function* (
 ) {
   const body = yield* decodeSignoff(text).pipe(
     Effect.mapError(
-      (error) => new QueueProtocolError({ message: `invalid signoff request: ${error.message}` }),
+      (error) =>
+        new QueueProtocolError({
+          message: `invalid signoff request: ${error.message}${newerRequestHint}`,
+        }),
     ),
   );
   const response = yield* request(socketPath, body);
