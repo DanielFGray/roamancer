@@ -77,7 +77,7 @@ The public route depends on the work that secures public access to the platform'
 
 ### Site policy
 
-The site folder holds the policy, beside `site.toml`. An app repository never holds it, because a PR can change any file in its own repository. The policy names the repositories the platform watches and, per app, `deploy` (`auto` or `manual`) and the most previews it may run at once. An org-level layer can come later with the same fields. Its limits apply first, and an app's policy cannot raise them.
+The site folder holds the policy, beside `site.toml`. An app repository never holds it, because a PR can change any file in its own repository. The policy names the apps the platform watches and, per app, `deploy` (`auto` or `manual`) and the most previews it may run at once. An org-level layer can come later with the same fields. Its limits apply first, and an app's policy cannot raise them.
 
 ## Constraints in the current code
 

@@ -1,6 +1,6 @@
 /**
  * Reconcile releases the head of an app's `main` (docs/design/continuous-deployment.md). The
- * `reconcile` job reads `main` with the app's deploy key, decides, and either records why it
+ * `reconcile` job reads `main` in the app's repository on the control host, decides, and either records why it
  * waits or builds and deploys the tree the way `ops release` does, without the prompt: a push
  * to `main` is the approval. A queue job runs it, so it takes turns with deploys.
  */
@@ -11,6 +11,7 @@ import * as Cartridge from "./Cartridge.ts";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { apps, type Deploy, type Policy } from "./Policy.ts";
+import { repositoryOf } from "./queue/Paths.ts";
 import { JobCommandError } from "./queue/Run.ts";
 import type { Reconcile as ReconcileState } from "./queue/Store.ts";
 import { Store as StoreService } from "./queue/Store.ts";
@@ -47,63 +48,24 @@ export const decide = (input: {
   return "release";
 };
 
-/** The environment git needs to read a repository with the deploy key in `keyFile`. */
-export const sshEnvironment = (keyFile: string): Record<string, string> => ({
-  GIT_SSH_COMMAND: `ssh -i ${keyFile} -o IdentitiesOnly=yes -o BatchMode=yes`,
-  GIT_TERMINAL_PROMPT: "0",
-});
-
-/** The deploy key of `app` inside the keys folder. */
-export const keyFile = (keysDir: string, app: string) => `${keysDir}/${app}`;
-
-/** The commit at the head of `main` in `url`, or none when the repository has no such branch. */
-export const remoteHead = Effect.fn("Reconcile.remoteHead")(function* (
-  url: string,
-  env: Record<string, string>,
-) {
-  const listing = yield* Exec.output("git", ["ls-remote", "--", url, deployRef], undefined, env);
-  const [commit, ref] = listing.trim().split("\n")[0]?.split(/\s+/) ?? [];
-  return commit !== undefined && ref === deployRef && /^[0-9a-f]{40,64}$/.test(commit)
-    ? Option.some(commit)
-    : Option.none<string>();
-});
-
 /**
- * Fetch `main` of `url` into the bare repository `cache` (made on the first fetch) and return
- * its commit and tree. The fetch brings the whole history, not one commit: the release
- * records the repository's root commit as the app's origin (release.ts), and a shallow
- * clone's oldest commit is not the root. Later fetches bring only what is new.
+ * The commit and tree at the head of `main` in the bare repository `repository`, or none when
+ * it has no such branch. Fails when the repository cannot be read. The operator owns the
+ * repository and the runner reads it; the host's git config lists the folder in
+ * `safe.directory`, without which git refuses a repository another user owns.
  */
-export const fetchHead = Effect.fn("Reconcile.fetchHead")(function* (
-  cache: string,
-  url: string,
-  env: Record<string, string>,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  if (!(yield* fs.exists(cache))) {
-    yield* fs.makeDirectory(cache, { recursive: true });
-    yield* Exec.run("git", ["init", "--bare", "--quiet", cache]);
-  }
-  yield* Exec.run(
-    "git",
-    [
-      "-C",
-      cache,
-      "fetch",
-      "--quiet",
-      "--no-tags",
-      "--force",
-      "--",
-      url,
-      `${deployRef}:refs/reconcile/main`,
-    ],
-    env,
-  );
+export const readHead = Effect.fn("Reconcile.readHead")(function* (repository: string) {
   const git = (...args: ReadonlyArray<string>) =>
-    Exec.output("git", ["-C", cache, ...args]).pipe(Effect.map((text) => text.trim()));
-  const commit = yield* git("rev-parse", "refs/reconcile/main");
-  const tree = yield* git("rev-parse", `${commit}^{tree}`);
-  return { commit, tree };
+    Exec.output("git", ["-C", repository, ...args]).pipe(Effect.map((text) => text.trim()));
+  // A for-each-ref pattern also matches refs below it, such as refs/heads/main/x, so the
+  // listing is filtered to the exact name.
+  const listing = yield* git("for-each-ref", "--format=%(refname) %(objectname)", deployRef);
+  const commit = listing
+    .split("\n")
+    .map((line) => line.split(" "))
+    .find(([ref]) => ref === deployRef)?.[1];
+  if (commit === undefined) return Option.none<{ commit: string; tree: string }>();
+  return Option.some({ commit, tree: yield* git("rev-parse", `${commit}^{tree}`) });
 });
 
 /** `ops release`'s plan or deploy step failed; `message` is the reason its error gave. */
@@ -116,11 +78,9 @@ export interface ReconcileDeps {
   readonly policy: Policy;
   /** The queue job that runs this reconcile; it names the release's build. */
   readonly jobId: number;
-  /** The folder of bare repositories, one per app. */
-  readonly cacheDir: string;
+  /** The folder of the apps' bare repositories (queue/Paths.ts `repositoryOf`). */
+  readonly repositories: string;
   readonly site: BuildSite;
-  /** The environment for git when it reads `app`'s repository. */
-  readonly gitEnvironment: (app: string) => Record<string, string>;
   /** Whether the job holds a token OpenBao accepts. */
   readonly tokenValid: Effect.Effect<boolean>;
   /** Plan or deploy `app` as `ops release` does, with `env` added: the pinned cartridge and the commit. */
@@ -169,14 +129,9 @@ export const reconcileApp = Effect.fn("Reconcile.reconcileApp")(function* (
     return;
   }
 
-  // A repository that cannot be read (no deploy key on GitHub yet, no network) is an outcome
-  // on show in `ops dash`, not a failed job: the timer would add one every minute.
-  yield* readMain(
-    entry.repository,
-    `${deps.cacheDir}/${app}.git`,
-    deps.gitEnvironment(app),
-    before,
-  ).pipe(
+  // A repository that cannot be read is an outcome on show in `ops dash`, not a failed job:
+  // the timer would add one every minute.
+  yield* readHead(repositoryOf(deps.repositories, app)).pipe(
     Effect.matchEffect({
       onFailure: (error) => note(app, before, "unreachable", describeFailure(error)),
       onSuccess: (seen) => actOn(app, entry.deploy, seen, before, deps),
@@ -282,24 +237,6 @@ const actOn = Effect.fn("Reconcile.actOn")(function* (
 });
 
 /**
- * The commit and tree at the head of `main`, or none. Reconcile fetches only when the head
- * differs from the one it saw last, so a quiet minute costs one `git ls-remote`.
- */
-const readMain = Effect.fn("Reconcile.readMain")(function* (
-  url: string,
-  cache: string,
-  env: Record<string, string>,
-  seen: { readonly seenCommit: string | null; readonly seenTree: string | null },
-) {
-  const head = yield* remoteHead(url, env);
-  if (Option.isNone(head)) return Option.none<{ commit: string; tree: string }>();
-  if (seen.seenCommit === head.value && seen.seenTree !== null) {
-    return Option.some({ commit: head.value, tree: seen.seenTree });
-  }
-  return Option.some(yield* fetchHead(cache, url, env));
-});
-
-/**
  * Export the tree, find or build its image, and plan then deploy the cartridge pinned to it.
  * Returns the pinned image reference.
  */
@@ -311,10 +248,10 @@ const releaseTree = Effect.fn("Reconcile.releaseTree")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const store = yield* StoreService;
-  const cache = `${deps.cacheDir}/${app}.git`;
+  const source = repositoryOf(deps.repositories, app);
   const work = yield* fs.makeTempDirectoryScoped();
   const tarFile = `${work}/tree.tar`;
-  yield* Git.archiveOf(cache, head.commit, tarFile);
+  yield* Git.archiveOf(source, head.commit, tarFile);
   const exported = `${work}/tree`;
   yield* Git.unpack(tarFile, exported);
 
@@ -361,7 +298,7 @@ const releaseTree = Effect.fn("Reconcile.releaseTree")(function* (
   // The repository's root commit names it whatever its remotes are called (release.ts).
   const roots = yield* Exec.output("git", [
     "-C",
-    cache,
+    source,
     "rev-list",
     "--max-parents=0",
     head.commit,

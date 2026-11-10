@@ -10,14 +10,7 @@ import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { BuildStore } from "./BuildStore.ts";
 import { Nomad, type AllocationSummary } from "./Nomad.ts";
 import * as Policy from "./Policy.ts";
-import {
-  decide,
-  fetchHead,
-  ReleaseFailed,
-  reconcileApp,
-  remoteHead,
-  type ReconcileDeps,
-} from "./Reconcile.ts";
+import { decide, readHead, ReleaseFailed, reconcileApp, type ReconcileDeps } from "./Reconcile.ts";
 import { Registry } from "./Registry.ts";
 import { layer as storeLayer, Store } from "./queue/Store.ts";
 
@@ -56,10 +49,7 @@ describe("Policy", () => {
     Effect.runPromise(Effect.result(Policy.decode(JSON.stringify({ apps }))));
 
   it("defaults deploy to auto and lists apps by name", async () => {
-    const result = await decode({
-      b: { repository: "git@github.com:me/b.git" },
-      a: { repository: "ssh://git@github.com/me/a.git", deploy: "manual" },
-    });
+    const result = await decode({ b: {}, a: { deploy: "manual" } });
     if (result._tag !== "Success") return assert.fail("the policy should decode");
     const policy = result.success;
     assert.deepEqual(
@@ -75,23 +65,21 @@ describe("Policy", () => {
     );
   });
 
-  it("refuses a repository that is not an ssh URL, a name that is a path, and a bad deploy", async () => {
-    for (const apps of [
-      { a: { repository: "https://github.com/me/a.git" } },
-      { a: { repository: "file:///tmp/a" } },
-      { a: { repository: "--upload-pack=x" } },
-      { "../a": { repository: "git@github.com:me/a.git" } },
-      { a: { repository: "git@github.com:me/a.git", deploy: "sometimes" } },
-    ]) {
+  it("refuses a name that is a path, and a bad deploy", async () => {
+    for (const apps of [{ "../a": {} }, { a: { deploy: "sometimes" } }]) {
       assert.equal((await decode(apps))._tag, "Failure", JSON.stringify(apps));
     }
   });
 });
 
-/** A scratch folder with a git repository whose `main` a test advances, as a `file://` remote. */
+/**
+ * A scratch folder with the bare repository of the app `shop` in its `repositories` folder, as
+ * the control host keeps it, and a checkout that pushes to it.
+ */
 const origin = () => {
   const root = mkdtempSync(join(tmpdir(), "reconcile-"));
-  const repo = join(root, "origin.git");
+  const repositories = join(root, "repositories");
+  const repo = join(repositories, "shop.git");
   const work = join(root, "work");
   const git = (cwd: string, ...args: Array<string>) => {
     const run = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
@@ -102,17 +90,18 @@ const origin = () => {
     return run.stdout.trim();
   };
   mkdirSync(work);
+  mkdirSync(repositories);
   git(root, "init", "--bare", "--quiet", "-b", "main", repo);
   git(work, "init", "--quiet", "-b", "main");
   git(work, "remote", "add", "origin", repo);
-  const push = (message: string, files: Record<string, string>) => {
+  const push = (message: string, files: Record<string, string>, branch = "main") => {
     for (const [name, text] of Object.entries(files)) writeFileSync(join(work, name), text);
     git(work, "add", "-A");
     git(work, "commit", "--quiet", "-m", message);
-    git(work, "push", "--quiet", "origin", "main");
+    git(work, "push", "--quiet", "origin", `HEAD:refs/heads/${branch}`);
     return { commit: git(work, "rev-parse", "HEAD"), tree: git(work, "rev-parse", "HEAD^{tree}") };
   };
-  return { root, url: `file://${repo}`, push, git: (...args: Array<string>) => git(work, ...args) };
+  return { root, repositories, repo, push, git: (...args: Array<string>) => git(work, ...args) };
 };
 
 const cartridge = (image: string, name = "shop") =>
@@ -137,38 +126,23 @@ const cartridge = (image: string, name = "shop") =>
 
 const runtime = BunServices.layer;
 
-describe("fetching main", () => {
-  it("reads the head of main, fetches it into a bare cache, and fetches only what is new later", async () => {
+describe("reading main", () => {
+  const head = (repo: string) =>
+    Effect.runPromise(readHead(repo).pipe(Effect.provide(runtime))).then(Option.getOrNull);
+
+  it("reads main's commit and tree, and sees no main under another branch's name", async () => {
     const repo = origin();
     try {
-      const cache = join(repo.root, "cache", "shop.git");
-      assert.equal(
-        Option.isNone(
-          await Effect.runPromise(remoteHead(repo.url, {}).pipe(Effect.provide(runtime))),
-        ),
-        true,
-        "an empty repository has no main",
-      );
+      assert.equal(await head(repo.repo), null, "an empty repository has no main");
+      repo.push("aside", { "a.txt": "0" }, "main/aside");
+      assert.equal(await head(repo.repo), null, "main/aside is not main");
+      // Git cannot hold refs/heads/main beside refs/heads/main/aside.
+      repo.git("push", "--quiet", "origin", ":refs/heads/main/aside");
 
       const first = repo.push("one", { "a.txt": "1" });
-      const head = await Effect.runPromise(remoteHead(repo.url, {}).pipe(Effect.provide(runtime)));
-      assert.equal(Option.getOrNull(head), first.commit);
-      const fetched = await Effect.runPromise(
-        fetchHead(cache, repo.url, {}).pipe(Effect.provide(runtime)),
-      );
-      assert.deepEqual(fetched, first);
-
+      assert.deepEqual(await head(repo.repo), first);
       const second = repo.push("two", { "a.txt": "2" });
-      const again = await Effect.runPromise(
-        fetchHead(cache, repo.url, {}).pipe(Effect.provide(runtime)),
-      );
-      assert.deepEqual(again, second);
-      assert.notEqual(second.tree, first.tree);
-      // The cache holds the history, so the repository's root commit is known.
-      const roots = spawnSync("git", ["-C", cache, "rev-list", "--max-parents=0", second.commit], {
-        encoding: "utf8",
-      }).stdout.trim();
-      assert.equal(roots, first.commit);
+      assert.deepEqual(await head(repo.repo), second);
     } finally {
       rmSync(repo.root, { recursive: true, force: true });
     }
@@ -242,13 +216,12 @@ const harness = () => {
   });
   const registry = Registry.of({ has: () => Effect.succeed(true) });
 
-  const policy: Policy.Policy = { apps: { shop: { repository: repo.url } } };
+  const policy: Policy.Policy = { apps: { shop: {} } };
   const deps = (patch: Partial<ReconcileDeps> = {}): ReconcileDeps => ({
     policy,
     jobId: 11,
-    cacheDir: join(root, "cache"),
+    repositories: repo.repositories,
     site: { registry: "registry.cluster:5000", registryCaDir: "/var/lib/registry-ca" },
-    gitEnvironment: () => ({}),
     tokenValid: Effect.sync(() => knobs.token),
     stage: (command, app, env) =>
       command === "plan"
@@ -461,10 +434,9 @@ describe("reconcileApp", () => {
   it("never reads a manual app's repository", async () => {
     const h = harness();
     try {
-      const policy: Policy.Policy = {
-        apps: { shop: { repository: "file:///does/not/exist", deploy: "manual" } },
-      };
-      assert.equal((await h.reconcile({ policy }))._tag, "Success");
+      const policy: Policy.Policy = { apps: { shop: { deploy: "manual" } } };
+      const repositories = "/does/not/exist";
+      assert.equal((await h.reconcile({ policy, repositories }))._tag, "Success");
       assert.equal((await h.status()).status, "manual");
     } finally {
       h.cleanup();
@@ -474,8 +446,7 @@ describe("reconcileApp", () => {
   it("reports an unreadable repository as an outcome, not a failed job", async () => {
     const h = harness();
     try {
-      const policy: Policy.Policy = { apps: { shop: { repository: "file:///does/not/exist" } } };
-      assert.equal((await h.reconcile({ policy }))._tag, "Success");
+      assert.equal((await h.reconcile({ repositories: "/does/not/exist" }))._tag, "Success");
       assert.equal((await h.status()).status, "unreachable");
     } finally {
       h.cleanup();

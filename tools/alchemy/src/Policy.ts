@@ -1,24 +1,20 @@
 /**
- * The site policy: which app repositories the runner watches, and whether a push to `main`
- * releases them. It is `policy.toml` in the site folder, beside site.toml. Nix reads it when
- * it builds the control host and writes it to a file the runner reads (nixos/modules/alchemy-runner.nix),
+ * The site policy: which apps the runner watches, and whether a push to `main` releases them.
+ * It is `policy.toml` in the site folder, beside site.toml. Nix reads it when it builds the
+ * control host and writes it to a file the runner reads (nixos/modules/alchemy-runner.nix),
  * so changing it needs `ops rebuild`. An app repository never holds it: a push could change it.
+ * Each watched app has a bare repository on the control host, named after the app
+ * (queue/Paths.ts `repositoryOf`), which the operator pushes to.
  */
 import { Config, Effect, FileSystem, Schema as S } from "effect";
 
 /** An app name, which is its cartridge's name. It becomes a file name, so it holds no path. */
 const appName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-/** An ssh URL git reads with the app's deploy key. A leading `-` would be read as an option. */
-export const SshRepository = S.String.check(
-  S.isPattern(/^(?:ssh:\/\/[^\s@/]+@[^\s/]+\/\S+|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:\S+)$/),
-);
-
 export const Deploy = S.Literals(["auto", "manual"]);
 export type Deploy = typeof Deploy.Type;
 
 export const AppPolicy = S.Struct({
-  repository: SshRepository,
   deploy: S.optionalKey(Deploy),
 });
 export type AppPolicy = typeof AppPolicy.Type;
@@ -42,14 +38,10 @@ export const decode = S.decodeUnknownEffect(S.fromJsonString(Policy));
 /** The apps in the policy, by name, each with its `deploy` default filled in. */
 export const apps = (
   policy: Policy,
-): ReadonlyArray<{
-  readonly app: string;
-  readonly repository: string;
-  readonly deploy: Deploy;
-}> =>
+): ReadonlyArray<{ readonly app: string; readonly deploy: Deploy }> =>
   Object.entries(policy.apps ?? {})
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([app, entry]) => ({ app, repository: entry.repository, deploy: entry.deploy ?? "auto" }));
+    .map(([app, entry]) => ({ app, deploy: entry.deploy ?? "auto" }));
 
 /** The apps the timer reconciles: those whose pushes release unattended. */
 export const autoApps = (policy: Policy) => apps(policy).filter((entry) => entry.deploy === "auto");

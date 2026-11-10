@@ -7,14 +7,11 @@ let
   operator = site.operator;
   controlHost = config.networking.hostName == site.cluster.server;
 
-  # policy.toml of the site folder (src/Policy.ts): the repositories the runner watches. It
+  # policy.toml of the site folder (src/Policy.ts): the apps the runner watches. It
   # reaches the host only through this build, so widening it needs `ops rebuild`.
   watched = policy.apps or { };
   watchedNames = builtins.attrNames watched;
   autoApps = builtins.filter (name: (watched.${name}.deploy or "auto") == "auto") watchedNames;
-  # One deploy key per watched repository (GitHub refuses one key on two repositories). The
-  # private halves never leave the host; the public halves are readable for `ops reconcile key`.
-  deployKeys = "/var/lib/alchemy-deploy-keys";
 in
 {
   options.services.alchemyRunner = {
@@ -28,6 +25,13 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       description = "Pinned Alchemy host program (alchemy-runner).";
+    };
+
+    repositories = lib.mkOption {
+      type = lib.types.str;
+      default = "/srv/git";
+      readOnly = true;
+      description = "The apps' bare repositories; tools/alchemy/src/queue/Paths.ts names the same folder.";
     };
   };
 
@@ -56,29 +60,36 @@ in
 
     environment.etc."alchemy/policy.json".text = builtins.toJSON policy;
 
-    # Reconcile reads repositories over ssh with BatchMode, which refuses an unknown host.
-    programs.ssh.knownHosts."github.com".publicKey =
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    # The apps' repositories: the operator pushes to `<operator>@<host>:<repositories>/<app>.git`
+    # and reconcile reads `main` there (src/Reconcile.ts). The folder is setgid group alchemy,
+    # so each repository and every object a push writes is group alchemy, which can read and
+    # not write it: a push changes what releases, and a job cannot change what was pushed.
+    systemd.tmpfiles.rules = [ "d ${cfg.repositories} 2750 ${operator.name} alchemy -" ];
 
-    systemd.tmpfiles.rules = [ "d ${deployKeys} 0711 alchemy alchemy -" ];
+    # Git refuses a repository that another user owns unless protected config (here
+    # /etc/gitconfig) lists it, and alchemy reads the operator's repositories.
+    programs.git = {
+      enable = true;
+      config.safe.directory = "${cfg.repositories}/*";
+    };
 
-    # Makes a deploy key for each watched repository that lacks one. Keys are kept: the
-    # operator has added each public half to GitHub, and a new key would break that.
-    systemd.services.alchemy-deploy-keys = {
-      description = "Alchemy deploy keys for the watched repositories";
+    # Makes a bare repository for each app in the policy that lacks one. An existing
+    # repository is never touched: it holds the only pushed copy besides the operator's.
+    systemd.services.alchemy-repositories = {
+      description = "Bare repositories of the apps in the site policy";
       wantedBy = [ "multi-user.target" ];
       after = [ "systemd-tmpfiles-setup.service" ];
-      path = [ pkgs.openssh ];
+      path = [ pkgs.git ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        User = "alchemy";
-        Group = "alchemy";
-        UMask = "0022";
+        User = operator.name;
       };
+      # --shared=0640 keeps every file the operator's and readable by the group, whatever
+      # umask a push runs with.
       script = lib.concatMapStringsSep "\n" (name: ''
-        if [ ! -e ${deployKeys}/${name} ]; then
-          ssh-keygen -q -t ed25519 -N "" -C "alchemy-${name}@${config.networking.hostName}" -f ${deployKeys}/${name}
+        if [ ! -e ${cfg.repositories}/${name}.git ]; then
+          git init --bare --quiet --shared=0640 -b main ${cfg.repositories}/${name}.git
         fi
       '') watchedNames;
     };
@@ -169,8 +180,8 @@ in
     systemd.services."alchemy-job@" = {
       description = "Alchemy job %i";
       # A unit's PATH holds only coreutils and systemd: jobs also run tailscale (TailscaleServe)
-      # and psql, pg_dump and pg_restore (PostgresDatabase); a reconcile job runs git over ssh and unpacks the tree with tar.
-      path = [ config.services.tailscale.package pkgs.postgresql_17 pkgs.git pkgs.gnutar pkgs.openssh ];
+      # and psql, pg_dump and pg_restore (PostgresDatabase); a reconcile job runs git and unpacks the tree with tar.
+      path = [ config.services.tailscale.package pkgs.postgresql_17 pkgs.git pkgs.gnutar ];
       # A build job (tools/alchemy/src/BuildJob.ts) asks the registry whether it holds the digest a build printed,
       # and names the worker nodes' registry CA folder in the Nomad job. Bun trusts the
       # cluster CA through NODE_EXTRA_CA_CERTS.
