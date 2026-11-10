@@ -11,7 +11,7 @@ ops login                                  # once every 10 hours: mints an OpenB
 ops stage ../my-app                  # deploy the app repository's current commit at its tailnet-only staged route
 ops discard giglist                        # destroy the staged instance
 ops signoff                          # in an app repository: run scripts/verify on HEAD's exported tree, and record that it passed
-ops signoff install                  # once per clone: refuse a push to cynic's main or develop whose tree has no signoff
+ops signoff install                  # once per clone: verify and sign off each pushed main or develop tree first
 ops signoff list giglist             # that app's signoffs on the control host, newest first
 ops repo create                        # in an app repository: make its repository on the control host, add the remote, install the hook
 git push cynic main                    # release a signed-off main; the minute timer reconciles every app with a repository
