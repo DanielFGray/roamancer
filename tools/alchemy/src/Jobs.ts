@@ -203,7 +203,7 @@ const reconcile = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Release the head of an app's main now, as the timer does, and follow the job",
+    "Release the head of an app's main now, even a tree reconcile already tried, and follow the job",
   ),
 );
 

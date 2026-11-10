@@ -16,8 +16,8 @@ The runner's timer reads the `main` commit of each watched app's repository on t
 
 Reconcile releases `main` when its tree differs from the last tree that reconcile released or tried for that app. It does not compare `main` with `live`. So:
 
-- After `ops rollback`, `live` stays on the rolled-back release until `main` changes again. The next push, usually the fix, releases normally.
-- A build that fails is not tried again on each timer run. The next push tries again.
+- After `ops rollback`, `live` stays on the rolled-back release until `main` changes again or the operator runs `ops reconcile <app>`. The next push, usually the fix, releases normally.
+- A build or deploy that fails is not tried again on each timer run. The next push tries again, or `ops reconcile <app>`, which releases the same tree again when the failure came from outside the tree, such as a full disk. A retry still needs the signoff and a valid token. The queue keeps a retry job apart from the timer's job for the same app, because a retry merged into a timer job would skip the tried tree.
 - A tree without a signoff, or a run without a valid token, is not a try. Reconcile releases that tree when the signoff or the login arrives.
 
 An app with no repository on the control host is never released by reconcile; `ops release` still works for it.

@@ -268,8 +268,9 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
     });
 
     /**
-     * Queue a job. An app has at most one reconcile job waiting or running, so a second
-     * request returns that job: the timer fires every minute whatever a release takes. A new
+     * Queue a job. An app has at most one reconcile job of each kind (timer or retry) waiting or
+     * running, so a second request returns that job: the timer fires every minute whatever a
+     * release takes. A retry never merges into a timer job, which would skip the tried tree. A new
      * reconcile also removes the app's finished reconcile jobs that tried nothing, so a minute
      * timer does not fill the queue's list; the journal keeps their output.
      */
@@ -282,6 +283,7 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
             SELECT id FROM jobs
             WHERE command = 'reconcile'
               AND json_extract(payload, '$.app') = ${app}
+              AND coalesce(json_extract(payload, '$.retry'), 0) = ${submit.retry ? 1 : 0}
               AND state IN ('queued', 'starting', 'running')
             LIMIT 1
           `;

@@ -167,12 +167,13 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
     });
 
     /**
-     * Queue a reconcile job for `app` and stream its output. Reconcile receives nothing from
-     * this checkout (it reads the app's repository on the host), so it
-     * skips the revision check, as the timer's jobs do.
+     * Queue a retry reconcile job for `app`, which releases `main`'s tree even when reconcile
+     * already tried it, and stream its output. Reconcile receives nothing from this checkout
+     * (it reads the app's repository on the host), so it skips the revision check, as the
+     * timer's jobs do.
      */
     const reconcile = Effect.fn("Remote.reconcile")(function* (app: string) {
-      const id = yield* submit({ command: "reconcile", app }, { sameRevision: false });
+      const id = yield* submit({ command: "reconcile", app, retry: true }, { sameRevision: false });
       yield* direct(["wait", `${id}`]);
       return id;
     });
