@@ -41,9 +41,9 @@ An app's background work runs in the server process as a library, not as a separ
 
 | App | Check now | Change |
 |---|---|---|
-| dfg.rocks | `/healthz`, the contract | move the worker in-process |
-| giglist | `/healthz`, the contract | move the worker in-process |
-| postgres.garden | `/healthz`, the contract; `failed` names only the first failed dependency | name every failed dependency; move the worker in-process |
+| dfg.rocks | `/healthz`, the contract, with the worker in-process | none |
+| giglist | `/healthz`, the contract, with the worker in-process | none |
+| postgres.garden | `/healthz`, the contract, with the worker in-process; `failed` names only the first failed dependency | name every failed dependency |
 | twitter-bookmarks | `/healthz`, the contract | none |
 | noneuclid | TCP only | serve `/healthz` and use an HTTP check |
 | rfchat | `/health` | serve `/healthz` |
