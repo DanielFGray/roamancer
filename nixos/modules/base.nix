@@ -72,4 +72,13 @@ in
   '';
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  # Each rebuild adds a system closure to the store, and nothing else removes the old ones.
+  # Collect weekly, and keep two weeks of generations to roll back to. min-free makes a build
+  # collect garbage when less than 2 GiB is free, so a rebuild does not fail on a full disk.
+  nix.gc = {
+    automatic = true;
+    dates = "weekly";
+    options = "--delete-older-than 14d";
+  };
+  nix.settings.min-free = 2147483648;
 }

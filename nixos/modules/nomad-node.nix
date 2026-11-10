@@ -140,6 +140,28 @@ in
       };
     };
 
+    # The podman driver removes a task's container when the task stops, but never its image,
+    # so every release leaves the previous image in the nomad user's storage. Remove each image
+    # that no container uses; a later deploy or rollback pulls it again from the registry. A
+    # prune that runs between a pull and its container's start removes that image, and the
+    # task fails; Nomad then places it again, and the new pull succeeds.
+    systemd.services.nomad-podman-prune = {
+      description = "Remove Podman images that no Nomad container uses";
+      serviceConfig = {
+        Type = "oneshot";
+        User = "nomad";
+        ExecStart = "${pkgs.podman}/bin/podman --url unix:///run/user/1001/podman.sock image prune --all --force";
+      };
+    };
+    systemd.timers.nomad-podman-prune = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = "daily";
+        RandomizedDelaySec = "1h";
+        Persistent = true;
+      };
+    };
+
     systemd.services.nomad = {
       description = "Nomad agent";
       restartTriggers = [ config.environment.etc."nomad.d/nomad.hcl".source ];
