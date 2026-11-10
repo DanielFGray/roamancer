@@ -1367,28 +1367,27 @@ describe("build upload", () => {
 });
 
 describe("queue reconcile jobs", () => {
-  const reconcileOf = (app: string, retry = false) => ({
+  const reconcileOf = (stage: string, retry = false) => ({
     command: "reconcile" as const,
-    app,
+    stage,
     retry,
   });
   const state = (
-    app: string,
+    stage: string,
     patch: Partial<Parameters<Context.Service.Shape<typeof Store>["saveReconcile"]>[0]> = {},
   ) => ({
-    app,
+    stage,
     seenCommit: null,
     seenTree: null,
     triedTree: null,
     triedCommit: null,
-    triedResult: null,
     triedJob: null,
     status: "waiting-signoff" as const,
     detail: "",
     ...patch,
   });
 
-  it("migration 6 adds the reconciles table to an existing v5 database", async () => {
+  it("migrations 6 and 7 add the reconciles table to an existing v5 database", async () => {
     const { root, paths } = tempRoot();
     try {
       await withStore(paths, fakeUnits().layer, Effect.void);
@@ -1399,7 +1398,7 @@ describe("queue reconcile jobs", () => {
           `
           const { Database } = require("bun:sqlite");
           const db = new Database(${JSON.stringify(paths.database)});
-          db.run("DELETE FROM schema_migrations WHERE version = 6");
+          db.run("DELETE FROM schema_migrations WHERE version IN (6, 7)");
           db.run("DROP TABLE reconciles");
           db.close();
           `,
@@ -1420,6 +1419,65 @@ describe("queue reconcile jobs", () => {
           assert.equal(rows[0]?.triedTree, "t2");
           assert.equal(rows[0]?.status, "failed");
           assert.equal(Option.isNone(yield* store.getReconcile("other")), true);
+        }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("migration 7 keys an existing app's row and queued job by its live stage, and renames no-main", async () => {
+    const { root, paths } = tempRoot();
+    try {
+      const id = await withStore(
+        paths,
+        fakeUnits().layer,
+        Effect.gen(function* () {
+          return (yield* (yield* Store).enqueue(reconcileOf("shop"))).id;
+        }),
+      );
+      const reset = spawnSync(
+        process.execPath,
+        [
+          "-e",
+          `
+          const { Database } = require("bun:sqlite");
+          const db = new Database(${JSON.stringify(paths.database)});
+          db.run("DELETE FROM schema_migrations WHERE version = 7");
+          db.run("UPDATE jobs SET payload = json_set(json_remove(payload, '$.stage'), '$.app', 'shop') WHERE id = ${id}");
+          db.run("DROP TABLE reconciles");
+          db.run(\`CREATE TABLE reconciles (
+            app TEXT PRIMARY KEY NOT NULL, seen_commit TEXT, seen_tree TEXT, tried_tree TEXT,
+            tried_commit TEXT, tried_result TEXT CHECK (tried_result IN ('released','failed')),
+            tried_job INTEGER, status TEXT NOT NULL, detail TEXT NOT NULL, checked_at TEXT NOT NULL
+          )\`);
+          db.run(\`INSERT INTO reconciles VALUES
+            ('shop', 'c1', 't1', 't1', 'c1', 'released', 4, 'released', 'done', '2026-11-10 00:00:00'),
+            ('blog', NULL, NULL, NULL, NULL, NULL, NULL, 'no-main', 'empty', '2026-11-10 00:00:00')\`);
+          db.close();
+          `,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(reset.status, 0, reset.stderr);
+      await withStore(
+        paths,
+        fakeUnits().layer,
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const shop = Option.getOrThrow(yield* store.getReconcile("shop"));
+          assert.deepEqual(
+            [shop.stage, shop.triedTree, shop.triedJob, shop.status],
+            ["shop", "t1", 4, "released"],
+          );
+          const blog = Option.getOrThrow(yield* store.getReconcile("blog"));
+          assert.equal(blog.status, "no-branch");
+          assert.deepEqual((yield* store.get(id)).submit, reconcileOf("shop"));
+          yield* store.saveReconcile(state("shop-staged", { status: "staged", triedTree: "t2" }));
+          assert.deepEqual(
+            (yield* store.listReconciles()).map((row) => row.stage),
+            ["blog", "shop", "shop-staged"],
+          );
         }),
       );
     } finally {
@@ -1483,7 +1541,7 @@ describe("queue reconcile jobs", () => {
           const failed = yield* finishNext("shop", 1);
           const tried = yield* finishNext("shop", 0);
           const blog = yield* finishNext("blog", 0);
-          yield* store.saveReconcile(state("shop", { triedJob: tried, triedResult: "released" }));
+          yield* store.saveReconcile(state("shop", { triedJob: tried, status: "released" }));
 
           yield* store.enqueue(reconcileOf("shop"));
           const kept = (yield* store.list()).map((job) => job.id);
@@ -1505,7 +1563,7 @@ describe("queue reconcile jobs", () => {
       const body = {
         _tag: "submit" as const,
         command: "reconcile" as const,
-        app: "shop",
+        stage: "shop",
         retry: false,
       };
       const first = await Effect.runPromise(request(paths.socket, body));
@@ -1514,7 +1572,10 @@ describe("queue reconcile jobs", () => {
       assert.deepEqual(second, first);
       assert.equal(decodeRequest(body)._tag, "submit");
       // The queue holds reconcile jobs stored before `retry` existed; they read as the timer's.
-      assert.deepEqual(decodeRequest({ _tag: "submit", command: "reconcile", app: "shop" }), body);
+      assert.deepEqual(
+        decodeRequest({ _tag: "submit", command: "reconcile", stage: "shop" }),
+        body,
+      );
     } finally {
       await server.stop();
       rmSync(root, { recursive: true, force: true });

@@ -4,7 +4,7 @@
 
 A push to an app's `main` branch releases that commit, and the operator runs no command after the push. The platform builds the commit and releases it only when its tests passed and were signed off. The release waits for the new container's health checks, and Nomad reverts a release that fails them.
 
-This record is the first phase of `pr-previews.md`: its "Merge to deploy" path, without previews and without the GitHub App. It uses that record's terms (image key, ref, reconcile) and holds only what an unattended release adds.
+This record replaces `pr-previews.md` for apps hosted on the control host: one staged copy per app, fed by `develop`, instead of a preview per pull request, and no forge. It uses that record's terms (image key, ref, reconcile) and holds only what an unattended release adds.
 
 ## Decisions
 
@@ -21,6 +21,14 @@ Reconcile releases `main` when its tree differs from the last tree that reconcil
 - A tree without a signoff, or a run without a valid token, is not a try. Reconcile releases that tree when the signoff or the login arrives.
 
 An app with no repository on the control host is never released: a push to `main` there is the only release.
+
+### Stage: `develop` deploys the staged copy
+
+`main` is production and `develop` is the stage. Each app has two stages, and each stage has its own reconcile job and record: the app's own name for `main`, and `<app>-staged` for `develop`. The timer queues the live job first. The queue runs one job at a time, so a long staged deploy delays a `main` push that comes after it. A signed-off push to `develop` deploys the tailnet-only staged copy (`StagedCartridge.ts`) on the image of its tree, and records no deployment. The same rules apply as for `main`: a signoff and a valid token, and one try per tree. `ops reconcile <app>` retries `main`, and `ops reconcile <app>-staged` retries `develop`, so a retry never touches the other stage.
+
+A merge of `develop` into `main` is the promotion. A fast-forward merge gives `main` the staged tree, so the release reuses the staged image and its signoff and builds nothing.
+
+`ops discard <app>` destroys the staged copy and its database copies. Deleting `develop` only stops updates, so content edited in the stage survives it. After a discard, the next new tree on `develop` makes a new staged copy, whose databases copy production again. An app whose services write a host volume cannot be staged yet; its `develop` push records the refusal as a failed try.
 
 ### Repositories on the control host
 

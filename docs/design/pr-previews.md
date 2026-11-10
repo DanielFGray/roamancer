@@ -1,5 +1,7 @@
 # Pull request previews
 
+Status: replaced for apps hosted on the control host by `continuous-deployment.md`, where `develop` feeds one staged copy per app and `main` releases. Its previews per pull request were never built; its image-key and image-reuse rules were built and still hold.
+
 ## Goal
 
 You choose a pull request (PR) on an app repository, and the platform runs it at a tailnet-only preview address beside the live release. The preview follows new pushes, gets removed when the PR closes, and a merge into `main` deploys the merged code. When the merged code is the code the preview ran, the deploy reuses the preview's image and builds nothing.

@@ -57,6 +57,11 @@ describe("deployPushes", () => {
       stdin: `refs/heads/main ${a} refs/heads/dev ${b}\n`,
       want: [],
     },
+    {
+      name: "a push to develop, which stages",
+      stdin: `refs/heads/develop ${b} refs/heads/develop ${a}\n`,
+      want: [b],
+    },
     { name: "a deletion of main", stdin: `(delete) ${zero} refs/heads/main ${b}\n`, want: [] },
     {
       name: "the same commit pushed twice",
@@ -156,7 +161,10 @@ describe("ops signoff", () => {
       try {
         const { error, log } = await push(repo, row("f".repeat(40)));
         assert.ok(error instanceof OpsError);
-        assert.match(error.message, /has no signoff, so this push to main is refused/);
+        assert.match(
+          error.message,
+          /has no signoff, so this push to a branch that deploys is refused/,
+        );
         assert.ok(!log.some((line) => line.includes("scripts/verify")));
       } finally {
         rmSync(join(repo, ".."), { recursive: true, force: true });

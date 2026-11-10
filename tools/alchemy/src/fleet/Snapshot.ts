@@ -96,9 +96,9 @@ export const RunnerJob = S.Struct({
 });
 export type RunnerJob = typeof RunnerJob.Type;
 
-/** What reconcile last did for one app watched for pushes to `main`. */
+/** What reconcile last did for one stage: an app live, fed by `main`, or its staged copy, fed by `develop`. */
 export const ReconcileOutcome = S.Struct({
-  app: S.String,
+  stage: S.String,
   status: ReconcileStatus,
   // One sentence: the commit, and why it waits or what it released or failed on.
   detail: S.String,
@@ -199,7 +199,7 @@ export const Snapshot = S.Struct({
   apps: section(AppRelease),
   // The newest runner jobs, newest first: what is running, waiting, and what just ended.
   runner: section(RunnerJob),
-  // The last reconcile result of each app with a repository on the control host.
+  // The last reconcile result of each stage of the apps with a repository on the control host.
   reconciles: section(ReconcileOutcome),
   // The deployed OpenObserve dashboards; the page links each job to its view of the job dashboard.
   dashboards: section(DashboardLink),

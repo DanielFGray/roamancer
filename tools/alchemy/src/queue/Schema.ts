@@ -101,15 +101,16 @@ export const BuildSubmit = S.Struct({
 export type BuildSubmit = typeof BuildSubmit.Type;
 
 /**
- * reconcile: release the tree at the head of an app's `main` when the tree is signed off.
- * The app's name names its repository on the host (queue/Paths.ts). `retry` releases a tree
- * that reconcile already tried: the operator sets it (`ops reconcile`), and the timer never
+ * reconcile: deploy the tree at the head of one stage's branch when the tree is signed off.
+ * The stage is an app's name, for its `main`, or `<app>-staged`, for its `develop`; the app's
+ * name names its repository on the host (queue/Paths.ts). `retry` deploys a tree that
+ * reconcile already tried: the operator sets it (`ops reconcile`), and the timer never
  * does, so a failed tree waits for the next push unless a person asks again. Jobs queued
  * before the field existed are the timer's.
  */
 export const ReconcileSubmit = S.Struct({
   command: S.Literals(["reconcile"]),
-  app: S.NonEmptyString,
+  stage: S.NonEmptyString,
   retry: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(false))),
 });
 export type ReconcileSubmit = typeof ReconcileSubmit.Type;
@@ -167,7 +168,7 @@ export const subject = (submit: JobSubmit): string | null => {
     case "state":
       return submit.path;
     case "reconcile":
-      return submit.app;
+      return submit.stage;
     case "build":
       return submit.repository;
     case "dev-db":

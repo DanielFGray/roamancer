@@ -194,16 +194,18 @@ const placeQueued = Command.make(
 const reconcile = Command.make(
   "reconcile",
   {
-    app: Argument.String("app").pipe(
-      Argument.withDescription("An app with a repository on the control host"),
+    stage: Argument.String("stage").pipe(
+      Argument.withDescription(
+        "An app with a repository on the control host, for its main, or <app>-staged, for its develop",
+      ),
     ),
   },
-  Effect.fn(function* ({ app }) {
-    yield* (yield* Remote).reconcile(app);
+  Effect.fn(function* ({ stage }) {
+    yield* (yield* Remote).reconcile(stage);
   }),
 ).pipe(
   Command.withDescription(
-    "Release the head of an app's main now, even a tree reconcile already tried, and follow the job",
+    "Deploy the head of a stage's branch now, even a tree reconcile already tried, and follow the job",
   ),
 );
 

@@ -77,12 +77,11 @@ const toSignoff = (row: typeof SignoffRow.Type): Signoff => ({
 });
 
 const ReconcileRow = S.Struct({
-  app: S.String,
+  stage: S.String,
   seen_commit: S.NullOr(S.String),
   seen_tree: S.NullOr(S.String),
   tried_tree: S.NullOr(S.String),
   tried_commit: S.NullOr(S.String),
-  tried_result: S.NullOr(S.Literals(["released", "failed"])),
   tried_job: S.NullOr(S.Number),
   status: ReconcileStatus,
   detail: S.String,
@@ -90,17 +89,17 @@ const ReconcileRow = S.Struct({
 });
 
 /**
- * What reconcile knows about one app. `tried*` is the last tree it released or failed to
- * release; a tree that only waited for a signoff or a login is not in it.
+ * What reconcile knows about one stage: the app live, fed by `main`, or its staged copy, fed
+ * by `develop`. `tried*` is the last tree it deployed or failed to deploy; a tree that only
+ * waited for a signoff or a login is not in it.
  */
 export type Reconcile = {
-  readonly app: string;
-  /** The head of `main` reconcile last read, and its tree. */
+  readonly stage: string;
+  /** The head of the stage's branch reconcile last read, and its tree. */
   readonly seenCommit: string | null;
   readonly seenTree: string | null;
   readonly triedTree: string | null;
   readonly triedCommit: string | null;
-  readonly triedResult: "released" | "failed" | null;
   /** The queue job of that try. */
   readonly triedJob: number | null;
   /** The last outcome of any kind, with the sentence `ops dash` shows for it. */
@@ -110,12 +109,11 @@ export type Reconcile = {
 };
 
 const toReconcile = (row: typeof ReconcileRow.Type): Reconcile => ({
-  app: row.app,
+  stage: row.stage,
   seenCommit: row.seen_commit,
   seenTree: row.seen_tree,
   triedTree: row.tried_tree,
   triedCommit: row.tried_commit,
-  triedResult: row.tried_result,
   triedJob: row.tried_job,
   status: row.status,
   detail: row.detail,
@@ -247,6 +245,46 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       applied.add(6);
     }
 
+    // Reconcile also deploys `develop` to the staged copy, so a row is per stage, not per
+    // app; an existing row is the live stage, whose name is the app's. tried_result was never
+    // read. SQLite cannot drop a CHECKed column in place, so the table is copied.
+    if (!applied.has(7)) {
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
+            CREATE TABLE reconciles_by_stage (
+              stage TEXT PRIMARY KEY NOT NULL,
+              seen_commit TEXT,
+              seen_tree TEXT,
+              tried_tree TEXT,
+              tried_commit TEXT,
+              tried_job INTEGER,
+              status TEXT NOT NULL,
+              detail TEXT NOT NULL,
+              checked_at TEXT NOT NULL
+            )
+          `;
+          yield* sql`
+            INSERT INTO reconciles_by_stage
+            SELECT app, seen_commit, seen_tree, tried_tree, tried_commit, tried_job,
+              CASE status WHEN 'no-main' THEN 'no-branch' ELSE status END, detail, checked_at
+            FROM reconciles
+          `;
+          yield* sql`DROP TABLE reconciles`;
+          yield* sql`ALTER TABLE reconciles_by_stage RENAME TO reconciles`;
+          // A reconcile job names one stage; a job queued before named its app, which is the
+          // name of its live stage.
+          yield* sql`
+            UPDATE jobs
+            SET payload = json_set(json_remove(payload, '$.app'), '$.stage', json_extract(payload, '$.app'))
+            WHERE command = 'reconcile' AND json_extract(payload, '$.app') IS NOT NULL
+          `;
+          yield* sql`INSERT INTO schema_migrations (version) VALUES (7)`;
+        }),
+      );
+      applied.add(7);
+    }
+
     const selectJob = SqlSchema.findOne({
       Request: S.Number,
       Result: JobRow,
@@ -268,21 +306,21 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
     });
 
     /**
-     * Queue a job. An app has at most one reconcile job of each kind (timer or retry) waiting or
+     * Queue a job. A stage has at most one reconcile job of each kind (timer or retry) waiting or
      * running, so a second request returns that job: the timer fires every minute whatever a
      * release takes. A retry never merges into a timer job, which would skip the tried tree. A new
-     * reconcile also removes the app's finished reconcile jobs that tried nothing, so a minute
+     * reconcile also removes the stage's finished reconcile jobs that tried nothing, so a minute
      * timer does not fill the queue's list; the journal keeps their output.
      */
     const enqueue = Effect.fn("Store.enqueue")(function* (submit: JobSubmitT) {
       if (submit.command !== "reconcile") return yield* insert(submit);
-      const app = submit.app;
+      const stage = submit.stage;
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const active = yield* sql<{ id: number }>`
             SELECT id FROM jobs
             WHERE command = 'reconcile'
-              AND json_extract(payload, '$.app') = ${app}
+              AND json_extract(payload, '$.stage') = ${stage}
               AND coalesce(json_extract(payload, '$.retry'), 0) = ${submit.retry ? 1 : 0}
               AND state IN ('queued', 'starting', 'running')
             LIMIT 1
@@ -291,7 +329,7 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
           yield* sql`
             DELETE FROM jobs
             WHERE command = 'reconcile'
-              AND json_extract(payload, '$.app') = ${app}
+              AND json_extract(payload, '$.stage') = ${stage}
               AND state IN ('succeeded', 'canceled')
               AND id NOT IN (SELECT tried_job FROM reconciles WHERE tried_job IS NOT NULL)
           `;
@@ -517,39 +555,38 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       return rows.map(toSignoff);
     });
 
-    /** What reconcile last recorded for `app`; none before its first run. */
-    const getReconcile = Effect.fn("Store.getReconcile")(function* (app: string) {
+    /** What reconcile last recorded for `stage`; none before its first run. */
+    const getReconcile = Effect.fn("Store.getReconcile")(function* (stage: string) {
       const rows = yield* sql<typeof ReconcileRow.Type>`
-        SELECT * FROM reconciles WHERE app = ${app}
+        SELECT * FROM reconciles WHERE stage = ${stage}
       `;
       return Option.fromNullishOr(rows[0]).pipe(Option.map(toReconcile));
     });
 
-    /** Every app reconcile has run for, by name. */
+    /** Every stage reconcile has run for, by name. */
     const listReconciles = Effect.fn("Store.listReconciles")(function* () {
-      const rows = yield* sql<typeof ReconcileRow.Type>`SELECT * FROM reconciles ORDER BY app`;
+      const rows = yield* sql<typeof ReconcileRow.Type>`SELECT * FROM reconciles ORDER BY stage`;
       return rows.map(toReconcile);
     });
 
-    /** Replace the app's record; the store stamps `checkedAt`. */
+    /** Replace the stage's record; the store stamps `checkedAt`. */
     const saveReconcile = Effect.fn("Store.saveReconcile")(function* (
       next: Omit<Reconcile, "checkedAt">,
     ) {
       yield* sql`
         INSERT INTO reconciles (
-          app, seen_commit, seen_tree, tried_tree, tried_commit, tried_result, tried_job,
+          stage, seen_commit, seen_tree, tried_tree, tried_commit, tried_job,
           status, detail, checked_at
         ) VALUES (
-          ${next.app}, ${next.seenCommit}, ${next.seenTree}, ${next.triedTree},
-          ${next.triedCommit}, ${next.triedResult}, ${next.triedJob},
+          ${next.stage}, ${next.seenCommit}, ${next.seenTree}, ${next.triedTree},
+          ${next.triedCommit}, ${next.triedJob},
           ${next.status}, ${next.detail}, ${sql.literal(nowSql)}
         )
-        ON CONFLICT (app) DO UPDATE SET
+        ON CONFLICT (stage) DO UPDATE SET
           seen_commit = excluded.seen_commit,
           seen_tree = excluded.seen_tree,
           tried_tree = excluded.tried_tree,
           tried_commit = excluded.tried_commit,
-          tried_result = excluded.tried_result,
           tried_job = excluded.tried_job,
           status = excluded.status,
           detail = excluded.detail,

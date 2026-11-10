@@ -51,8 +51,9 @@ Releases:
   image is pinned by digest, and the plan runs before the deploy.
 - Each deployment is recorded. `ops rollback <app> <n>` deploys an earlier one again, image and
   job together.
-- `ops stage` runs a candidate at a tailnet-only preview address beside the live release, and
-  `ops discard` removes it. A push of the same tree to `main` reuses the staged image.
+- A signed-off push to `develop` runs the app's staged copy at a tailnet-only address beside the
+  live release, on a copy of its databases. A merge of that tree into `main` releases it with the
+  staged image, and `ops discard` removes the staged copy.
 - An update waits for the new container's health checks. Nomad is set to revert an update that
   fails them.
 - A service's `migrate` step runs before the service starts, and a failed migration keeps the new

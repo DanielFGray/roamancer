@@ -6,7 +6,7 @@
  * What verify checks is the project's own choice; the platform only needs it to exit 0.
  *
  * `ops signoff install` writes a git pre-push hook that runs `ops signoff pre-push`. It refuses
- * a push to `main` whose tree has no signoff, and runs no tests itself.
+ * a push to `main` or `develop` whose tree has no signoff, and runs no tests itself.
  */
 import { createHash } from "node:crypto";
 import { Console, Effect, FileSystem, Option, Stdio, Stream } from "effect";
@@ -18,8 +18,12 @@ import { OpsError, output } from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { Remote, type SignoffSend } from "./Remote.ts";
 
-/** The branch whose pushes deploy. Reconcile releases this branch's tree. */
-export const deployRef = "refs/heads/main";
+/** The branch reconcile releases live. */
+export const liveRef = "refs/heads/main";
+/** The branch reconcile deploys to the app's staged copy. */
+export const stagedRef = "refs/heads/develop";
+/** The branches whose pushes deploy, so a push to either needs a signoff. */
+export const deployRefs: ReadonlyArray<string> = [liveRef, stagedRef];
 
 const folder = Argument.String("folder").pipe(
   Argument.withDescription("The app's git repository, with cartridge.json and scripts/verify"),
@@ -67,7 +71,7 @@ const signoff = Command.make(
       }),
     ).pipe(
       Command.withDescription(
-        "Write a pre-push hook in this repository that refuses a push to main with no signoff",
+        "Write a pre-push hook in this repository that refuses a push to main or develop with no signoff",
       ),
     ),
     Command.make(
@@ -84,7 +88,7 @@ const signoff = Command.make(
       }),
     ).pipe(
       Command.withDescription(
-        "The pre-push hook's body: refuse a push to main whose tree has no signoff",
+        "The pre-push hook's body: refuse a push to main or develop whose tree has no signoff",
       ),
     ),
   ]),
@@ -94,7 +98,7 @@ const signoff = Command.make(
 export const commands = [signoff];
 
 /**
- * The commits a push sends to `main`, from the lines git gives a pre-push hook on stdin
+ * The commits a push sends to `main` or `develop`, from the lines git gives a pre-push hook on stdin
  * (`<local ref> <local sha> <remote ref> <remote sha>`). A deletion sends no commit.
  */
 export const deployPushes = (stdin: string): ReadonlyArray<string> => {
@@ -102,7 +106,11 @@ export const deployPushes = (stdin: string): ReadonlyArray<string> => {
     .split("\n")
     .map((line) => line.trim().split(/\s+/))
     .filter(
-      ([, local, remote]) => remote === deployRef && local !== undefined && !/^0+$/.test(local),
+      ([, local, remote]) =>
+        remote !== undefined &&
+        deployRefs.includes(remote) &&
+        local !== undefined &&
+        !/^0+$/.test(local),
     )
     .map(([, local]) => local!);
   return [...new Set(commits)];
@@ -214,7 +222,7 @@ const requireSignoff = Effect.fn("Signoff.requireSignoff")(function* (
   );
   if (Option.isSome(signoffs) && !signoffs.value.some((row) => row.tree === tree)) {
     return yield* new OpsError({
-      message: `${cartridge.name} tree ${tree.slice(0, 12)} has no signoff, so this push to main is refused. Run \`ops signoff ${commit}\`, which runs scripts/verify on it, and push again.`,
+      message: `${cartridge.name} tree ${tree.slice(0, 12)} has no signoff, so this push to a branch that deploys is refused. Run \`ops signoff ${commit}\`, which runs scripts/verify on it, and push again.`,
     });
   }
 });
@@ -222,7 +230,7 @@ const requireSignoff = Effect.fn("Signoff.requireSignoff")(function* (
 /** The hook `install` writes; the marker line lets `install` replace its own hook only. */
 const hookMarker = "# Written by `ops signoff install`.";
 const hook = `#!/bin/sh
-${hookMarker} It refuses a push to main whose tree has no
+${hookMarker} It refuses a push to main or develop whose tree has no
 # signoff on the control host; \`ops signoff <commit>\` runs scripts/verify and records one.
 # \`git push --no-verify\` skips the check, and reconcile still waits for a signoff.
 exec ops signoff pre-push

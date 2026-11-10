@@ -34,15 +34,16 @@ export const JobState = S.Literals([
 export type JobState = typeof JobState.Type;
 
 /**
- * Where reconcile left an app on its last run (docs/design/continuous-deployment.md).
- * `released` and `failed` are tries; the others are not, so the same tree is looked at again.
+ * Where reconcile left a stage, the app live or its staged copy, on its last run
+ * (docs/design/continuous-deployment.md). `released`, `staged` and `failed` are tries; the others are not, so the same tree is looked at again.
  */
 export const ReconcileStatus = S.Literals([
-  "no-main",
+  "no-branch",
   "unreachable",
   "waiting-signoff",
   "waiting-login",
   "released",
+  "staged",
   "failed",
 ]);
 export type ReconcileStatus = typeof ReconcileStatus.Type;
