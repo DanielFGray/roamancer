@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 let
   # Runner-owned Alchemy state: job units use WorkingDirectory /var/lib/alchemy, and
   # Alchemy writes under ./.alchemy (see nixos/modules/alchemy-runner.nix).
@@ -90,7 +90,13 @@ in
       ${pkgs.sqlite}/bin/sqlite3 -readonly ${alchemyDir}/operations.sqlite \
         "VACUUM INTO '/var/lib/backups/alchemy-operations.sqlite'"
     '';
-    paths = [ "${alchemyDir}/state" "/var/lib/backups/alchemy-operations.sqlite" ];
+    # The apps' repositories hold the only pushed copy of each app outside the operator's
+    # machines.
+    paths = [
+      "${alchemyDir}/state"
+      "/var/lib/backups/alchemy-operations.sqlite"
+      config.services.alchemyRunner.repositories
+    ];
     # Before the postgres backup, whose prune locks the whole repository.
     timerConfig = (import ../modules/restic-r2.nix).timerConfig // { OnCalendar = "*-*-* 02:00"; };
   };

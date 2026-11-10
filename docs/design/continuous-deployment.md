@@ -10,7 +10,7 @@ This record is the first phase of `pr-previews.md`: its "Merge to deploy" path, 
 
 ### Trigger: a timer reads `main`
 
-The runner's timer reads the `main` commit of each watched repository with `git ls-remote`, once a minute, and runs reconcile for each app whose `main` changed. This needs no public route and no GitHub App, so it does not wait for the public access work. A webhook can come later and run the same reconcile sooner. It changes no decision here.
+The runner's timer reads the `main` commit of each watched app's repository on the control host once a minute, and runs reconcile for each app whose `main` changed. This needs no public route and no forge. A git hook in the repository can come later and run the same reconcile sooner. It changes no decision here.
 
 ### Reconcile acts on a change of `main`
 
@@ -22,9 +22,13 @@ Reconcile releases `main` when its tree differs from the last tree that reconcil
 
 An app with `deploy = "manual"` in the site policy is never released by reconcile; `ops release` still works for it.
 
-### Fetch
+### Repositories on the control host
 
-The host reads each watched repository with a read-only deploy key for that repository. The runner holds one key per repository, because GitHub refuses one deploy key on two repositories. A oneshot unit on the control host makes a missing key and the private half never leaves the host. `ops reconcile key <app>` prints the public half, which the operator adds to GitHub. Reconcile fetches `main` into a bare cache repository under the runner's state, with its whole history and not one commit: a release records the repository's root commit as the app's origin, and a shallow clone has no root. Later fetches bring only what is new. Reconcile exports `main`'s tree with `git archive` and builds from that tree. `pr-previews.md` already requires a build from an exported tree, because the host has no checkout.
+Each watched app has a bare repository on the control host, `/srv/git/<app>.git`, and a push to its `main` releases it. The operator pushes over ssh as their own account (`git push cynic main`, with the remote `cynic:/srv/git/<app>.git`), so the release path needs no forge, no deploy key and no network beyond the tailnet. GitHub or another forge stays a mirror that the operator pushes to when they choose; it is not on the release path.
+
+The runner module makes the folder and one repository per app in the site policy, and never touches a repository that exists. The operator owns each repository; the folder is setgid group `alchemy`, so the runner reads every object a push writes and cannot change one. Git refuses a repository another user owns, so `/etc/gitconfig` lists the folder in `safe.directory`. The runner's nightly restic backup includes the folder, because it holds the only pushed copy outside the operator's machines.
+
+Reconcile reads `main` in the repository itself: no fetch and no cache. A release records the repository's root commit as the app's origin, which the full history in the repository gives. Reconcile exports `main`'s tree with `git archive` and builds from that tree. `pr-previews.md` already requires a build from an exported tree, because the host has no checkout.
 
 The runner uploads the exported tree to a `builds` bucket in Garage and gives the build job a presigned URL for it that expires after a few minutes. Nomad's `artifact` block fetches and unpacks the tree before the task starts, so the build container receives no credential. A batch job has no stdin, which is how today's ssh build receives its tree.
 
@@ -62,7 +66,7 @@ ops signoff           # run scripts/verify on HEAD, and record that it passed
 git push              # the hook finds the signoff; reconcile releases within a minute
 ```
 
-`git push --no-verify` skips the check. When the control host does not answer, the hook prints a warning and the push continues, so an outage of the homelab does not block a push to GitHub. Either way, reconcile releases that tree only after `ops signoff <commit>` records a signoff.
+`git push --no-verify` skips the check. When the control host does not answer, the hook prints a warning and the push continues, so an outage of the control host does not block a push to a mirror. Either way, reconcile releases that tree only after `ops signoff <commit>` records a signoff.
 
 The runner stores the app, the tree hash, the commit and the last lines of the verify output. Reconcile releases `main` only when its tree has a signoff. A signoff does not need the commit to be on the remote: the runner stores it by tree, and a tree that is never pushed is never released. So foreman can sign off a branch when it lands, before anyone pushes it.
 
@@ -76,7 +80,7 @@ A reconcile job uses the same token as any job, the one `ops login` mints for 10
 
 ### Approval
 
-Today the workstation shows each plan and asks before it submits the deploy (`host-owned-staged-runner.md`). Under continuous deployment, a push to `main` is the approval, as `staged-releases.md` already says for a merge. So anyone who can push to `main` releases to production, and that includes an agent that holds the operator's GitHub token. An app that needs a person to approve each release sets `deploy = "manual"`.
+Today the workstation shows each plan and asks before it submits the deploy (`host-owned-staged-runner.md`). Under continuous deployment, a push to `main` is the approval, as `staged-releases.md` already says for a merge. So anyone who can push to `main` releases to production, and that includes an agent that can use the operator's ssh key. An app that needs a person to approve each release sets `deploy = "manual"`.
 
 ### Revision lock
 
@@ -84,7 +88,7 @@ Today the workstation shows each plan and asks before it submits the deploy (`ho
 
 ### Site policy and timer
 
-`policy.toml` beside `site.toml` lists the watched repositories (`[apps.<cartridge name>]` with `repository`, an ssh URL, and `deploy`). The flake passes it to the runner module, which writes `/etc/alchemy/policy.json` and makes the keys and the timer. Adding an app to unattended release therefore needs `ops rebuild`. A systemd timer queues one `reconcile` job per `deploy = "auto"` app every minute; the queue keeps at most one waiting or running reconcile job per app, so a slow release is not queued twice. The runner trusts only github.com's host key (`programs.ssh.knownHosts` in the runner module); a repository on another host stays unreachable until that host's key is added there. A repository that cannot be read is an outcome shown in `ops dash`, not a failed job, so the timer does not fill the queue with failures.
+`policy.toml` beside `site.toml` lists the watched apps (`[apps.<cartridge name>]` with `deploy`). The flake passes it to the runner module, which writes `/etc/alchemy/policy.json` and makes each app's repository and the timer. Adding an app to unattended release therefore needs `ops rebuild`. A systemd timer queues one `reconcile` job per `deploy = "auto"` app every minute; the queue keeps at most one waiting or running reconcile job per app, so a slow release is not queued twice. A repository that cannot be read is an outcome shown in `ops dash`, not a failed job, so the timer does not fill the queue with failures.
 
 ### Records
 

@@ -191,7 +191,7 @@ const script = Effect.fn("Signoff.script")(function* (directory: string, path: s
 
 /**
  * Refuse `commit` unless the control host has a signoff of its tree. A host that does not
- * answer only warns: an outage never blocks a push to GitHub, nothing releases while the host
+ * answer only warns: an outage never blocks a push to a mirror, nothing releases while the host
  * is down, and afterwards reconcile still waits for a signoff of that tree.
  */
 const requireSignoff = Effect.fn("Signoff.requireSignoff")(function* (

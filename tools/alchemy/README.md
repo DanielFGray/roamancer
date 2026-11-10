@@ -16,7 +16,7 @@ ops signoff                          # in an app repository: run scripts/verify 
 ops signoff install                  # once per clone: refuse a push to main whose tree has no signoff
 ops signoff list giglist             # that app's signoffs on the control host, newest first
 ops reconcile giglist                  # release the head of giglist's main now, as the minute timer does; follows the job
-ops reconcile key giglist              # print the app's public deploy key, to add to its GitHub repository as a read-only deploy key
+git push cynic main                    # in an app repository, with the remote cynic:/srv/git/<app>.git: release a signed-off main
 ops deployment list giglist                # the recorded deployments, newest first
 ops rollback giglist 12                    # deploy recorded deployment 12 again
 ops plan --stage giglist                   # Alchemy plan of the newest recorded deployment

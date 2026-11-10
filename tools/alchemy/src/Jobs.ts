@@ -201,19 +201,6 @@ const reconcile = Command.make(
   Command.withDescription(
     "Release the head of an app's main now, as the timer does, and follow the job",
   ),
-  Command.withSubcommands([
-    Command.make(
-      "key",
-      { app: Argument.String("app").pipe(Argument.withDescription("An app in the site policy")) },
-      Effect.fn(function* ({ app }) {
-        yield* (yield* Remote).direct(["reconcile", "key", app]);
-      }),
-    ).pipe(
-      Command.withDescription(
-        "Print the app's public deploy key, to add to its GitHub repository as a read-only deploy key",
-      ),
-    ),
-  ]),
 );
 
 const login = Command.make(

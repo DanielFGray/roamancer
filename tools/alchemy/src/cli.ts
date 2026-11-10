@@ -962,9 +962,8 @@ const reconcileJob = Effect.fn("reconcileJob")(function* (
   yield* Reconcile.reconcileApp(submit.app, {
     policy: yield* Policy.load(),
     jobId,
-    cacheDir: paths.reconcileCache,
+    repositories: paths.repositories,
     site: yield* buildSite,
-    gitEnvironment: (app) => Reconcile.sshEnvironment(Reconcile.keyFile(paths.deployKeys, app)),
     // An absent, expired or revoked token all read as "run ops login".
     tokenValid: bao.checkToken().pipe(
       Effect.exit,
@@ -1006,39 +1005,9 @@ const reconcileEnqueue = Command.make(
   Command.withDescription("Queue one reconcile job for each app the policy releases on a push"),
 );
 
-const reconcileKey = Command.make(
-  "key",
-  { app: Argument.String("app").pipe(Argument.withDescription("An app in the site policy")) },
-  Effect.fn(function* ({ app }) {
-    const policy = yield* Policy.load().pipe(
-      Effect.mapError((error) => new CliError({ message: `policy: ${error.message}` })),
-    );
-    if (!Policy.apps(policy).some((entry) => entry.app === app)) {
-      return yield* new CliError({
-        message: `'${app}' is not in the site policy (policy.toml). Add it and run \`ops rebuild\`.`,
-      });
-    }
-    const fs = yield* FileSystem.FileSystem;
-    const file = `${Reconcile.keyFile(QueuePaths.production.deployKeys, app)}.pub`;
-    const key = yield* fs.readFileString(file).pipe(
-      Effect.mapError(
-        () =>
-          new CliError({
-            message: `${file} does not exist yet. The alchemy-deploy-keys service makes it on the next \`ops rebuild\`.`,
-          }),
-      ),
-    );
-    yield* Console.log(key.trim());
-  }),
-).pipe(
-  Command.withDescription(
-    "Print an app's public deploy key, to add to GitHub as a read-only deploy key",
-  ),
-);
-
 const reconcile = Command.make("reconcile").pipe(
   Command.withDescription("Release pushes to an app's main branch"),
-  Command.withSubcommands([reconcileEnqueue, reconcileKey]),
+  Command.withSubcommands([reconcileEnqueue]),
 );
 
 const main = Effect.gen(function* () {

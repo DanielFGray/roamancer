@@ -5,7 +5,7 @@ Every host backs up to one restic repository in Cloudflare R2. Restic encrypts o
 | Host | Unit | What | When |
 | --- | --- | --- | --- |
 | cynic | `restic-backups-postgres` | `pg_dumpall` of every database and role, as `postgres.sql` | 03:00, then prune and check |
-| cynic | `restic-backups-alchemy` | Alchemy state (`~/alchemy/.alchemy/state` of the operator account) and a `VACUUM INTO` copy of its operation journal, `alchemy-operations.sqlite` | 02:00 |
+| cynic | `restic-backups-alchemy` | Alchemy state (`/var/lib/alchemy/.alchemy/state`), a `VACUUM INTO` copy of its operation journal, `alchemy-operations.sqlite`, and the apps' repositories, `/srv/git` | 02:00 |
 | cynic | `restic-backups-garage` | The Garage object store volume, `/var/lib/nomad/garage-data`, with a fresh `garage meta snapshot` of its database in place of the live database | 04:00 |
 | atheist | `restic-backups-files` | `/srv/www` (static site releases) and `/var/lib/nomad/traefik-acme` (Let's Encrypt account and certificates) | 01:00 |
 
@@ -67,7 +67,7 @@ sudo restic-files restore latest --host atheist --target /tmp/restore --include 
 
 Then compare and copy the folders you need. Restore into an empty target, never over the live folder.
 
-To restore Alchemy state onto a rebuilt cynic, restore `--host cynic --include <operator home>/alchemy/.alchemy/state --include /var/lib/backups/alchemy-operations.sqlite` the same way, then put the state folder back at `~/alchemy/.alchemy/state` and the journal at `~/alchemy/.alchemy/operations.sqlite` before the first `ops plan`.
+To restore Alchemy state onto a rebuilt cynic, restore `--host cynic --include /var/lib/alchemy/.alchemy/state --include /var/lib/backups/alchemy-operations.sqlite` the same way, then put the state folder back at `/var/lib/alchemy/.alchemy/state` and the journal at `/var/lib/alchemy/.alchemy/operations.sqlite`, owned by `alchemy`, before the first `ops plan`. To restore the apps' repositories, restore `--include /srv/git` the same way and put each `<app>.git` back in `/srv/git`, owned by the operator with group `alchemy`, before the next push.
 
 ## Restore the Postgres cluster
 
