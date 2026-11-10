@@ -182,6 +182,11 @@ in
 
     systemd.services."alchemy-job@" = {
       description = "Alchemy job %i";
+      # A switch restarts the running instances of a changed template, and every rebuild changes
+      # this one (the runner package records its revision). A job instance runs one queue job:
+      # its stop step marks the job interrupted, so the restarted instance refuses it. A running
+      # job finishes on the code it started with instead.
+      restartIfChanged = false;
       # A unit's PATH holds only coreutils and systemd: jobs also run tailscale (TailscaleServe)
       # and psql, pg_dump and pg_restore (PostgresDatabase); a reconcile job runs git and unpacks the tree with tar.
       path = [ config.services.tailscale.package pkgs.postgresql_17 pkgs.git pkgs.gnutar ];
