@@ -1,7 +1,6 @@
 import { Context, Effect, Layer, Option, Redacted, Schema as S, Stream } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Job, toJobSpec } from "./Job.ts";
-import type { ReleaseJobSpec } from "./ReleaseJob.ts";
 import * as NomadConfig from "./NomadConfig.ts";
 
 export class NomadError extends S.TaggedError<NomadError>()("NomadError", {
@@ -196,7 +195,7 @@ export type NodeStats = typeof NodeStatsSchema.Type;
 export type LogStream = "stdout" | "stderr";
 
 type JobRequest = {
-  readonly Job: ReturnType<typeof toJobSpec> | ReleaseJobSpec | Readonly<Record<string, unknown>>;
+  readonly Job: ReturnType<typeof toJobSpec> | Readonly<Record<string, unknown>>;
   readonly Diff?: boolean;
   readonly EnforceIndex?: boolean;
   readonly JobModifyIndex?: number;
@@ -208,18 +207,9 @@ export class Nomad extends Context.Service<
     readonly jobs: () => Effect.Effect<ReadonlyArray<JobListItem>, NomadError>;
     readonly job: (name: string) => Effect.Effect<Option.Option<JobSnapshot>, NomadError>;
     readonly plan: (job: Job, owner: string) => Effect.Effect<typeof PlanResponse.Type, NomadError>;
-    readonly planRelease: (
-      name: string,
-      job: ReleaseJobSpec,
-    ) => Effect.Effect<typeof PlanResponse.Type, NomadError>;
     readonly register: (
       job: Job,
       owner: string,
-      expectedModifyIndex: number,
-    ) => Effect.Effect<Registration, NomadError>;
-    readonly registerRelease: (
-      name: string,
-      job: ReleaseJobSpec,
       expectedModifyIndex: number,
     ) => Effect.Effect<Registration, NomadError>;
     /**
@@ -347,23 +337,12 @@ export const layer = () =>
             Job: toJobSpec(job, owner),
             Diff: true,
           }).pipe(Effect.flatMap((response) => decode("plan", response, PlanResponse))),
-        planRelease: (name, job) =>
-          requestJson("planRelease", "POST", `/v1/job/${encodeURIComponent(name)}/plan`, {
-            Job: job,
-            Diff: true,
-          }).pipe(Effect.flatMap((response) => decode("planRelease", response, PlanResponse))),
         register: (job, owner, expectedModifyIndex) =>
           requestJson("register", "POST", "/v1/jobs", {
             Job: toJobSpec(job, owner),
             EnforceIndex: true,
             JobModifyIndex: expectedModifyIndex,
           }).pipe(Effect.flatMap((response) => decode("register", response, Registration))),
-        registerRelease: (name, job, expectedModifyIndex) =>
-          requestJson("registerRelease", "POST", "/v1/jobs", {
-            Job: job,
-            EnforceIndex: true,
-            JobModifyIndex: expectedModifyIndex,
-          }).pipe(Effect.flatMap((response) => decode("registerRelease", response, Registration))),
         registerBatch: (spec) =>
           requestJson("registerBatch", "POST", "/v1/jobs", { Job: spec }).pipe(
             Effect.flatMap((response) => decode("registerBatch", response, Registration)),
