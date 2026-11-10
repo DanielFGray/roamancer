@@ -8,5 +8,4 @@
 
 ## Platform changes
 
-- New `tools/alchemy` or `nixos/` code reaches a host only through `ops rebuild`, which needs the operator's password. Keep platform commits on a branch until the next rebuild, and merge them into develop just before it, for every waiting commit at once. Ask for a rebuild only when a deploy needs a change.
-- Edit platform code in a git worktree, not in the shared checkout. `ops` refuses every job while this checkout's `tools/alchemy`, uncommitted edits included, differs from the runner's revision, so an edit in progress blocks every agent's deploys.
+- New `tools/alchemy` or `nixos/` code reaches a host only through `ops rebuild`, which needs the operator's password. Ask for a rebuild only when a deploy needs a change. A commit that adds a key to a job request or a cartridge makes `ops` fail against the older runner, so keep it on a branch and merge it into develop just before the rebuild.
