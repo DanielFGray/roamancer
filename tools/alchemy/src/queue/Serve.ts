@@ -9,7 +9,7 @@ import * as Socket from "effect/socket/Socket";
 import * as SocketServer from "effect/socket/SocketServer";
 import { QueueProtocolError, TokenWriteError } from "./Errors.ts";
 import { spoolFile, type Paths } from "./Paths.ts";
-import { type BuildUpload, Request, Response } from "./Protocol.ts";
+import { type BuildUpload, decodeRequestLine, Request, Response } from "./Protocol.ts";
 import { readToken } from "./Run.ts";
 import { unitName } from "./Schema.ts";
 import { SecretWriter } from "./Secrets.ts";
@@ -17,7 +17,7 @@ import { tryStart } from "./Starter.ts";
 import { Store } from "./Store.ts";
 import type { Units } from "./Units.ts";
 
-const decodeRequest = S.decodeUnknownEffect(S.fromJsonString(Request));
+const decodeRequest = decodeRequestLine(Request);
 const encodeResponse = S.encodeUnknownEffect(S.fromJsonString(Response));
 
 const terminal = new Set(["succeeded", "failed", "interrupted", "canceled"]);

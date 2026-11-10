@@ -9,7 +9,7 @@ import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { request } from "./Client.ts";
 import { QueueProtocolError } from "./Errors.ts";
 import { production } from "./Paths.ts";
-import { Submit } from "./Protocol.ts";
+import { decodeRequestLine, newerRequestHint, Submit } from "./Protocol.ts";
 import { unitName } from "./Schema.ts";
 
 /** Process exit for a finished job; 1 when the terminal state has no exit code. */
@@ -22,7 +22,7 @@ export class SubmitExit extends S.TaggedError<SubmitExit>()("SubmitExit", {
   }
 }
 
-const decodeSubmit = S.decodeUnknownEffect(S.fromJsonString(Submit));
+const decodeSubmit = decodeRequestLine(Submit);
 
 /** Queue the job that `text`, one JSON submit request, describes; return its id. */
 export const submitJob = Effect.fn("queue.submitJob")(function* (
@@ -31,7 +31,10 @@ export const submitJob = Effect.fn("queue.submitJob")(function* (
 ) {
   const body = yield* decodeSubmit(text).pipe(
     Effect.mapError(
-      (error) => new QueueProtocolError({ message: `invalid submit request: ${error.message}` }),
+      (error) =>
+        new QueueProtocolError({
+          message: `invalid submit request: ${error.message}${newerRequestHint}`,
+        }),
     ),
   );
   const submitted = yield* request(socketPath, body);

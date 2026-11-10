@@ -40,6 +40,7 @@ import { layerServer, recover, serve, sweepSpool } from "./Serve.ts";
 import { pipedValue, SecretWriter } from "./Secrets.ts";
 import { tryStart } from "./Starter.ts";
 import { layer as storeLayer, Store } from "./Store.ts";
+import { recordSignoff } from "./Signoff.ts";
 import { submitJob, waitJob } from "./Submit.ts";
 import { Units } from "./Units.ts";
 
@@ -48,12 +49,31 @@ const tempRoot = (): { root: string; paths: Paths } => {
   return { root, paths: under(root) };
 };
 
+/**
+ * Send the request line and `bytes` raw bytes, then read the one response line. It bypasses
+ * the client's encoder, which would drop keys the schema does not declare.
+ */
+const send = (paths: Paths, header: object, bytes: Buffer = Buffer.alloc(0)) =>
+  new Promise<{ _tag: string; id?: number; message?: string }>((resolve, reject) => {
+    const sock = createConnection(paths.socket);
+    let raw = "";
+    sock.on("data", (chunk) => {
+      raw += chunk.toString("utf8");
+      if (raw.includes("\n")) {
+        sock.end();
+        resolve(JSON.parse(raw));
+      }
+    });
+    sock.on("error", reject);
+    sock.write(`${JSON.stringify(header)}\n`);
+    sock.write(bytes);
+  });
+
 const stageSubmit = {
   _tag: "submit" as const,
   command: "plan" as const,
   stage: "shop",
   cartridge: '{"name":"shop"}',
-  origin: "origin-a",
   revision: "rev-1",
   stagedImage: null,
 };
@@ -184,7 +204,6 @@ describe("queue protocol", () => {
         command: "plan",
         args: ["-c", "evil.ts"],
         cartridge: null,
-        origin: "",
         revision: "",
         stagedImage: null,
       }),
@@ -195,7 +214,6 @@ describe("queue protocol", () => {
       command: "plan",
       stage: "shop",
       cartridge: null,
-      origin: "",
       revision: "",
       stagedImage: null,
     });
@@ -224,6 +242,46 @@ describe("queue protocol", () => {
       _tag: "signoffs",
       app: "shop",
     });
+  });
+});
+
+// ops may be newer than the runner; a key the runner does not declare must stop the request,
+// not be dropped so the request runs with an older meaning.
+describe("queue undeclared request keys", () => {
+  const signoff = {
+    _tag: "signoff",
+    app: "shop",
+    tree: "a".repeat(40),
+    commit: "b".repeat(40),
+    summary: "ok",
+    logSha256: "c".repeat(64),
+  };
+
+  it("the front end answers error and queues nothing", async () => {
+    const { root, paths } = tempRoot();
+    const server = await runServe(paths, fakeUnits().layer);
+    try {
+      const refused = await send(paths, { ...stageSubmit, dryRun: true });
+      assert.equal(refused._tag, "error");
+      assert.match(refused.message ?? "", /dryRun/);
+      const listed = await Effect.runPromise(request(paths.socket, { _tag: "list" }));
+      assert.deepEqual(listed, { _tag: "listed", jobs: [] });
+    } finally {
+      await server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("submit and signoff refuse before they reach the socket, and name ops rebuild", async () => {
+    const unreachable = join(tmpdir(), "no-such-socket");
+    const submitted = await Effect.runPromise(
+      Effect.flip(submitJob(JSON.stringify({ ...stageSubmit, dryRun: true }), unreachable)),
+    );
+    const signedOff = await Effect.runPromise(
+      Effect.flip(recordSignoff(JSON.stringify({ ...signoff, verdict: "ok" }), unreachable)),
+    );
+    assert.match(submitted.message, /dryRun.*ops rebuild/s);
+    assert.match(signedOff.message, /verdict.*ops rebuild/s);
   });
 });
 
@@ -887,7 +945,6 @@ describe("queue plan gate", () => {
     command: "deploy" as const,
     stage: "shop",
     cartridge,
-    origin: "o",
     revision: "r",
     stagedImage: null,
     planJobId,
@@ -1104,7 +1161,6 @@ describe("queue plan gate", () => {
               command: "drift" as const,
               stage: "shop",
               cartridge: null,
-              origin: "",
               revision: "",
               stagedImage: null,
             },
@@ -1156,7 +1212,6 @@ describe("queue submit client", () => {
         command: "plan" as const,
         stage: "shop",
         cartridge: null,
-        origin: "",
         revision: "",
         stagedImage: null,
       };
@@ -1256,7 +1311,6 @@ describe("queue protocol deploy", () => {
         command: "deploy",
         stage: "shop",
         cartridge: null,
-        origin: "",
         revision: "",
         stagedImage: null,
       }),
@@ -1266,7 +1320,6 @@ describe("queue protocol deploy", () => {
       command: "deploy",
       stage: "shop",
       cartridge: null,
-      origin: "",
       revision: "",
       stagedImage: null,
       planJobId: 3,
@@ -1283,23 +1336,6 @@ describe("build upload", () => {
     key: "e".repeat(40),
     memoryMaxMB: 2048,
   };
-
-  /** Send the request line and `bytes` raw bytes, then read the one response line. */
-  const send = (paths: Paths, header: object, bytes: Buffer) =>
-    new Promise<{ _tag: string; id?: number; message?: string }>((resolve, reject) => {
-      const sock = createConnection(paths.socket);
-      let raw = "";
-      sock.on("data", (chunk) => {
-        raw += chunk.toString("utf8");
-        if (raw.includes("\n")) {
-          sock.end();
-          resolve(JSON.parse(raw));
-        }
-      });
-      sock.on("error", reject);
-      sock.write(`${JSON.stringify(header)}\n`);
-      sock.write(bytes);
-    });
 
   it("stores the tar byte for byte under the spool id and queues a build job that names it", async () => {
     const { root, paths } = tempRoot();

@@ -90,9 +90,9 @@ A reconcile job uses the same token as any job, the one `ops login` mints for 10
 
 Today the workstation shows each plan and asks before it submits the deploy (`host-owned-staged-runner.md`). Under continuous deployment, a push to `main` is the approval, as `staged-releases.md` already says for a merge. So anyone who can push to `main` releases to production, and that includes an agent that can use the operator's ssh key. That push is the only way to release, so the ssh key that can push and the `ops login` token that reconcile needs decide who can release.
 
-### Revision lock
+### Runner and checkout versions
 
-`ops` compares the workstation's `tools/alchemy` with the runner's revision because the runner reads what `ops` sends. Reconcile starts on the host and receives nothing from the workstation, so it skips that check. A platform commit then stops only the workstation's `ops` commands until the next rebuild, not releases started by a push. `ops signoff` skips the check too, because the runner only stores a signoff, so a platform commit does not stop a push either.
+The runner reads what `ops` sends, and the two come from different commits: `ops` from the workstation's checkout, the runner from the last `ops rebuild`. The runner refuses a request with a key its schema does not declare (`queue/Protocol.ts`), and it decodes a sent cartridge the same way, so it never runs a newer request with an older meaning. A platform commit therefore stops no `ops` command and no push. `ops` notes on stderr when runner code in the checkout is not live yet.
 
 ### Watched apps and timer
 
