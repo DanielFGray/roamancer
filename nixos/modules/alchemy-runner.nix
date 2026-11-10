@@ -1,17 +1,11 @@
 # Alchemy runner on the control host: system user, state directory, submit socket,
 # queue front end, and per-job units. Enabled when this host is site.cluster.server,
 # or when enable is set (the disposable testground VM).
-{ config, lib, pkgs, site, policy, ... }:
+{ config, lib, pkgs, site, ... }:
 let
   cfg = config.services.alchemyRunner;
   operator = site.operator;
   controlHost = config.networking.hostName == site.cluster.server;
-
-  # policy.toml of the site folder (src/Policy.ts): the apps the runner watches. It
-  # reaches the host only through this build, so widening it needs `ops rebuild`.
-  watched = policy.apps or { };
-  watchedNames = builtins.attrNames watched;
-  autoApps = builtins.filter (name: (watched.${name}.deploy or "auto") == "auto") watchedNames;
 in
 {
   options.services.alchemyRunner = {
@@ -36,11 +30,6 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = map (name: {
-      assertion = builtins.match "[a-z0-9]+(-[a-z0-9]+)*" name != null;
-      message = "policy.toml: app name '${name}' must be lowercase letters, digits and single hyphens";
-    }) watchedNames;
-
     users.groups.alchemy = { };
     users.groups.alchemy-submit = { };
     users.groups.alchemy-repositories.members = [ operator.name "alchemy" ];
@@ -59,10 +48,8 @@ in
 
     environment.systemPackages = [ cfg.package ];
 
-    environment.etc."alchemy/policy.json".text = builtins.toJSON policy;
-
-    # The apps' repositories: the operator pushes to `<operator>@<host>:<repositories>/<app>.git`
-    # and reconcile reads `main` there (src/Reconcile.ts). The folder is setgid group
+    # The apps' repositories: `ops repo create` makes `<repositories>/<app>.git` as the operator,
+    # who pushes to it over ssh, and reconcile reads `main` there (src/Reconcile.ts). The folder is setgid group
     # alchemy-repositories, so each repository and every object a push writes has that group,
     # which can read and not write it: a push changes what releases, and a job cannot change
     # what was pushed. The operator is a member because Linux clears a folder's setgid bit
@@ -76,30 +63,9 @@ in
       config.safe.directory = "${cfg.repositories}/*";
     };
 
-    # Makes a bare repository for each app in the policy that lacks one. An existing
-    # repository is never touched: it holds the only pushed copy besides the operator's.
-    systemd.services.alchemy-repositories = {
-      description = "Bare repositories of the apps in the site policy";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "systemd-tmpfiles-setup.service" ];
-      path = [ pkgs.git ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        User = operator.name;
-      };
-      # --shared=0640 keeps every file the operator's and readable by the group, whatever
-      # umask a push runs with.
-      script = lib.concatMapStringsSep "\n" (name: ''
-        if [ ! -e ${cfg.repositories}/${name}.git ]; then
-          git init --bare --quiet --shared=0640 -b main ${cfg.repositories}/${name}.git
-        fi
-      '') watchedNames;
-    };
-
-    # Once a minute, queue a reconcile job for each app whose pushes release unattended. The
-    # front end queues none for an app that has one waiting or running.
-    systemd.services.alchemy-reconcile = lib.mkIf (autoApps != [ ]) {
+    # Once a minute, queue a reconcile job for each app with a repository (src/Repositories.ts).
+    # The front end queues none for an app that has one waiting or running.
+    systemd.services.alchemy-reconcile = {
       description = "Queue Alchemy reconcile jobs";
       serviceConfig = {
         Type = "oneshot";
@@ -108,7 +74,7 @@ in
         ExecStart = "${cfg.package}/bin/alchemy-runner reconcile enqueue";
       };
     };
-    systemd.timers.alchemy-reconcile = lib.mkIf (autoApps != [ ]) {
+    systemd.timers.alchemy-reconcile = {
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "1min";

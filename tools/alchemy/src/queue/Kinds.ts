@@ -38,7 +38,6 @@ export type JobState = typeof JobState.Type;
  * `released` and `failed` are tries; the others are not, so the same tree is looked at again.
  */
 export const ReconcileStatus = S.Literals([
-  "manual",
   "no-main",
   "unreachable",
   "waiting-signoff",

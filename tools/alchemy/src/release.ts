@@ -12,6 +12,7 @@ import * as Git from "./Git.ts";
 import { deployStage, destroyStage } from "./Jobs.ts";
 import { Remote } from "./Remote.ts";
 import { imageDigest, pinCartridgeText, repositoriesOf } from "./ReleaseImage.ts";
+import { commands as repoCommands } from "./AppRepository.ts";
 import { commands as signoffCommands } from "./Signoff.ts";
 import { defaultBuildMemoryMB } from "./BuildLimits.ts";
 
@@ -91,7 +92,7 @@ const discard = Command.make(
 ).pipe(Command.withDescription("Destroy a staged instance"));
 
 /** The release commands, to register under `ops`. */
-export const commands = [release, stage, promote, discard, ...signoffCommands];
+export const commands = [release, stage, promote, discard, ...signoffCommands, ...repoCommands];
 
 const cartridgePath = (folder: string) => `${folder}/cartridge.json`;
 

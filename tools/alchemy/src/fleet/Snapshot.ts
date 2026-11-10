@@ -199,7 +199,7 @@ export const Snapshot = S.Struct({
   apps: section(AppRelease),
   // The newest runner jobs, newest first: what is running, waiting, and what just ended.
   runner: section(RunnerJob),
-  // The last reconcile result of each app the site policy watches.
+  // The last reconcile result of each app with a repository on the control host.
   reconciles: section(ReconcileOutcome),
   // The deployed OpenObserve dashboards; the page links each job to its view of the job dashboard.
   dashboards: section(DashboardLink),

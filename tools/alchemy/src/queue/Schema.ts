@@ -103,8 +103,8 @@ export const BuildSubmit = S.Struct({
 export type BuildSubmit = typeof BuildSubmit.Type;
 
 /**
- * reconcile: release the tree at the head of an app's `main` when the site policy allows it
- * and the tree is signed off. The policy names the app's repository, so a submit carries
+ * reconcile: release the tree at the head of an app's `main` when the tree is signed off.
+ * The app's name names its repository on the host (queue/Paths.ts), so a submit carries
  * only the app.
  */
 export const ReconcileSubmit = S.Struct({

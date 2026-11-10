@@ -11,6 +11,7 @@ import { Context, Effect, Layer, Option, Schema as S, Stdio, type Stream } from 
 import type { PlatformError } from "effect/PlatformError";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
+import { production, repositoryOf } from "./queue/Paths.ts";
 import { ImageDigest, SignoffRecord } from "./queue/Protocol.ts";
 import type { JobSubmit } from "./queue/Schema.ts";
 import { Site } from "./Site.ts";
@@ -107,6 +108,20 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
     });
 
     /**
+     * Make `app`'s bare repository on the host unless it has one, as the operator over ssh,
+     * and return the URL to push to. Like signoff, it skips the revision check: the host only
+     * runs git init in its repositories folder.
+     */
+    const createRepository = Effect.fn("Remote.createRepository")(function* (app: string) {
+      const host = yield* site.host;
+      const printed = yield* Exec.output("ssh", [host, `${runner} repository ${Exec.quote(app)}`]);
+      return {
+        created: printed.trim() === "created",
+        url: `${host}:${repositoryOf(production.repositories, app)}`,
+      };
+    });
+
+    /**
      * Queue `job` and stream its output on this terminal; fails unless it succeeds, and
      * returns its id. With a terminal, ssh forwards Ctrl-C, which cancels a job that has not
      * started.
@@ -153,7 +168,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
 
     /**
      * Queue a reconcile job for `app` and stream its output. Reconcile receives nothing from
-     * this checkout (it reads the site policy and the app's repository on the host), so it
+     * this checkout (it reads the app's repository on the host), so it
      * skips the revision check, as the timer's jobs do.
      */
     const reconcile = Effect.fn("Remote.reconcile")(function* (app: string) {
@@ -162,7 +177,17 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       return id;
     });
 
-    return { submit, build, signoff, listSignoffs, run, direct, findImage, reconcile };
+    return {
+      submit,
+      build,
+      signoff,
+      listSignoffs,
+      createRepository,
+      run,
+      direct,
+      findImage,
+      reconcile,
+    };
   }),
 }) {
   static readonly layer = Layer.effect(this, this.make);
