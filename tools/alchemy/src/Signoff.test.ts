@@ -13,6 +13,7 @@ import * as Spawner from "effect/process/ChildProcessSpawner";
 import { OpsError } from "./Exec.ts";
 import { Remote } from "./Remote.ts";
 import { commands as signoffCommands, deployPushes, summarizeLog } from "./Signoff.ts";
+import { production, repositoryOf } from "./queue/Paths.ts";
 import { Site } from "./Site.ts";
 
 describe("summarizeLog", () => {
@@ -125,9 +126,10 @@ describe("ops signoff", () => {
   });
 
   describe("pre-push", () => {
-    const push = (repo: string, signoffs: string | undefined) => {
+    const controlHost = `ctl:${repositoryOf(production.repositories, "signoff-probe")}`;
+    const push = (repo: string, signoffs: string | undefined, url = controlHost) => {
       const commit = git(repo, "rev-parse", "HEAD").trim();
-      return execute(run("pre-push", repo), {
+      return execute(run("pre-push", "origin", url, repo), {
         stdin: `refs/heads/main ${commit} refs/heads/main ${"0".repeat(40)}\n`,
         signoffs,
       });
@@ -171,6 +173,21 @@ describe("ops signoff", () => {
       }
     });
 
+    it("does not check a push to another remote, which deploys nothing", async () => {
+      const repo = gitFixture("#!/bin/sh\nexit 0\n");
+      try {
+        const { error, log } = await push(
+          repo,
+          row("f".repeat(40)),
+          "git@github.com:someone/probe.git",
+        );
+        assert.equal(error, undefined);
+        assert.ok(!log.some((line) => line.includes("alchemy-runner signoffs")));
+      } finally {
+        rmSync(join(repo, ".."), { recursive: true, force: true });
+      }
+    });
+
     it("lets the push through when the control host does not answer", async () => {
       const repo = gitFixture("#!/bin/sh\nexit 0\n");
       try {
@@ -187,7 +204,7 @@ describe("ops signoff", () => {
     try {
       const path = join(repo, ".git/hooks/pre-push");
       assert.equal((await execute(run("install", repo))).error, undefined);
-      assert.match(readFileSync(path, "utf8"), /exec ops signoff pre-push/);
+      assert.match(readFileSync(path, "utf8"), /exec ops signoff pre-push "\$@"/);
       assert.equal(statSync(path).mode & 0o111, 0o111);
       assert.equal((await execute(run("install", repo))).error, undefined);
       writeFileSync(path, "#!/bin/sh\nexit 0\n");

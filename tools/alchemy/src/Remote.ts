@@ -107,18 +107,22 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       );
     });
 
+    /** The URL of `app`'s repository on the control host, as `ops repo create` adds it. */
+    const repositoryUrl = Effect.fn("Remote.repositoryUrl")(function* (app: string) {
+      return `${yield* site.host}:${repositoryOf(production.repositories, app)}`;
+    });
+
     /**
      * Make `app`'s bare repository on the host unless it has one, as the operator over ssh,
      * and return the URL to push to. Like signoff, it skips the revision check: the host only
      * runs git init in its repositories folder.
      */
     const createRepository = Effect.fn("Remote.createRepository")(function* (app: string) {
-      const host = yield* site.host;
-      const printed = yield* Exec.output("ssh", [host, `${runner} repository ${Exec.quote(app)}`]);
-      return {
-        created: printed.trim() === "created",
-        url: `${host}:${repositoryOf(production.repositories, app)}`,
-      };
+      const printed = yield* Exec.output("ssh", [
+        yield* site.host,
+        `${runner} repository ${Exec.quote(app)}`,
+      ]);
+      return { created: printed.trim() === "created", url: yield* repositoryUrl(app) };
     });
 
     /**
@@ -187,6 +191,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       signoff,
       listSignoffs,
       createRepository,
+      repositoryUrl,
       run,
       direct,
       findImage,

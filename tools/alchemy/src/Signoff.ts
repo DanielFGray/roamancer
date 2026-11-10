@@ -1,12 +1,14 @@
 /**
  * Workstation `ops signoff`: run an app's `scripts/verify` on one commit's exported tree, and
- * record on the control host that the tree passed. Reconcile releases `main` only when its
- * tree has a signoff (docs/design/continuous-deployment.md).
+ * record on the control host that the tree passed. Reconcile deploys `main` and `develop` only
+ * when their tree has a signoff (docs/design/continuous-deployment.md).
  *
  * What verify checks is the project's own choice; the platform only needs it to exit 0.
  *
  * `ops signoff install` writes a git pre-push hook that runs `ops signoff pre-push`. It refuses
- * a push to `main` or `develop` whose tree has no signoff, and runs no tests itself.
+ * a push to `main` or `develop` of the app's repository on the control host, where a push
+ * deploys, when the tree has no signoff. It runs no tests itself, and a push to any other
+ * remote, such as a mirror, is not checked.
  */
 import { createHash } from "node:crypto";
 import { Console, Effect, FileSystem, Option, Stdio, Stream } from "effect";
@@ -71,24 +73,34 @@ const signoff = Command.make(
       }),
     ).pipe(
       Command.withDescription(
-        "Write a pre-push hook in this repository that refuses a push to main or develop with no signoff",
+        "Write a pre-push hook in this repository that refuses a push to main or develop on the control host with no signoff",
       ),
     ),
     Command.make(
       "pre-push",
-      { folder },
-      Effect.fn(function* ({ folder }) {
+      {
+        remote: Argument.String("remote").pipe(
+          Argument.withDescription(
+            "The remote's name, which git passes to a pre-push hook first; the check reads only the URL",
+          ),
+        ),
+        url: Argument.String("url").pipe(
+          Argument.withDescription("The URL the push goes to, which git passes second"),
+        ),
+        folder,
+      },
+      Effect.fn(function* ({ url, folder }) {
         const stdin = yield* Stdio.Stdio;
         const lines = yield* Stream.mkString(Stream.decodeText(stdin.stdin)).pipe(
           Effect.mapError(
             (error) => new OpsError({ message: `read the hook's stdin: ${error.message}` }),
           ),
         );
-        for (const commit of deployPushes(lines)) yield* requireSignoff(folder, commit);
+        for (const commit of deployPushes(lines)) yield* requireSignoff(folder, url, commit);
       }),
     ).pipe(
       Command.withDescription(
-        "The pre-push hook's body: refuse a push to main or develop whose tree has no signoff",
+        "The pre-push hook's body: refuse a push to main or develop on the control host whose tree has no signoff",
       ),
     ),
   ]),
@@ -199,24 +211,28 @@ const script = Effect.fn("Signoff.script")(function* (directory: string, path: s
 }, Effect.scoped);
 
 /**
- * Refuse `commit` unless the control host has a signoff of its tree. A host that does not
- * answer only warns: an outage never blocks a push to a mirror, nothing releases while the host
- * is down, and afterwards reconcile still waits for a signoff of that tree.
+ * Refuse `commit` when it goes to its app's repository on the control host and the host has
+ * no signoff of its tree. Reconcile enforces the signoff on the host; this check only refuses
+ * early, so a push elsewhere, or to a URL written another way, goes unchecked. A host that
+ * does not answer only warns: afterwards reconcile still waits for a signoff of that tree.
  */
 const requireSignoff = Effect.fn("Signoff.requireSignoff")(function* (
   folder: string,
+  url: string,
   commit: string,
 ) {
-  const tree = (yield* output("git", ["-C", folder, "rev-parse", `${commit}^{tree}`])).trim();
   const cartridge = yield* Cartridge.decodeText(
     yield* output("git", ["-C", folder, "show", `${commit}:cartridge.json`]),
     Cartridge.AppCartridge,
   );
-  const signoffs = yield* (yield* Remote).listSignoffs(cartridge.name).pipe(
+  const remote = yield* Remote;
+  if (url !== (yield* remote.repositoryUrl(cartridge.name))) return;
+  const tree = (yield* output("git", ["-C", folder, "rev-parse", `${commit}^{tree}`])).trim();
+  const signoffs = yield* remote.listSignoffs(cartridge.name).pipe(
     Effect.map(Option.some),
     Effect.catchTag("OpsError", (error) =>
       Console.error(
-        `ops signoff: ${error.message}\nThe push continues: the control host did not answer, so tree ${tree.slice(0, 12)} was not checked. Reconcile releases it only after a signoff.`,
+        `ops signoff: ${error.message}\nThe push continues: the control host did not answer, so tree ${tree.slice(0, 12)} was not checked. Reconcile deploys it only after a signoff.`,
       ).pipe(Effect.as(Option.none<ReadonlyArray<{ readonly tree: string }>>())),
     ),
   );
@@ -230,10 +246,12 @@ const requireSignoff = Effect.fn("Signoff.requireSignoff")(function* (
 /** The hook `install` writes; the marker line lets `install` replace its own hook only. */
 const hookMarker = "# Written by `ops signoff install`.";
 const hook = `#!/bin/sh
-${hookMarker} It refuses a push to main or develop whose tree has no
-# signoff on the control host; \`ops signoff <commit>\` runs scripts/verify and records one.
-# \`git push --no-verify\` skips the check, and reconcile still waits for a signoff.
-exec ops signoff pre-push
+${hookMarker} It refuses a push to main or develop of the control
+# host's repository whose tree has no signoff there; \`ops signoff <commit>\` runs
+# scripts/verify and records one. It passes git's arguments (remote name and URL) on
+# unchanged, so the check can change without a new hook. \`git push --no-verify\` skips
+# the check, and reconcile still waits for a signoff.
+exec ops signoff pre-push "$@"
 `;
 
 /**
