@@ -43,6 +43,7 @@ in
 
     users.groups.alchemy = { };
     users.groups.alchemy-submit = { };
+    users.groups.alchemy-repositories.members = [ operator.name "alchemy" ];
 
     users.users.alchemy = {
       isSystemUser = true;
@@ -61,10 +62,12 @@ in
     environment.etc."alchemy/policy.json".text = builtins.toJSON policy;
 
     # The apps' repositories: the operator pushes to `<operator>@<host>:<repositories>/<app>.git`
-    # and reconcile reads `main` there (src/Reconcile.ts). The folder is setgid group alchemy,
-    # so each repository and every object a push writes is group alchemy, which can read and
-    # not write it: a push changes what releases, and a job cannot change what was pushed.
-    systemd.tmpfiles.rules = [ "d ${cfg.repositories} 2750 ${operator.name} alchemy -" ];
+    # and reconcile reads `main` there (src/Reconcile.ts). The folder is setgid group
+    # alchemy-repositories, so each repository and every object a push writes has that group,
+    # which can read and not write it: a push changes what releases, and a job cannot change
+    # what was pushed. The operator is a member because Linux clears a folder's setgid bit
+    # when a user outside its group changes its mode, as git does to each folder it makes.
+    systemd.tmpfiles.rules = [ "d ${cfg.repositories} 2750 ${operator.name} alchemy-repositories -" ];
 
     # Git refuses a repository that another user owns unless protected config (here
     # /etc/gitconfig) lists it, and alchemy reads the operator's repositories.
