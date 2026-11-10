@@ -13,7 +13,6 @@ import * as Spawner from "effect/process/ChildProcessSpawner";
 import { OpsError } from "./Exec.ts";
 import { Remote } from "./Remote.ts";
 import { commands as signoffCommands, deployPushes, summarizeLog } from "./Signoff.ts";
-import { production, repositoryOf } from "./queue/Paths.ts";
 import { Site } from "./Site.ts";
 
 describe("summarizeLog", () => {
@@ -126,10 +125,9 @@ describe("ops signoff", () => {
   });
 
   describe("pre-push", () => {
-    const controlHost = `ctl:${repositoryOf(production.repositories, "signoff-probe")}`;
-    const push = (repo: string, signoffs: string | undefined, url = controlHost) => {
+    const push = (repo: string, signoffs: string | undefined) => {
       const commit = git(repo, "rev-parse", "HEAD").trim();
-      return execute(run("pre-push", "origin", url, repo), {
+      return execute(run("pre-push", "origin", "git@github.com:someone/probe.git", repo), {
         stdin: `refs/heads/main ${commit} refs/heads/main ${"0".repeat(40)}\n`,
         signoffs,
       });
@@ -158,31 +156,25 @@ describe("ops signoff", () => {
       }
     });
 
-    it("refuses a tree with no signoff", async () => {
-      const repo = gitFixture("#!/bin/sh\nexit 0\n");
+    it("verifies a tree with no signoff and records it before the push", async () => {
+      const repo = gitFixture("#!/bin/sh\necho 3 pass\n");
       try {
-        const { error, log } = await push(repo, row("f".repeat(40)));
-        assert.ok(error instanceof OpsError);
-        assert.match(
-          error.message,
-          /has no signoff, so this push to a branch that deploys is refused/,
-        );
-        assert.ok(!log.some((line) => line.includes("scripts/verify")));
+        const { error, log, inputs } = await push(repo, row("f".repeat(40)));
+        assert.equal(error, undefined);
+        assert.ok(sent(log));
+        assert.equal(JSON.parse(inputs.at(-1)!).tree, git(repo, "rev-parse", "HEAD^{tree}").trim());
       } finally {
         rmSync(join(repo, ".."), { recursive: true, force: true });
       }
     });
 
-    it("does not check a push to another remote, which deploys nothing", async () => {
-      const repo = gitFixture("#!/bin/sh\nexit 0\n");
+    it("refuses the push when verify fails on a tree with no signoff", async () => {
+      const repo = gitFixture("#!/bin/sh\necho 1 fail\nexit 1\n");
       try {
-        const { error, log } = await push(
-          repo,
-          row("f".repeat(40)),
-          "git@github.com:someone/probe.git",
-        );
-        assert.equal(error, undefined);
-        assert.ok(!log.some((line) => line.includes("alchemy-runner signoffs")));
+        const { error, log } = await push(repo, row("f".repeat(40)));
+        assert.ok(error instanceof OpsError);
+        assert.match(error.message, /scripts\/verify exited 1/);
+        assert.ok(!sent(log));
       } finally {
         rmSync(join(repo, ".."), { recursive: true, force: true });
       }
@@ -191,8 +183,9 @@ describe("ops signoff", () => {
     it("lets the push through when the control host does not answer", async () => {
       const repo = gitFixture("#!/bin/sh\nexit 0\n");
       try {
-        const { error } = await push(repo, undefined);
+        const { error, log } = await push(repo, undefined);
         assert.equal(error, undefined);
+        assert.ok(!sent(log));
       } finally {
         rmSync(join(repo, ".."), { recursive: true, force: true });
       }

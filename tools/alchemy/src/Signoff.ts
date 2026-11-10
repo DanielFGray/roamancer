@@ -5,10 +5,10 @@
  *
  * What verify checks is the project's own choice; the platform only needs it to exit 0.
  *
- * `ops signoff install` writes a git pre-push hook that runs `ops signoff pre-push`. It refuses
- * a push to `main` or `develop` of the app's repository on the control host, where a push
- * deploys, when the tree has no signoff. It runs no tests itself, and a push to any other
- * remote, such as a mirror, is not checked.
+ * `ops signoff install` writes a git pre-push hook that runs `ops signoff pre-push`. Before a
+ * push of `main` or `develop` to any remote, it runs verify on each pushed tree that has no
+ * signoff yet and records it, so a tree whose verify fails never leaves the machine on those
+ * branches. A tree that already has a signoff is not verified again.
  */
 import { createHash } from "node:crypto";
 import { Console, Effect, FileSystem, Option, Stdio, Stream } from "effect";
@@ -73,34 +73,34 @@ const signoff = Command.make(
       }),
     ).pipe(
       Command.withDescription(
-        "Write a pre-push hook in this repository that refuses a push to main or develop on the control host with no signoff",
+        "Write a pre-push hook in this repository that verifies and signs off each pushed main or develop tree",
       ),
     ),
     Command.make(
       "pre-push",
       {
+        // Git passes a pre-push hook the remote's name and URL. Every remote gets the same
+        // check, so neither is read; the hook passes them so its text never has to change.
         remote: Argument.String("remote").pipe(
-          Argument.withDescription(
-            "The remote's name, which git passes to a pre-push hook first; the check reads only the URL",
-          ),
+          Argument.withDescription("The remote's name, which git passes to a pre-push hook"),
         ),
         url: Argument.String("url").pipe(
-          Argument.withDescription("The URL the push goes to, which git passes second"),
+          Argument.withDescription("The URL the push goes to, which git passes to a pre-push hook"),
         ),
         folder,
       },
-      Effect.fn(function* ({ url, folder }) {
+      Effect.fn(function* ({ folder }) {
         const stdin = yield* Stdio.Stdio;
         const lines = yield* Stream.mkString(Stream.decodeText(stdin.stdin)).pipe(
           Effect.mapError(
             (error) => new OpsError({ message: `read the hook's stdin: ${error.message}` }),
           ),
         );
-        for (const commit of deployPushes(lines)) yield* requireSignoff(folder, url, commit);
+        for (const commit of deployPushes(lines)) yield* ensureSignoff(folder, commit);
       }),
     ).pipe(
       Command.withDescription(
-        "The pre-push hook's body: refuse a push to main or develop on the control host whose tree has no signoff",
+        "The pre-push hook's body: verify and sign off each pushed main or develop tree that has no signoff",
       ),
     ),
   ]),
@@ -211,24 +211,21 @@ const script = Effect.fn("Signoff.script")(function* (directory: string, path: s
 }, Effect.scoped);
 
 /**
- * Refuse `commit` when it goes to its app's repository on the control host and the host has
- * no signoff of its tree. Reconcile enforces the signoff on the host; this check only refuses
- * early, so a push elsewhere, or to a URL written another way, goes unchecked. A host that
- * does not answer only warns: afterwards reconcile still waits for a signoff of that tree.
+ * Give `commit`'s tree a signoff unless the control host has one: run verify on it and
+ * record the result, so a failing verify refuses the push. Commits with the same tree are
+ * verified once, because the second finds the first's record. A host that does not answer
+ * only warns and lets the push through: afterwards reconcile still waits for a signoff.
  */
-const requireSignoff = Effect.fn("Signoff.requireSignoff")(function* (
+const ensureSignoff = Effect.fn("Signoff.ensureSignoff")(function* (
   folder: string,
-  url: string,
   commit: string,
 ) {
   const cartridge = yield* Cartridge.decodeText(
     yield* output("git", ["-C", folder, "show", `${commit}:cartridge.json`]),
     Cartridge.AppCartridge,
   );
-  const remote = yield* Remote;
-  if (url !== (yield* remote.repositoryUrl(cartridge.name))) return;
   const tree = (yield* output("git", ["-C", folder, "rev-parse", `${commit}^{tree}`])).trim();
-  const signoffs = yield* remote.listSignoffs(cartridge.name).pipe(
+  const signoffs = yield* (yield* Remote).listSignoffs(cartridge.name).pipe(
     Effect.map(Option.some),
     Effect.catchTag("OpsError", (error) =>
       Console.error(
@@ -236,21 +233,21 @@ const requireSignoff = Effect.fn("Signoff.requireSignoff")(function* (
       ).pipe(Effect.as(Option.none<ReadonlyArray<{ readonly tree: string }>>())),
     ),
   );
-  if (Option.isSome(signoffs) && !signoffs.value.some((row) => row.tree === tree)) {
-    return yield* new OpsError({
-      message: `${cartridge.name} tree ${tree.slice(0, 12)} has no signoff, so this push to a branch that deploys is refused. Run \`ops signoff ${commit}\`, which runs scripts/verify on it, and push again.`,
-    });
-  }
+  if (Option.isNone(signoffs) || signoffs.value.some((row) => row.tree === tree)) return;
+  yield* Console.error(
+    `${cartridge.name} tree ${tree.slice(0, 12)} has no signoff; running scripts/verify before the push`,
+  );
+  yield* send(yield* verify(folder, commit));
 });
 
 /** The hook `install` writes; the marker line lets `install` replace its own hook only. */
 const hookMarker = "# Written by `ops signoff install`.";
 const hook = `#!/bin/sh
-${hookMarker} It refuses a push to main or develop of the control
-# host's repository whose tree has no signoff there; \`ops signoff <commit>\` runs
-# scripts/verify and records one. It passes git's arguments (remote name and URL) on
-# unchanged, so the check can change without a new hook. \`git push --no-verify\` skips
-# the check, and reconcile still waits for a signoff.
+${hookMarker} Before a push of main or develop, it runs
+# scripts/verify on each pushed tree with no signoff on the control host and records the
+# signoff, so a failing verify refuses the push. It passes git's arguments (remote name and
+# URL) on unchanged, so the check can change without a new hook. \`git push --no-verify\`
+# skips it, and reconcile still waits for a signoff.
 exec ops signoff pre-push "$@"
 `;
 
