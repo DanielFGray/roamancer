@@ -15,8 +15,9 @@ ops discard giglist                        # destroy the staged instance
 ops signoff                          # in an app repository: run scripts/verify on HEAD's exported tree, and record that it passed
 ops signoff install                  # once per clone: refuse a push to main whose tree has no signoff
 ops signoff list giglist             # that app's signoffs on the control host, newest first
+ops repo create                        # in an app repository: make its repository on the control host, add the remote, install the hook
+git push cynic main                    # release a signed-off main; the minute timer reconciles every app with a repository
 ops reconcile giglist                  # release the head of giglist's main now, as the minute timer does; follows the job
-git push cynic main                    # in an app repository, with the remote cynic:/srv/git/<app>.git: release a signed-off main
 ops deployment list giglist                # the recorded deployments, newest first
 ops rollback giglist 12                    # deploy recorded deployment 12 again
 ops plan --stage giglist                   # Alchemy plan of the newest recorded deployment

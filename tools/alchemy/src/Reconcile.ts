@@ -10,8 +10,8 @@ import { runBuild, type BuildSite } from "./BuildJob.ts";
 import * as Cartridge from "./Cartridge.ts";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
-import { apps, type Deploy, type Policy } from "./Policy.ts";
 import { repositoryOf } from "./queue/Paths.ts";
+import * as Repositories from "./Repositories.ts";
 import { JobCommandError } from "./queue/Run.ts";
 import type { Reconcile as ReconcileState } from "./queue/Store.ts";
 import { Store as StoreService } from "./queue/Store.ts";
@@ -20,8 +20,6 @@ import { deployRef } from "./Signoff.ts";
 
 /** What reconcile does with the tree at the head of `main`. */
 export type Verdict =
-  /** The policy says `manual`: only `ops release` releases this app. */
-  | "manual"
   /** Reconcile already released or tried this tree; the next push tries again. */
   | "tried"
   /** No signoff for this tree. Not a try: the signoff arriving releases it. */
@@ -35,13 +33,11 @@ export type Verdict =
  * tree it tried and never with what runs live, so a rollback stays until `main` changes.
  */
 export const decide = (input: {
-  readonly deploy: Deploy;
   readonly tree: string;
   readonly triedTree: string | null;
   readonly signedOff: boolean;
   readonly tokenValid: boolean;
 }): Verdict => {
-  if (input.deploy === "manual") return "manual";
   if (input.tree === input.triedTree) return "tried";
   if (!input.signedOff) return "signoff";
   if (!input.tokenValid) return "login";
@@ -75,7 +71,6 @@ export class ReleaseFailed extends S.TaggedError<ReleaseFailed>()("ReleaseFailed
 
 /** What a reconcile job needs besides the store and the build services. */
 export interface ReconcileDeps {
-  readonly policy: Policy;
   /** The queue job that runs this reconcile; it names the release's build. */
   readonly jobId: number;
   /** The folder of the apps' bare repositories (queue/Paths.ts `repositoryOf`). */
@@ -102,10 +97,9 @@ export const reconcileApp = Effect.fn("Reconcile.reconcileApp")(function* (
   deps: ReconcileDeps,
 ) {
   const store = yield* StoreService;
-  const entry = apps(deps.policy).find((candidate) => candidate.app === app);
-  if (entry === undefined) {
+  if (!(yield* Repositories.has(deps.repositories, app))) {
     return yield* new JobCommandError({
-      message: `'${app}' is not in the site policy (policy.toml). Add it and run \`ops rebuild\`.`,
+      message: `'${app}' has no repository on the control host; run \`ops repo create\` in its checkout`,
     });
   }
   const before: Saved = Option.getOrElse(yield* store.getReconcile(app), () => ({
@@ -119,22 +113,12 @@ export const reconcileApp = Effect.fn("Reconcile.reconcileApp")(function* (
     status: "no-main" as const,
     detail: "",
   }));
-  if (entry.deploy === "manual") {
-    yield* note(
-      app,
-      before,
-      "manual",
-      "the site policy sets deploy = manual; release it with `ops release`",
-    );
-    return;
-  }
-
   // A repository that cannot be read is an outcome on show in `ops dash`, not a failed job:
   // the timer would add one every minute.
   yield* readHead(repositoryOf(deps.repositories, app)).pipe(
     Effect.matchEffect({
       onFailure: (error) => note(app, before, "unreachable", describeFailure(error)),
-      onSuccess: (seen) => actOn(app, entry.deploy, seen, before, deps),
+      onSuccess: (seen) => actOn(app, seen, before, deps),
     }),
   );
 });
@@ -156,7 +140,6 @@ const note = Effect.fn("Reconcile.note")(function* (
 /** Decide for the head of `main` and carry out the verdict. */
 const actOn = Effect.fn("Reconcile.actOn")(function* (
   app: string,
-  deploy: Deploy,
   main: Option.Option<{ readonly commit: string; readonly tree: string }>,
   before: Saved,
   deps: ReconcileDeps,
@@ -172,7 +155,6 @@ const actOn = Effect.fn("Reconcile.actOn")(function* (
     (yield* store.listSignoffs(app)).find((row) => row.tree === seen.tree),
   );
   const verdict = decide({
-    deploy,
     tree: seen.tree,
     triedTree: state.triedTree,
     signedOff: Option.isSome(signoff),
@@ -188,8 +170,6 @@ const actOn = Effect.fn("Reconcile.actOn")(function* (
     );
 
   switch (verdict) {
-    case "manual":
-      return;
     case "tried":
       // Keep the last outcome on show; only the time it was looked at moves.
       yield* store.saveReconcile(state);

@@ -231,7 +231,7 @@ exec ops signoff pre-push
  * Write the pre-push hook where git looks for it: `--git-path` follows `core.hooksPath`, and
  * linked worktrees share the main checkout's hooks. Refuse to replace another hook.
  */
-const installHook = Effect.fn("Signoff.installHook")(function* (folder: string) {
+export const installHook = Effect.fn("Signoff.installHook")(function* (folder: string) {
   const fs = yield* FileSystem.FileSystem;
   const relative = (yield* output("git", [
     "-C",

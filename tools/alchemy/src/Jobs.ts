@@ -193,7 +193,11 @@ const placeQueued = Command.make(
 
 const reconcile = Command.make(
   "reconcile",
-  { app: Argument.String("app").pipe(Argument.withDescription("An app in the site policy")) },
+  {
+    app: Argument.String("app").pipe(
+      Argument.withDescription("An app with a repository on the control host"),
+    ),
+  },
   Effect.fn(function* ({ app }) {
     yield* (yield* Remote).reconcile(app);
   }),

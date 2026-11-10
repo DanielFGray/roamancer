@@ -30,7 +30,7 @@ import type { PlatformError } from "effect/PlatformError";
 import * as path from "node:path";
 import * as BuildJobs from "./BuildJob.ts";
 import * as BuildStoreLive from "./BuildStore.ts";
-import * as Policy from "./Policy.ts";
+import * as Repositories from "./Repositories.ts";
 import * as Reconcile from "./Reconcile.ts";
 import * as RegistryLive from "./Registry.ts";
 import * as Cartridge from "./Cartridge.ts";
@@ -169,6 +169,7 @@ const makeCli = () =>
       wait,
       signoff,
       signoffs,
+      repository,
       build,
       version,
       login,
@@ -238,6 +239,21 @@ const signoffs = Command.make(
     );
   }),
 ).pipe(Command.withDescription("Print an app's stored signoffs as JSON, newest first"));
+
+const repository = Command.make(
+  "repository",
+  { app: Argument.String("app").pipe(Argument.withDescription("The cartridge name of the app")) },
+  Effect.fn(function* ({ app }) {
+    const made = yield* Repositories.create(QueuePaths.production.repositories, app).pipe(
+      Effect.mapError((error) => new CliError({ message: error.message })),
+    );
+    yield* Console.log(made ? "created" : "exists");
+  }),
+).pipe(
+  Command.withDescription(
+    "Make an app's bare repository on this host, as the operator; reconcile then releases its pushes to main",
+  ),
+);
 
 const wait = Command.make(
   "wait",
@@ -960,7 +976,6 @@ const reconcileJob = Effect.fn("reconcileJob")(function* (
     ChildProcessSpawner | FileSystem.FileSystem | OpenBao | Deployments.Deployments
   >();
   yield* Reconcile.reconcileApp(submit.app, {
-    policy: yield* Policy.load(),
     jobId,
     repositories: paths.repositories,
     site: yield* buildSite,
@@ -983,14 +998,14 @@ const reconcileEnqueue = Command.make(
   "enqueue",
   {},
   Effect.fn(function* () {
-    // One job per app the policy releases unattended. The front end hands back the job an
+    // One job per app with a repository on this host. The front end hands back the job an
     // app already has waiting or running, so a slow release is not queued twice.
-    const policy = yield* Policy.load().pipe(
-      Effect.mapError((error) => new CliError({ message: `policy: ${error.message}` })),
+    const apps = yield* Repositories.listApps(QueuePaths.production.repositories).pipe(
+      Effect.mapError((error) => new CliError({ message: `repositories: ${error.message}` })),
     );
     yield* Effect.forEach(
-      Policy.autoApps(policy),
-      ({ app }) =>
+      apps,
+      (app) =>
         QueueSubmit.submitJob(
           JSON.stringify({ _tag: "submit", command: "reconcile", app }),
           QueuePaths.production.socket,
@@ -1002,7 +1017,7 @@ const reconcileEnqueue = Command.make(
     );
   }),
 ).pipe(
-  Command.withDescription("Queue one reconcile job for each app the policy releases on a push"),
+  Command.withDescription("Queue one reconcile job for each app with a repository on this host"),
 );
 
 const reconcile = Command.make("reconcile").pipe(

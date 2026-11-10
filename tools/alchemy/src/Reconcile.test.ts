@@ -9,7 +9,6 @@ import { Effect, type FileSystem, Layer, Option, Stream } from "effect";
 import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { BuildStore } from "./BuildStore.ts";
 import { Nomad, type AllocationSummary } from "./Nomad.ts";
-import * as Policy from "./Policy.ts";
 import { decide, readHead, ReleaseFailed, reconcileApp, type ReconcileDeps } from "./Reconcile.ts";
 import { Registry } from "./Registry.ts";
 import { layer as storeLayer, Store } from "./queue/Store.ts";
@@ -18,7 +17,6 @@ const digest = `sha256:${"d".repeat(64)}`;
 
 describe("decide", () => {
   const base = {
-    deploy: "auto" as Policy.Deploy,
     tree: "t2",
     triedTree: "t1" as string | null,
     signedOff: true,
@@ -32,44 +30,10 @@ describe("decide", () => {
     ["a new tree with no signoff waits for one", { signedOff: false }, "signoff"],
     ["no signoff outranks no token", { signedOff: false, tokenValid: false }, "signoff"],
     ["a signed-off tree with no token waits for a login", { tokenValid: false }, "login"],
-    ["manual never releases", { deploy: "manual" }, "manual"],
-    [
-      "manual outranks every other fact",
-      { deploy: "manual", tree: "t1", signedOff: false },
-      "manual",
-    ],
   ];
   for (const [name, patch, expected] of cases) {
     it(name, () => assert.equal(decide({ ...base, ...patch }), expected));
   }
-});
-
-describe("Policy", () => {
-  const decode = (apps: unknown) =>
-    Effect.runPromise(Effect.result(Policy.decode(JSON.stringify({ apps }))));
-
-  it("defaults deploy to auto and lists apps by name", async () => {
-    const result = await decode({ b: {}, a: { deploy: "manual" } });
-    if (result._tag !== "Success") return assert.fail("the policy should decode");
-    const policy = result.success;
-    assert.deepEqual(
-      Policy.apps(policy).map((entry) => [entry.app, entry.deploy]),
-      [
-        ["a", "manual"],
-        ["b", "auto"],
-      ],
-    );
-    assert.deepEqual(
-      Policy.autoApps(policy).map((entry) => entry.app),
-      ["b"],
-    );
-  });
-
-  it("refuses a name that is a path, and a bad deploy", async () => {
-    for (const apps of [{ "../a": {} }, { a: { deploy: "sometimes" } }]) {
-      assert.equal((await decode(apps))._tag, "Failure", JSON.stringify(apps));
-    }
-  });
 });
 
 /**
@@ -216,9 +180,7 @@ const harness = () => {
   });
   const registry = Registry.of({ has: () => Effect.succeed(true) });
 
-  const policy: Policy.Policy = { apps: { shop: {} } };
   const deps = (patch: Partial<ReconcileDeps> = {}): ReconcileDeps => ({
-    policy,
     jobId: 11,
     repositories: repo.repositories,
     site: { registry: "registry.cluster:5000", registryCaDir: "/var/lib/registry-ca" },
@@ -431,29 +393,20 @@ describe("reconcileApp", () => {
     }
   });
 
-  it("never reads a manual app's repository", async () => {
-    const h = harness();
-    try {
-      const policy: Policy.Policy = { apps: { shop: { deploy: "manual" } } };
-      const repositories = "/does/not/exist";
-      assert.equal((await h.reconcile({ policy, repositories }))._tag, "Success");
-      assert.equal((await h.status()).status, "manual");
-    } finally {
-      h.cleanup();
-    }
-  });
-
   it("reports an unreadable repository as an outcome, not a failed job", async () => {
     const h = harness();
+    const repositories = mkdtempSync(join(tmpdir(), "unreadable-"));
     try {
-      assert.equal((await h.reconcile({ repositories: "/does/not/exist" }))._tag, "Success");
+      mkdirSync(join(repositories, "shop.git"));
+      assert.equal((await h.reconcile({ repositories }))._tag, "Success");
       assert.equal((await h.status()).status, "unreachable");
     } finally {
+      rmSync(repositories, { recursive: true, force: true });
       h.cleanup();
     }
   });
 
-  it("reports an empty repository, and refuses an app outside the policy", async () => {
+  it("reports an empty repository, and refuses an app with no repository", async () => {
     const h = harness();
     try {
       assert.equal((await h.reconcile())._tag, "Success");

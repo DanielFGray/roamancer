@@ -9,8 +9,8 @@ export type Paths = {
   readonly spool: string;
   /**
    * The bare repositories the operator pushes apps to, `<app>.git` each, which reconcile
-   * reads. nixos/modules/alchemy-runner.nix makes this folder and one repository per app in
-   * the site policy.
+   * reads. nixos/modules/alchemy-runner.nix makes this folder; `ops repo create` makes each
+   * repository (src/Repositories.ts).
    */
   readonly repositories: string;
 };
