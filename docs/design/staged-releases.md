@@ -28,7 +28,7 @@ The first three steps are the release foundation. Traffic splitting is a later c
 
 App repositories declare release inputs. Release inputs include the image and the health check. Alchemy owns the desired release set and the promotion state. Nomad runs the release allocations. NixOS owns host networking, rootless Podman, and storage. NixOS also owns Traefik. Traefik is the ingress service. An ingress service is the first HTTP entry point for a host. Traefik provides the preview route and the stable app route.
 
-Staged releases of app cartridges use the staged copy (`tools/alchemy/src/StagedCartridge.ts`), which gives the copy its own databases, roles, secrets and routes. Pull request previews build on the staged copy; see `pr-previews.md`. The `ReleaseSet` resource proved preview routing, promotion and rollback for one stateless service. It owns one Nomad job for each declared release. The resource also owns Nomad health checks, release selection, the candidate preview route, stable route publication, promotion, rollback, and cleanup. A caller requests a candidate or a selected release with one JSON manifest. The Nomad job spec is the whole desired state for a release. The job spec includes the route tags for the release. A plan with no job change means the routes also match the desired state. Alchemy does not repair routes outside the job spec. Alchemy can adopt a release set after state loss. Adoption requires one matching owned Nomad job for each declared release.
+Staged releases of app cartridges use the staged copy (`tools/alchemy/src/StagedCartridge.ts`), which gives the copy its own databases, roles, secrets and routes. Pull request previews build on the staged copy; see `pr-previews.md`. An earlier `ReleaseSet` resource proved preview routing, promotion and rollback for one stateless service, with one Nomad job for each declared release and the route tags in each job spec. The staged copy replaced it, and it has been deleted; the proofs below used it.
 
 Candidate images must be immutable and available to every eligible Nomad node. Preview URLs need production DNS and TLS. A preview deployment must not expose secrets or production data to a candidate unless the app's access policy permits it.
 
@@ -76,4 +76,4 @@ One Caddy process on atheist serves static sites behind Traefik. Caddy is a loop
 
 History: the existing `tools/infra` path used Caddy as the ingress. It demonstrated preview URLs, health-checked promotion, and rollback. It wrote managed Caddyfile snippets and ran `caddy reload`. It did not use the Caddy admin API. A later design used the Caddy admin API as the ingress. Commit `2b4a453` replaced that design with Traefik on cynic.
 
-References: `tools/alchemy/platform/ingress/README.md`, `tools/alchemy/src/ReleaseJob.ts` (`routeTags`), and `tools/alchemy/src/ReleaseSet.ts`.
+References: `tools/alchemy/platform/ingress/README.md` and `tools/alchemy/src/StagedCartridge.ts`.
