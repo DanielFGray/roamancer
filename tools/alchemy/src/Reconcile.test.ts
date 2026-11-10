@@ -19,6 +19,7 @@ describe("decide", () => {
   const base = {
     tree: "t2",
     triedTree: "t1" as string | null,
+    retry: false,
     signedOff: true,
     tokenValid: true,
   };
@@ -27,6 +28,8 @@ describe("decide", () => {
     ["the first tree ever releases", { triedTree: null }, "release"],
     ["the tree already tried waits for the next push", { tree: "t1" }, "tried"],
     ["a tried tree stays tried without a signoff", { tree: "t1", signedOff: false }, "tried"],
+    ["a retry releases the tree already tried", { tree: "t1", retry: true }, "release"],
+    ["a retry still needs a signoff", { tree: "t1", retry: true, signedOff: false }, "signoff"],
     ["a new tree with no signoff waits for one", { signedOff: false }, "signoff"],
     ["no signoff outranks no token", { signedOff: false, tokenValid: false }, "signoff"],
     ["a signed-off tree with no token waits for a login", { tokenValid: false }, "login"],
@@ -182,6 +185,7 @@ const harness = () => {
 
   const deps = (patch: Partial<ReconcileDeps> = {}): ReconcileDeps => ({
     jobId: 11,
+    retry: false,
     repositories: repo.repositories,
     site: { registry: "registry.cluster:5000", registryCaDir: "/var/lib/registry-ca" },
     tokenValid: Effect.sync(() => knobs.token),
@@ -343,7 +347,7 @@ describe("reconcileApp", () => {
     }
   });
 
-  it("records a failed deploy as a try, fails the job, and does not try that tree again", async () => {
+  it("records a failed deploy as a try and fails the job; the timer skips that tree, and a retry releases it", async () => {
     const h = harness();
     try {
       const main = h.repo.push("one", {
@@ -365,12 +369,12 @@ describe("reconcileApp", () => {
       assert.deepEqual(h.calls.deployed, []);
       assert.equal((await h.status()).status, "failed");
 
-      // The next push tries again.
-      const next = h.repo.push("fix", { "a.txt": "fix" });
-      await h.signOff(next.tree, next.commit);
-      await h.reconcile();
+      // `ops reconcile` retries the same tree.
+      assert.equal((await h.reconcile({ retry: true }))._tag, "Success");
       assert.equal(h.calls.deployed.length, 1);
-      assert.equal((await h.status()).status, "released");
+      const retried = await h.status();
+      assert.equal(retried.status, "released");
+      assert.equal(retried.triedTree, main.tree);
     } finally {
       h.cleanup();
     }

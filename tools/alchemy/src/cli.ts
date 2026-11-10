@@ -977,6 +977,7 @@ const reconcileJob = Effect.fn("reconcileJob")(function* (
   >();
   yield* Reconcile.reconcileApp(submit.app, {
     jobId,
+    retry: submit.retry,
     repositories: paths.repositories,
     site: yield* buildSite,
     // An absent, expired or revoked token all read as "run ops login".
@@ -1007,7 +1008,7 @@ const reconcileEnqueue = Command.make(
       apps,
       (app) =>
         QueueSubmit.submitJob(
-          JSON.stringify({ _tag: "submit", command: "reconcile", app }),
+          JSON.stringify({ _tag: "submit", command: "reconcile", app, retry: false }),
           QueuePaths.production.socket,
         ).pipe(
           Effect.flatMap((id) => Console.log(`${app}: job ${id}`)),

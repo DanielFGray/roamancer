@@ -20,7 +20,7 @@ import { deployRef } from "./Signoff.ts";
 
 /** What reconcile does with the tree at the head of `main`. */
 export type Verdict =
-  /** Reconcile already released or tried this tree; the next push tries again. */
+  /** Reconcile already released or tried this tree; the next push or a retry tries again. */
   | "tried"
   /** No signoff for this tree. Not a try: the signoff arriving releases it. */
   | "signoff"
@@ -30,15 +30,18 @@ export type Verdict =
 
 /**
  * Decide from what reconcile can see, with no I/O. It compares `main`'s tree with the last
- * tree it tried and never with what runs live, so a rollback stays until `main` changes.
+ * tree it tried and never with what runs live, so a rollback stays until `main` changes or
+ * the operator retries. A retry releases a tried tree again, as when a release failed for a
+ * cause outside the tree; it still needs the signoff and the token.
  */
 export const decide = (input: {
   readonly tree: string;
   readonly triedTree: string | null;
+  readonly retry: boolean;
   readonly signedOff: boolean;
   readonly tokenValid: boolean;
 }): Verdict => {
-  if (input.tree === input.triedTree) return "tried";
+  if (input.tree === input.triedTree && !input.retry) return "tried";
   if (!input.signedOff) return "signoff";
   if (!input.tokenValid) return "login";
   return "release";
@@ -73,6 +76,8 @@ export class ReleaseFailed extends S.TaggedError<ReleaseFailed>()("ReleaseFailed
 export interface ReconcileDeps {
   /** The queue job that runs this reconcile; it names the release's build. */
   readonly jobId: number;
+  /** Release `main`'s tree even when reconcile already tried it (ReconcileSubmit `retry`). */
+  readonly retry: boolean;
   /** The folder of the apps' bare repositories (queue/Paths.ts `repositoryOf`). */
   readonly repositories: string;
   readonly site: BuildSite;
@@ -157,6 +162,7 @@ const actOn = Effect.fn("Reconcile.actOn")(function* (
   const verdict = decide({
     tree: seen.tree,
     triedTree: state.triedTree,
+    retry: deps.retry,
     signedOff: Option.isSome(signoff),
     tokenValid: Option.isSome(signoff) && (yield* deps.tokenValid),
   });

@@ -2,7 +2,7 @@
  * A queued Alchemy operation: data only. The runner is Nix-pinned; the row carries a
  * command-specific payload. No free argv reaches a child process.
  */
-import { Option, Schema as S } from "effect";
+import { Effect, Option, Schema as S } from "effect";
 import { DevDbClusterSubmit, DevDbSubmit } from "../devdb/Declaration.ts";
 import { BuildMemoryMB } from "../BuildLimits.ts";
 import { JobState } from "./Kinds.ts";
@@ -104,12 +104,15 @@ export type BuildSubmit = typeof BuildSubmit.Type;
 
 /**
  * reconcile: release the tree at the head of an app's `main` when the tree is signed off.
- * The app's name names its repository on the host (queue/Paths.ts), so a submit carries
- * only the app.
+ * The app's name names its repository on the host (queue/Paths.ts). `retry` releases a tree
+ * that reconcile already tried: the operator sets it (`ops reconcile`), and the timer never
+ * does, so a failed tree waits for the next push unless a person asks again. Jobs queued
+ * before the field existed are the timer's.
  */
 export const ReconcileSubmit = S.Struct({
   command: S.Literals(["reconcile"]),
   app: S.NonEmptyString,
+  retry: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(false))),
 });
 export type ReconcileSubmit = typeof ReconcileSubmit.Type;
 

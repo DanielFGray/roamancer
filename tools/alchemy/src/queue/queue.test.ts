@@ -1381,7 +1381,11 @@ describe("build upload", () => {
 });
 
 describe("queue reconcile jobs", () => {
-  const reconcileOf = (app: string) => ({ command: "reconcile" as const, app });
+  const reconcileOf = (app: string, retry = false) => ({
+    command: "reconcile" as const,
+    app,
+    retry,
+  });
   const state = (
     app: string,
     patch: Partial<Parameters<Context.Service.Shape<typeof Store>["saveReconcile"]>[0]> = {},
@@ -1437,7 +1441,7 @@ describe("queue reconcile jobs", () => {
     }
   });
 
-  it("queues one reconcile job per app while one waits or runs", async () => {
+  it("queues one reconcile job per app and kind while one waits or runs", async () => {
     const { root, paths } = tempRoot();
     try {
       await withStore(
@@ -1456,6 +1460,11 @@ describe("queue reconcile jobs", () => {
           assert.equal((yield* store.enqueue(reconcileOf("shop"))).id, first.id);
           yield* store.claim(first.id, null);
           assert.equal((yield* store.enqueue(reconcileOf("shop"))).id, first.id);
+
+          // A retry is its own job: merged into the timer's, it would skip the tried tree.
+          const retry = yield* store.enqueue(reconcileOf("shop", true));
+          assert.notEqual(retry.id, first.id);
+          assert.equal((yield* store.enqueue(reconcileOf("shop", true))).id, retry.id);
 
           // Once it ends, the next request queues a new job.
           yield* store.finish(first.id, 0);
@@ -1507,12 +1516,19 @@ describe("queue reconcile jobs", () => {
     const { root, paths } = tempRoot();
     const server = await runServe(paths, fakeUnits({ active: new Set([99]) }).layer);
     try {
-      const body = { _tag: "submit" as const, command: "reconcile" as const, app: "shop" };
+      const body = {
+        _tag: "submit" as const,
+        command: "reconcile" as const,
+        app: "shop",
+        retry: false,
+      };
       const first = await Effect.runPromise(request(paths.socket, body));
       const second = await Effect.runPromise(request(paths.socket, body));
       assert.equal(first._tag, "submitted");
       assert.deepEqual(second, first);
       assert.equal(decodeRequest(body)._tag, "submit");
+      // The queue holds reconcile jobs stored before `retry` existed; they read as the timer's.
+      assert.deepEqual(decodeRequest({ _tag: "submit", command: "reconcile", app: "shop" }), body);
     } finally {
       await server.stop();
       rmSync(root, { recursive: true, force: true });
