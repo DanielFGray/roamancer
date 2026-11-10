@@ -9,7 +9,8 @@ import { Effect, type FileSystem, Layer, Option, Stream } from "effect";
 import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { BuildStore } from "./BuildStore.ts";
 import { Nomad, type AllocationSummary } from "./Nomad.ts";
-import { decide, readHead, ReleaseFailed, reconcileApp, type ReconcileDeps } from "./Reconcile.ts";
+import { decide, DeployFailed, readHead, reconcileStage, type ReconcileDeps } from "./Reconcile.ts";
+import { liveRef } from "./Signoff.ts";
 import { Registry } from "./Registry.ts";
 import { layer as storeLayer, Store } from "./queue/Store.ts";
 
@@ -24,11 +25,11 @@ describe("decide", () => {
     tokenValid: true,
   };
   const cases: ReadonlyArray<readonly [string, Partial<typeof base>, string]> = [
-    ["a new, signed-off tree with a token releases", {}, "release"],
-    ["the first tree ever releases", { triedTree: null }, "release"],
+    ["a new, signed-off tree with a token releases", {}, "deploy"],
+    ["the first tree ever releases", { triedTree: null }, "deploy"],
     ["the tree already tried waits for the next push", { tree: "t1" }, "tried"],
     ["a tried tree stays tried without a signoff", { tree: "t1", signedOff: false }, "tried"],
-    ["a retry releases the tree already tried", { tree: "t1", retry: true }, "release"],
+    ["a retry releases the tree already tried", { tree: "t1", retry: true }, "deploy"],
     ["a retry still needs a signoff", { tree: "t1", retry: true, signedOff: false }, "signoff"],
     ["a new tree with no signoff waits for one", { signedOff: false }, "signoff"],
     ["no signoff outranks no token", { signedOff: false, tokenValid: false }, "signoff"],
@@ -95,7 +96,7 @@ const runtime = BunServices.layer;
 
 describe("reading main", () => {
   const head = (repo: string) =>
-    Effect.runPromise(readHead(repo).pipe(Effect.provide(runtime))).then(Option.getOrNull);
+    Effect.runPromise(readHead(repo, liveRef).pipe(Effect.provide(runtime))).then(Option.getOrNull);
 
   it("reads main's commit and tree, and sees no main under another branch's name", async () => {
     const repo = origin();
@@ -137,14 +138,14 @@ const unusedNomad = {
   nodeStats: unused("nodeStats"),
 };
 
-/** A harness for `reconcileApp` over a real queue store and fakes for Nomad, Garage and the registry. */
+/** A harness for `reconcileStage` over a real queue store and fakes for Nomad, Garage and the registry. */
 const harness = () => {
   const repo = origin();
   const root = repo.root;
   const calls = {
     uploaded: [] as Array<string>,
     planned: [] as Array<string>,
-    deployed: [] as Array<{ app: string; env: Record<string, string>; cartridge: string }>,
+    deployed: [] as Array<{ stage: string; env: Record<string, string>; cartridge: string }>,
     registered: 0,
   };
   const knobs = { token: true, deployFails: false, buildDigest: digest };
@@ -187,16 +188,16 @@ const harness = () => {
     repositories: repo.repositories,
     site: { registry: "registry.cluster:5000", registryCaDir: "/var/lib/registry-ca" },
     tokenValid: Effect.sync(() => knobs.token),
-    stage: (command, app, env) =>
+    stage: (command, stage, env) =>
       command === "plan"
-        ? Effect.sync(() => void calls.planned.push(app))
+        ? Effect.sync(() => void calls.planned.push(stage))
         : knobs.deployFails
-          ? Effect.fail(new ReleaseFailed({ message: "alchemy deploy failed" }))
+          ? Effect.fail(new DeployFailed({ message: "alchemy deploy failed" }))
           : Effect.sync(
               () =>
                 // The pinned cartridge is a temporary file that ends with the release.
                 void calls.deployed.push({
-                  app,
+                  stage,
                   env,
                   cartridge: readFileSync(env["CARTRIDGE_FILE"], "utf8"),
                 }),
@@ -219,12 +220,12 @@ const harness = () => {
       Store | BuildStore | Nomad | Registry | FileSystem.FileSystem | ChildProcessSpawner
     >,
   ) => Effect.runPromise(effect.pipe(Effect.provide(services)));
-  const reconcile = (patch?: Partial<ReconcileDeps>) =>
-    run(reconcileApp("shop", deps(patch)).pipe(Effect.result));
-  const status = () =>
+  const reconcile = (patch?: Partial<ReconcileDeps>, stage = "shop") =>
+    run(reconcileStage(stage, deps(patch)).pipe(Effect.result));
+  const status = (stage = "shop") =>
     run(
       Effect.gen(function* () {
-        const row = Option.getOrThrow(yield* (yield* Store).getReconcile("shop"));
+        const row = Option.getOrThrow(yield* (yield* Store).getReconcile(stage));
         return row;
       }),
     );
@@ -253,7 +254,7 @@ const harness = () => {
   };
 };
 
-describe("reconcileApp", () => {
+describe("reconcileStage", () => {
   it("waits for a signoff, then for a login, then releases; none of the waits is a try", async () => {
     const h = harness();
     try {
@@ -278,15 +279,14 @@ describe("reconcileApp", () => {
       assert.equal(row.status, "released");
       assert.equal(row.triedTree, main.tree);
       assert.equal(row.triedCommit, main.commit);
-      assert.equal(row.triedResult, "released");
       assert.equal(row.triedJob, 11);
 
       // The runner's build ran, and the deploy got the pinned cartridge, its commit and signoff.
       assert.equal(h.calls.registered, 1);
       assert.deepEqual(h.calls.planned, ["shop"], "the plan runs before the deploy");
       assert.equal(h.calls.deployed.length, 1);
-      const { app, env, cartridge: sent } = h.calls.deployed[0];
-      assert.equal(app, "shop");
+      const { stage, env, cartridge: sent } = h.calls.deployed[0];
+      assert.equal(stage, "shop");
       assert.equal(env["REVISION"], main.commit);
       assert.equal(env["ORIGIN"], main.commit, "the root commit of a one-commit history");
       assert.equal(env["SIGNOFF"], String(signoff));
@@ -316,6 +316,57 @@ describe("reconcileApp", () => {
       assert.equal(h.calls.deployed.length, 2);
       assert.equal(h.calls.deployed[1].env["REVISION"], two.commit);
       assert.equal(h.calls.deployed[1].env["ORIGIN"], one.commit, "origin stays the root commit");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("stages develop's signed-off tree, and a merge of that tree to main releases its image without a build", async () => {
+    const h = harness();
+    try {
+      const one = h.repo.push("one", { "cartridge.json": cartridge("registry.cluster:5000/shop") });
+      await h.signOff(one.tree, one.commit);
+      await h.reconcile();
+      assert.equal(h.calls.registered, 1);
+
+      const two = h.repo.push("two", { "a.txt": "x" }, "develop");
+      await h.reconcile({}, "shop-staged");
+      assert.equal((await h.status("shop-staged")).status, "waiting-signoff");
+      assert.equal(h.calls.deployed.length, 1, "develop deploys nothing without a signoff");
+
+      await h.signOff(two.tree, two.commit);
+      await h.reconcile({}, "shop-staged");
+      assert.equal(h.calls.registered, 2);
+      assert.equal((await h.status("shop-staged")).status, "staged");
+      assert.equal((await h.status()).status, "released", "the live row is its own");
+      const staged = h.calls.deployed[1];
+      assert.equal(staged.stage, "shop-staged");
+      assert.equal(staged.env["STAGED_IMAGE"], `registry.cluster:5000/shop@${digest}`);
+      assert.equal(staged.env["REVISION"], two.commit);
+      // A staged deploy is not a release, so the host records nothing for it.
+      assert.equal(staged.env["ORIGIN"], undefined);
+      assert.equal(staged.env["SIGNOFF"], undefined);
+
+      h.repo.git("push", "--quiet", "origin", "HEAD:refs/heads/main");
+      await h.reconcile();
+      assert.equal(h.calls.registered, 2, "main's tree reuses the staged image");
+      assert.equal(h.calls.deployed.length, 3);
+      assert.equal(h.calls.deployed[2].stage, "shop");
+      assert.equal(h.calls.deployed[2].env["REVISION"], two.commit);
+      assert.equal((await h.status("shop-staged")).status, "staged");
+
+      // A retry names one stage: retrying the live release leaves the staged copy alone, and
+      // the other way round.
+      await h.reconcile({ retry: true });
+      assert.deepEqual(
+        h.calls.deployed.slice(3).map((call) => call.stage),
+        ["shop"],
+      );
+      await h.reconcile({ retry: true }, "shop-staged");
+      assert.deepEqual(
+        h.calls.deployed.slice(3).map((call) => call.stage),
+        ["shop", "shop-staged"],
+      );
     } finally {
       h.cleanup();
     }
@@ -357,7 +408,6 @@ describe("reconcileApp", () => {
       assert.equal(failed._tag, "Failure");
       const row = await h.status();
       assert.equal(row.status, "failed");
-      assert.equal(row.triedResult, "failed");
       assert.equal(row.triedTree, main.tree);
       assert.match(row.detail, /alchemy deploy failed/);
 
@@ -388,7 +438,8 @@ describe("reconcileApp", () => {
       h.knobs.buildDigest = "no digest here";
       const failed = await h.reconcile();
       assert.equal(failed._tag, "Failure");
-      assert.equal((await h.status()).triedResult, "failed");
+      assert.equal((await h.status()).status, "failed");
+      assert.equal((await h.status()).triedTree, main.tree);
       assert.deepEqual(h.calls.deployed, []);
     } finally {
       h.cleanup();
@@ -412,8 +463,8 @@ describe("reconcileApp", () => {
     const h = harness();
     try {
       assert.equal((await h.reconcile())._tag, "Success");
-      assert.equal((await h.status()).status, "no-main");
-      const other = await h.run(reconcileApp("blog", h.deps()).pipe(Effect.result));
+      assert.equal((await h.status()).status, "no-branch");
+      const other = await h.run(reconcileStage("blog", h.deps()).pipe(Effect.result));
       assert.equal(other._tag, "Failure");
     } finally {
       h.cleanup();

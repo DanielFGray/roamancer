@@ -521,7 +521,7 @@ export const postgresAdmin = (entry: Pick<PostgresEntry, "server">) => {
 };
 
 /**
- * The resources that deploy `cartridge`. `revision` is the app commit a release, promote, stage
+ * The resources that deploy `cartridge`. `revision` is the app commit a release, stage
  * or rollback deploys; every task then gets it as GIT_COMMIT, so an app can report the commit
  * it runs. The commit comes from the deploy, not the image, because one image can serve every
  * commit with the same tree (docs/design/pr-previews.md). A platform cartridge has none.
@@ -617,7 +617,7 @@ export const resolve = Effect.fn("Cartridge.resolve")(function* (root: string, n
           onNone: () =>
             Effect.fail(
               configError(
-                `'${name}' is no platform cartridge and has no recorded deployment; run \`ops release\` in its repository first`,
+                `'${name}' is no platform cartridge and has no recorded deployment; push a signed-off commit to its repository's main first`,
               ),
             ),
         });

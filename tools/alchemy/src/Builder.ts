@@ -1,7 +1,7 @@
 /**
  * Build a commit's tree through the runner. The tree goes to the runner as git's archive over
  * ssh; the runner uploads it, builds it as a Nomad job on a worker node, checks the digest the
- * job prints against the registry, and records it. Every image, from `ops release` or from a
+ * job prints against the registry, and records it. Every image, from `ops stage` or from a
  * push, comes from that one build path with one set of limits. This returns the pinned
  * reference `repository:key@digest`; the tag only names the tree for people, and a deploy pins
  * the digest.

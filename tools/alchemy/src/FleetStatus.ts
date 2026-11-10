@@ -72,7 +72,7 @@ export const snapshot = Effect.fn("FleetStatus.snapshot")(function* () {
 
 /** An app's reconcile record as the snapshot shows it. */
 export const reconcileOutcome = (row: Reconcile): ReconcileOutcome => ({
-  app: row.app,
+  stage: row.stage,
   status: row.status,
   detail: row.detail,
   checkedAt: row.checkedAt,
@@ -349,7 +349,7 @@ export const render = (snapshot: Snapshot): string =>
     ``,
     `reconcile`,
     ...renderSection(snapshot.reconciles, (outcome) => [
-      `  ${outcome.app.padEnd(24)} ${outcome.status.padEnd(16)} ${minute(outcome.checkedAt)}  ${outcome.detail}`,
+      `  ${outcome.stage.padEnd(24)} ${outcome.status.padEnd(16)} ${minute(outcome.checkedAt)}  ${outcome.detail}`,
     ]),
     ``,
     `apps`,

@@ -9,14 +9,13 @@ import { JobState } from "./Kinds.ts";
 
 /**
  * plan | destroy | drift: one stage, the cartridge `ops` sent (null: the recorded one), the
- * app repository's root commit and released commit ("" when none was sent), and the image a
+ * commit it was built from ("" when none was sent), and the image a
  * `-staged` stage runs.
  */
 export const StageSubmit = S.Struct({
   command: S.Literals(["plan", "destroy", "drift"]),
   stage: S.NonEmptyString,
   cartridge: S.NullOr(S.String),
-  origin: S.String,
   revision: S.String,
   stagedImage: S.NullOr(S.NonEmptyString),
 });
@@ -70,13 +69,12 @@ export const StatusSubmit = S.Struct({
 
 /**
  * stage-image: the image a staged instance runs. `stable` fails unless every staged job is
- * deployed; `expect` fails unless the staged image has that image's digest.
+ * deployed.
  */
 export const StageImageSubmit = S.Struct({
   command: S.Literals(["stage-image"]),
   name: S.NonEmptyString,
   stable: S.Boolean,
-  expect: S.NullOr(S.NonEmptyString),
 });
 
 /** place-queued: ask Nomad to place every job with queued allocations again. */
@@ -103,15 +101,16 @@ export const BuildSubmit = S.Struct({
 export type BuildSubmit = typeof BuildSubmit.Type;
 
 /**
- * reconcile: release the tree at the head of an app's `main` when the tree is signed off.
- * The app's name names its repository on the host (queue/Paths.ts). `retry` releases a tree
- * that reconcile already tried: the operator sets it (`ops reconcile`), and the timer never
+ * reconcile: deploy the tree at the head of one stage's branch when the tree is signed off.
+ * The stage is an app's name, for its `main`, or `<app>-staged`, for its `develop`; the app's
+ * name names its repository on the host (queue/Paths.ts). `retry` deploys a tree that
+ * reconcile already tried: the operator sets it (`ops reconcile`), and the timer never
  * does, so a failed tree waits for the next push unless a person asks again. Jobs queued
  * before the field existed are the timer's.
  */
 export const ReconcileSubmit = S.Struct({
   command: S.Literals(["reconcile"]),
-  app: S.NonEmptyString,
+  stage: S.NonEmptyString,
   retry: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(false))),
 });
 export type ReconcileSubmit = typeof ReconcileSubmit.Type;
@@ -169,7 +168,7 @@ export const subject = (submit: JobSubmit): string | null => {
     case "state":
       return submit.path;
     case "reconcile":
-      return submit.app;
+      return submit.stage;
     case "build":
       return submit.repository;
     case "dev-db":

@@ -678,7 +678,7 @@ export const executeQueuedJob: QueueRun.Execute = (job: QueuedJob, env) =>
         case "status":
           return yield* StagelessJobs.status(submit.name);
         case "stage-image":
-          return yield* StagelessJobs.stageImage(submit.name, submit.stable, submit.expect);
+          return yield* StagelessJobs.stageImage(submit.name, submit.stable);
         case "place-queued":
           return yield* StagelessJobs.placeQueued();
         case "build":
@@ -912,7 +912,7 @@ const sentDeployment = Effect.fn("sentDeployment")(function* (
     .filter((image) => !image.includes("@sha256:"));
   if (unpinned.length > 0) {
     return yield* new CliError({
-      message: `${name} names images without a digest: ${unpinned.join(", ")}. Deploy it with \`ops release\`.`,
+      message: `${name} names images without a digest: ${unpinned.join(", ")}. Release it with a signed-off push to its repository's main.`,
     });
   }
   const fs = yield* FileSystem.FileSystem;
@@ -962,7 +962,7 @@ const buildSite = Effect.all({
 
 /**
  * A `reconcile` job: release the head of the app's `main` when Reconcile.decide allows it.
- * It deploys through `planOrDeploy`, as `ops release` does, with the job's `env` plus the
+ * It deploys through `planOrDeploy` with the job's `env` plus the
  * pinned cartridge and the commit.
  */
 const reconcileJob = Effect.fn("reconcileJob")(function* (
@@ -975,7 +975,7 @@ const reconcileJob = Effect.fn("reconcileJob")(function* (
   const context = yield* Effect.context<
     ChildProcessSpawner | FileSystem.FileSystem | OpenBao | Deployments.Deployments
   >();
-  yield* Reconcile.reconcileApp(submit.app, {
+  yield* Reconcile.reconcileStage(submit.stage, {
     jobId,
     retry: submit.retry,
     repositories: paths.repositories,
@@ -985,11 +985,11 @@ const reconcileJob = Effect.fn("reconcileJob")(function* (
       Effect.exit,
       Effect.map((exit) => exit._tag === "Success"),
     ),
-    stage: (command, app, extra) =>
-      planOrDeploy(command, app, { ...env, ...extra }).pipe(
+    stage: (command, stage, extra) =>
+      planOrDeploy(command, stage, { ...env, ...extra }).pipe(
         Effect.provide(context),
         Effect.mapError(
-          (error) => new Reconcile.ReleaseFailed({ message: Reconcile.describeFailure(error) }),
+          (error) => new Reconcile.DeployFailed({ message: Reconcile.describeFailure(error) }),
         ),
       ),
   });
@@ -999,20 +999,21 @@ const reconcileEnqueue = Command.make(
   "enqueue",
   {},
   Effect.fn(function* () {
-    // One job per app with a repository on this host. The front end hands back the job an
-    // app already has waiting or running, so a slow release is not queued twice.
+    // One job per stage of each app with a repository on this host, live before staged. The
+    // front end hands back the job a stage already has waiting or running, so a slow deploy
+    // is not queued twice.
     const apps = yield* Repositories.listApps(QueuePaths.production.repositories).pipe(
       Effect.mapError((error) => new CliError({ message: `repositories: ${error.message}` })),
     );
     yield* Effect.forEach(
-      apps,
-      (app) =>
+      apps.flatMap((app) => Reconcile.targets(app).map((target) => target.stage)),
+      (stage) =>
         QueueSubmit.submitJob(
-          JSON.stringify({ _tag: "submit", command: "reconcile", app, retry: false }),
+          JSON.stringify({ _tag: "submit", command: "reconcile", stage, retry: false }),
           QueuePaths.production.socket,
         ).pipe(
-          Effect.flatMap((id) => Console.log(`${app}: job ${id}`)),
-          Effect.mapError((error) => new CliError({ message: `${app}: ${error.message}` })),
+          Effect.flatMap((id) => Console.log(`${stage}: job ${id}`)),
+          Effect.mapError((error) => new CliError({ message: `${stage}: ${error.message}` })),
         ),
       { discard: true },
     );

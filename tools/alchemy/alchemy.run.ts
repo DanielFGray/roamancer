@@ -26,7 +26,7 @@ const stack = Alchemy.Stack(
     // of the form `giglist-staged` deploys a staged instance of giglist instead: the same services
     // under suffixed names, on the candidate image, with no public route.
     const stage = yield* Alchemy.Stage;
-    // The app commit this deploy runs, sent by ops release, stage, promote and rollback.
+    // The app commit this deploy runs, sent by a release, ops stage and ops rollback.
     const revision = yield* Config.option(Config.String("REVISION"));
     const resources = yield* Option.match(Cartridge.baseName(stage), {
       onNone: () =>

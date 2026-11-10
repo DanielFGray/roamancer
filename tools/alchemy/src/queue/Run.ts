@@ -98,8 +98,8 @@ export const runJob = Effect.fn("queue.runJob")(function* (
           yield* fs.writeFileString(cartridgeFile, submit.cartridge, { mode: 0o600 });
           env.CARTRIDGE_FILE = cartridgeFile;
         }
-        // A cartridge sent without its repository (CARTRIDGE=<file>) is checked, not recorded.
-        if (submit.origin !== "") env.ORIGIN = submit.origin;
+        // A sent cartridge is checked, never recorded: only a release (Reconcile.ts) and a
+        // rollback record one, and each sets ORIGIN itself.
         if (submit.revision !== "") env.REVISION = submit.revision;
         if (submit.stagedImage !== null) env.STAGED_IMAGE = submit.stagedImage;
       }

@@ -26,7 +26,7 @@ export const Deployment = S.Struct({
   revision: S.String,
   cartridge: S.String,
   deployedAt: S.String,
-  // The signoff a reconcile release rested on; null for a release `ops release` made.
+  // The signoff a reconcile release rested on; null for a release recorded before releases needed one.
   signoff: S.NullOr(S.Number),
 });
 export type Deployment = typeof Deployment.Type;

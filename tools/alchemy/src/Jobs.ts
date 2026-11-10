@@ -44,7 +44,7 @@ export const confirm = Effect.fn("Jobs.confirm")(function* (message: string, yes
   }
 });
 
-const unsent: Sent = { cartridge: null, origin: "", revision: "", stagedImage: null };
+const unsent: Sent = { cartridge: null, revision: "", stagedImage: null };
 
 /** CARTRIDGE names a cartridge file for a stage job; without one the host uses its record. */
 const cartridgeFromEnv = Effect.gen(function* () {
@@ -167,7 +167,7 @@ const stageImage = Command.make(
     ),
   },
   Effect.fn(function* ({ name, stable }) {
-    yield* (yield* Remote).run({ command: "stage-image", name, stable, expect: null });
+    yield* (yield* Remote).run({ command: "stage-image", name, stable });
   }),
 ).pipe(Command.withDescription("The image a staged deploy runs"));
 
@@ -194,16 +194,18 @@ const placeQueued = Command.make(
 const reconcile = Command.make(
   "reconcile",
   {
-    app: Argument.String("app").pipe(
-      Argument.withDescription("An app with a repository on the control host"),
+    stage: Argument.String("stage").pipe(
+      Argument.withDescription(
+        "An app with a repository on the control host, for its main, or <app>-staged, for its develop",
+      ),
     ),
   },
-  Effect.fn(function* ({ app }) {
-    yield* (yield* Remote).reconcile(app);
+  Effect.fn(function* ({ stage }) {
+    yield* (yield* Remote).reconcile(stage);
   }),
 ).pipe(
   Command.withDescription(
-    "Release the head of an app's main now, even a tree reconcile already tried, and follow the job",
+    "Deploy the head of a stage's branch now, even a tree reconcile already tried, and follow the job",
   ),
 );
 

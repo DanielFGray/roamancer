@@ -13,6 +13,7 @@ import * as Spawner from "effect/process/ChildProcessSpawner";
 import { OpsError } from "./Exec.ts";
 import { Remote } from "./Remote.ts";
 import { commands as signoffCommands, deployPushes, summarizeLog } from "./Signoff.ts";
+import { production, repositoryOf } from "./queue/Paths.ts";
 import { Site } from "./Site.ts";
 
 describe("summarizeLog", () => {
@@ -56,6 +57,11 @@ describe("deployPushes", () => {
       name: "a push to another branch",
       stdin: `refs/heads/main ${a} refs/heads/dev ${b}\n`,
       want: [],
+    },
+    {
+      name: "a push to develop, which stages",
+      stdin: `refs/heads/develop ${b} refs/heads/develop ${a}\n`,
+      want: [b],
     },
     { name: "a deletion of main", stdin: `(delete) ${zero} refs/heads/main ${b}\n`, want: [] },
     {
@@ -120,9 +126,10 @@ describe("ops signoff", () => {
   });
 
   describe("pre-push", () => {
-    const push = (repo: string, signoffs: string | undefined) => {
+    const controlHost = `ctl:${repositoryOf(production.repositories, "signoff-probe")}`;
+    const push = (repo: string, signoffs: string | undefined, url = controlHost) => {
       const commit = git(repo, "rev-parse", "HEAD").trim();
-      return execute(run("pre-push", repo), {
+      return execute(run("pre-push", "origin", url, repo), {
         stdin: `refs/heads/main ${commit} refs/heads/main ${"0".repeat(40)}\n`,
         signoffs,
       });
@@ -156,8 +163,26 @@ describe("ops signoff", () => {
       try {
         const { error, log } = await push(repo, row("f".repeat(40)));
         assert.ok(error instanceof OpsError);
-        assert.match(error.message, /has no signoff, so this push to main is refused/);
+        assert.match(
+          error.message,
+          /has no signoff, so this push to a branch that deploys is refused/,
+        );
         assert.ok(!log.some((line) => line.includes("scripts/verify")));
+      } finally {
+        rmSync(join(repo, ".."), { recursive: true, force: true });
+      }
+    });
+
+    it("does not check a push to another remote, which deploys nothing", async () => {
+      const repo = gitFixture("#!/bin/sh\nexit 0\n");
+      try {
+        const { error, log } = await push(
+          repo,
+          row("f".repeat(40)),
+          "git@github.com:someone/probe.git",
+        );
+        assert.equal(error, undefined);
+        assert.ok(!log.some((line) => line.includes("alchemy-runner signoffs")));
       } finally {
         rmSync(join(repo, ".."), { recursive: true, force: true });
       }
@@ -179,13 +204,13 @@ describe("ops signoff", () => {
     try {
       const path = join(repo, ".git/hooks/pre-push");
       assert.equal((await execute(run("install", repo))).error, undefined);
-      assert.match(readFileSync(path, "utf8"), /exec ops signoff pre-push/);
+      assert.match(readFileSync(path, "utf8"), /exec ops signoff pre-push "\$@"/);
       assert.equal(statSync(path).mode & 0o111, 0o111);
       assert.equal((await execute(run("install", repo))).error, undefined);
       writeFileSync(path, "#!/bin/sh\nexit 0\n");
       const { error } = await execute(run("install", repo));
       assert.ok(error instanceof OpsError);
-      assert.match(error.message, /another pre-push hook/);
+      assert.match(error.message, /another tool's pre-push hook/);
       assert.equal(readFileSync(path, "utf8"), "#!/bin/sh\nexit 0\n");
     } finally {
       rmSync(join(repo, ".."), { recursive: true, force: true });

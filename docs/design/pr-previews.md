@@ -1,5 +1,7 @@
 # Pull request previews
 
+Status: replaced for apps hosted on the control host by `continuous-deployment.md`, where `develop` feeds one staged copy per app and `main` releases. Its previews per pull request were never built; its image-key and image-reuse rules were built and still hold.
+
 ## Goal
 
 You choose a pull request (PR) on an app repository, and the platform runs it at a tailnet-only preview address beside the live release. The preview follows new pushes, gets removed when the PR closes, and a merge into `main` deploys the merged code. When the merged code is the code the preview ran, the deploy reuses the preview's image and builds nothing.
@@ -65,7 +67,7 @@ By default, `live` follows the tree of `main`. When `main` changes, reconcile re
 
 Either way, reconcile releases `main`'s tree only when it has a signoff (`continuous-deployment.md`). A merged tree that nobody tested gets none until someone runs `ops signoff` on it.
 
-An app with no repository on the control host is not watched. A merge then deploys nothing, and `live` changes only when you run `ops release`. The image of `main`'s tree stays, so that release builds nothing when a preview ran the same tree.
+An app with no repository on the control host is not watched, and nothing releases it. A push to `main` is the only release; when a preview ran the same tree, that release reuses its image and builds nothing.
 
 A merge into `main` is your approval, as `staged-releases.md` says. A release still waits for the new container's health checks, and Nomad reverts a release that fails them.
 

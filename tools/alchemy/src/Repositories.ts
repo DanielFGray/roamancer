@@ -1,9 +1,9 @@
 /**
  * The apps' bare repositories on the control host: `<app>.git` in the repositories folder
  * (queue/Paths.ts). The folder is the list of apps that reconcile releases on a push, so
- * adding an app needs no host rebuild. An app with no repository there is released only with
- * `ops release`. The operator owns the folder and makes each repository (`ops repo create`);
- * the runner only reads them, so a job cannot add an app or change what was pushed.
+ * adding an app needs no host rebuild, and an app with no repository there is never released.
+ * The operator owns the folder and makes each repository (`ops repo create`); the runner only
+ * reads them, so a job cannot add an app or change what was pushed.
  */
 import { Effect, FileSystem, Schema as S } from "effect";
 import * as Exec from "./Exec.ts";

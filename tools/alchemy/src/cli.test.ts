@@ -67,7 +67,7 @@ describe("cli --help", () => {
 });
 
 describe("alchemyArgv", () => {
-  const stage = { stage: "shop", cartridge: null, origin: "", revision: "", stagedImage: null };
+  const stage = { stage: "shop", cartridge: null, revision: "", stagedImage: null };
   const app = ["-c", Package.appEntry];
 
   it("passes --yes to every queued change: the submit was the approval", () => {

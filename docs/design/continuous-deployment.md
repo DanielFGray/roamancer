@@ -4,7 +4,7 @@
 
 A push to an app's `main` branch releases that commit, and the operator runs no command after the push. The platform builds the commit and releases it only when its tests passed and were signed off. The release waits for the new container's health checks, and Nomad reverts a release that fails them.
 
-This record is the first phase of `pr-previews.md`: its "Merge to deploy" path, without previews and without the GitHub App. It uses that record's terms (image key, ref, reconcile) and holds only what an unattended release adds.
+This record replaces `pr-previews.md` for apps hosted on the control host: one staged copy per app, fed by `develop`, instead of a preview per pull request, and no forge. It uses that record's terms (image key, ref, reconcile) and holds only what an unattended release adds.
 
 ## Decisions
 
@@ -20,7 +20,15 @@ Reconcile releases `main` when its tree differs from the last tree that reconcil
 - A build or deploy that fails is not tried again on each timer run. The next push tries again, or `ops reconcile <app>`, which releases the same tree again when the failure came from outside the tree, such as a full disk. A retry still needs the signoff and a valid token. The queue keeps a retry job apart from the timer's job for the same app, because a retry merged into a timer job would skip the tried tree.
 - A tree without a signoff, or a run without a valid token, is not a try. Reconcile releases that tree when the signoff or the login arrives.
 
-An app with no repository on the control host is never released by reconcile; `ops release` still works for it.
+An app with no repository on the control host is never released: a push to `main` there is the only release.
+
+### Stage: `develop` deploys the staged copy
+
+`main` is production and `develop` is the stage. Each app has two stages, and each stage has its own reconcile job and record: the app's own name for `main`, and `<app>-staged` for `develop`. The timer queues the live job first. The queue runs one job at a time, so a long staged deploy delays a `main` push that comes after it. A signed-off push to `develop` deploys the tailnet-only staged copy (`StagedCartridge.ts`) on the image of its tree, and records no deployment. The same rules apply as for `main`: a signoff and a valid token, and one try per tree. `ops reconcile <app>` retries `main`, and `ops reconcile <app>-staged` retries `develop`, so a retry never touches the other stage.
+
+A merge of `develop` into `main` is the promotion. A fast-forward merge gives `main` the staged tree, so the release reuses the staged image and its signoff and builds nothing.
+
+`ops discard <app>` destroys the staged copy and its database copies. Deleting `develop` only stops updates, so content edited in the stage survives it. After a discard, the next new tree on `develop` makes a new staged copy, whose databases copy production again. An app whose services write a host volume cannot be staged yet; its `develop` push records the refusal as a failed try.
 
 ### Repositories on the control host
 
@@ -50,7 +58,7 @@ Isolation:
 
 The runner reads the digest that the job prints, with its own Nomad token. It treats that output as untrusted: it records a digest only after the registry answers for `<repository>@<digest>`, and only under the repository and key it chose for that job. The builder cannot reach the runner socket, so a Dockerfile cannot record an image under another app's tree.
 
-`ops release` and `ops stage` use the same build job: `ops` sends the exported tree to the runner, which uploads it and submits the job. The ssh build as the operator and the Docker build on the workstation no longer exist, so every image, manual or unattended, comes from one build path with one set of limits.
+A release and `ops stage` use the same build job: the exported tree goes to the runner, which uploads it and submits the job. The ssh build as the operator and the Docker build on the workstation no longer exist, so every image, manual or unattended, comes from one build path with one set of limits.
 
 gVisor was measured and not chosen. Buildah fails inside it (no `/proc/<pid>/setgroups`), Kaniko builds dfg.rocks there in 407 s, and the container's memory limit is not enforced under rootless Podman. It would let builds run on cynic.
 
@@ -58,7 +66,7 @@ gVisor was measured and not chosen. Buildah fails inside it (no `/proc/<pid>/set
 
 `ops signoff [commit]` runs the app's checks on the developer's machine and records that they passed. It exports the commit's tree (`HEAD` by default) with `git archive`, runs `scripts/worktree-setup` there when the app has one, and then `scripts/verify`. These are the project scripts that foreman runs before it lands a branch, so one script says what "checked" means for both. Each project decides what its verify runs: unit tests, browser tests, a build, or nothing. The platform needs only an exit code of 0. The export holds only committed files, so uncommitted edits, ignored files such as `.env`, and the checkout's `node_modules` cannot change the result. The export has no `.git` folder, so a verify script must not need one.
 
-Verify runs once per tree. The developer runs `ops signoff` when the work is ready, or foreman runs it when it lands a branch. A push does not run the tests again. `ops signoff install` writes a git pre-push hook in the app's repository. The hook refuses a push to `main` when the tree of a commit it sends has no signoff on the control host, and it runs no tests itself:
+Verify runs once per tree. The developer runs `ops signoff` when the work is ready, or foreman runs it when it lands a branch. A push does not run the tests again. `ops signoff install` writes a git pre-push hook in the app's repository. The hook refuses a push to `main` or `develop` of the app's repository on the control host when the tree of a commit it sends has no signoff there, and it runs no tests itself. A push to a mirror deploys nothing, so the hook does not check it:
 
 ```sh
 ops signoff install   # once per clone; linked worktrees share the hook
@@ -80,7 +88,7 @@ A reconcile job uses the same token as any job, the one `ops login` mints for 10
 
 ### Approval
 
-Today the workstation shows each plan and asks before it submits the deploy (`host-owned-staged-runner.md`). Under continuous deployment, a push to `main` is the approval, as `staged-releases.md` already says for a merge. So anyone who can push to `main` releases to production, and that includes an agent that can use the operator's ssh key. An app that needs a person to approve each release has no repository on the control host and is released with `ops release`.
+Today the workstation shows each plan and asks before it submits the deploy (`host-owned-staged-runner.md`). Under continuous deployment, a push to `main` is the approval, as `staged-releases.md` already says for a merge. So anyone who can push to `main` releases to production, and that includes an agent that can use the operator's ssh key. That push is the only way to release, so the ssh key that can push and the `ops login` token that reconcile needs decide who can release.
 
 ### Revision lock
 
@@ -88,11 +96,11 @@ Today the workstation shows each plan and asks before it submits the deploy (`ho
 
 ### Watched apps and timer
 
-The repositories folder is the list of watched apps: reconcile watches every `<app>.git` in it, so adding an app needs no `ops rebuild`. A rebuild gate on that list would add no protection. A release needs the operator's `ops login` token, and that token can already `ops release` any app, a new one included. Making a repository needs the operator's ssh login, which can already push to `main`. A systemd timer queues one `reconcile` job per repository every minute; the queue keeps at most one waiting or running reconcile job per app, so a slow release is not queued twice. A repository that cannot be read is an outcome shown in `ops dash`, not a failed job, so the timer does not fill the queue with failures.
+The repositories folder is the list of watched apps: reconcile watches every `<app>.git` in it, so adding an app needs no `ops rebuild`. A rebuild gate on that list would add no protection. A release needs the operator's `ops login` token, and that token can already deploy any cartridge with `CARTRIDGE=<file> ops deploy`, a new one included. Making a repository needs the operator's ssh login, which can already push to `main`. A systemd timer queues one `reconcile` job per repository every minute; the queue keeps at most one waiting or running reconcile job per app, so a slow release is not queued twice. A repository that cannot be read is an outcome shown in `ops dash`, not a failed job, so the timer does not fill the queue with failures.
 
 ### Records
 
-Each release goes into the deployment record as an `ops release` does, with its commit and its signoff. A failed build or deploy is a failed job in `ops dash`, with its log.
+Each release goes into the deployment record with its commit and its signoff. A failed build or deploy is a failed job in `ops dash`, with its log.
 
 ## Build order
 

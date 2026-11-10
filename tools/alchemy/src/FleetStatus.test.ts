@@ -192,7 +192,6 @@ describe("runnerJob", () => {
         command: "deploy",
         stage: "giglist",
         cartridge: "{}",
-        origin: "o",
         revision: "r",
         stagedImage: null,
         planJobId: 3,

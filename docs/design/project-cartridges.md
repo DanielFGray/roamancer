@@ -31,7 +31,7 @@ A cartridge is a versioned JSON file that describes services and their data need
 }
 ```
 
-The file lives at the root of the noneuclid repository. `ops release` there sends it to the control host with its image pinned, and the stack loads it for `--stage noneuclid`; later plans read the deployment the host recorded (tools/alchemy/README.md, Where cartridges live). The runner validates its version and fields, then plans the job through the `NomadJob` resource.
+The file lives at the root of the noneuclid repository. A release reads it from the pushed tree and pins its image, and the stack loads it for `--stage noneuclid`; later plans read the deployment the host recorded (tools/alchemy/README.md, Where cartridges live). The runner validates its version and fields, then plans the job through the `NomadJob` resource.
 
 ## Shape
 
