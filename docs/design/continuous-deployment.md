@@ -20,7 +20,7 @@ Reconcile releases `main` when its tree differs from the last tree that reconcil
 - A build or deploy that fails is not tried again on each timer run. The next push tries again, or `ops reconcile <app>`, which releases the same tree again when the failure came from outside the tree, such as a full disk. A retry still needs the signoff and a valid token. The queue keeps a retry job apart from the timer's job for the same app, because a retry merged into a timer job would skip the tried tree.
 - A tree without a signoff, or a run without a valid token, is not a try. Reconcile releases that tree when the signoff or the login arrives.
 
-An app with no repository on the control host is never released by reconcile; `ops release` still works for it.
+An app with no repository on the control host is never released: a push to `main` there is the only release.
 
 ### Repositories on the control host
 
@@ -50,7 +50,7 @@ Isolation:
 
 The runner reads the digest that the job prints, with its own Nomad token. It treats that output as untrusted: it records a digest only after the registry answers for `<repository>@<digest>`, and only under the repository and key it chose for that job. The builder cannot reach the runner socket, so a Dockerfile cannot record an image under another app's tree.
 
-`ops release` and `ops stage` use the same build job: `ops` sends the exported tree to the runner, which uploads it and submits the job. The ssh build as the operator and the Docker build on the workstation no longer exist, so every image, manual or unattended, comes from one build path with one set of limits.
+A release and `ops stage` use the same build job: the exported tree goes to the runner, which uploads it and submits the job. The ssh build as the operator and the Docker build on the workstation no longer exist, so every image, manual or unattended, comes from one build path with one set of limits.
 
 gVisor was measured and not chosen. Buildah fails inside it (no `/proc/<pid>/setgroups`), Kaniko builds dfg.rocks there in 407 s, and the container's memory limit is not enforced under rootless Podman. It would let builds run on cynic.
 
@@ -80,7 +80,7 @@ A reconcile job uses the same token as any job, the one `ops login` mints for 10
 
 ### Approval
 
-Today the workstation shows each plan and asks before it submits the deploy (`host-owned-staged-runner.md`). Under continuous deployment, a push to `main` is the approval, as `staged-releases.md` already says for a merge. So anyone who can push to `main` releases to production, and that includes an agent that can use the operator's ssh key. An app that needs a person to approve each release has no repository on the control host and is released with `ops release`.
+Today the workstation shows each plan and asks before it submits the deploy (`host-owned-staged-runner.md`). Under continuous deployment, a push to `main` is the approval, as `staged-releases.md` already says for a merge. So anyone who can push to `main` releases to production, and that includes an agent that can use the operator's ssh key. That push is the only way to release, so the ssh key that can push and the `ops login` token that reconcile needs decide who can release.
 
 ### Revision lock
 
@@ -88,11 +88,11 @@ Today the workstation shows each plan and asks before it submits the deploy (`ho
 
 ### Watched apps and timer
 
-The repositories folder is the list of watched apps: reconcile watches every `<app>.git` in it, so adding an app needs no `ops rebuild`. A rebuild gate on that list would add no protection. A release needs the operator's `ops login` token, and that token can already `ops release` any app, a new one included. Making a repository needs the operator's ssh login, which can already push to `main`. A systemd timer queues one `reconcile` job per repository every minute; the queue keeps at most one waiting or running reconcile job per app, so a slow release is not queued twice. A repository that cannot be read is an outcome shown in `ops dash`, not a failed job, so the timer does not fill the queue with failures.
+The repositories folder is the list of watched apps: reconcile watches every `<app>.git` in it, so adding an app needs no `ops rebuild`. A rebuild gate on that list would add no protection. A release needs the operator's `ops login` token, and that token can already deploy any cartridge with `CARTRIDGE=<file> ops deploy`, a new one included. Making a repository needs the operator's ssh login, which can already push to `main`. A systemd timer queues one `reconcile` job per repository every minute; the queue keeps at most one waiting or running reconcile job per app, so a slow release is not queued twice. A repository that cannot be read is an outcome shown in `ops dash`, not a failed job, so the timer does not fill the queue with failures.
 
 ### Records
 
-Each release goes into the deployment record as an `ops release` does, with its commit and its signoff. A failed build or deploy is a failed job in `ops dash`, with its log.
+Each release goes into the deployment record with its commit and its signoff. A failed build or deploy is a failed job in `ops dash`, with its log.
 
 ## Build order
 

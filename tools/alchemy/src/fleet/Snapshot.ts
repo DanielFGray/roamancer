@@ -195,7 +195,7 @@ export const Snapshot = S.Struct({
   takenAt: S.String,
   jobs: section(JobStatus),
   nodes: section(NodeStatus),
-  // The newest recorded release of each app that `ops release` deployed.
+  // The newest recorded release of each app.
   apps: section(AppRelease),
   // The newest runner jobs, newest first: what is running, waiting, and what just ended.
   runner: section(RunnerJob),

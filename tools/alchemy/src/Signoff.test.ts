@@ -185,7 +185,7 @@ describe("ops signoff", () => {
       writeFileSync(path, "#!/bin/sh\nexit 0\n");
       const { error } = await execute(run("install", repo));
       assert.ok(error instanceof OpsError);
-      assert.match(error.message, /another pre-push hook/);
+      assert.match(error.message, /another tool's pre-push hook/);
       assert.equal(readFileSync(path, "utf8"), "#!/bin/sh\nexit 0\n");
     } finally {
       rmSync(join(repo, ".."), { recursive: true, force: true });

@@ -8,7 +8,6 @@ import * as Deployments from "../Deployments.ts";
 import * as FleetStatus from "../FleetStatus.ts";
 import { Nomad } from "../Nomad.ts";
 import * as Package from "../Package.ts";
-import { sameImageDigest } from "../ReleaseImage.ts";
 import * as TaskLog from "../TaskLog.ts";
 import { JobCommandError } from "./Run.ts";
 
@@ -58,11 +57,7 @@ export const status = Effect.fn("queue.status")(function* (name: string) {
  * Print the one image a staged instance runs. With `stable`, fail unless every staged
  * job's current version deployed successfully.
  */
-export const stageImage = Effect.fn("queue.stageImage")(function* (
-  name: string,
-  stable: boolean,
-  expect: string | null,
-) {
+export const stageImage = Effect.fn("queue.stageImage")(function* (name: string, stable: boolean) {
   const cartridge = yield* Cartridge.resolve(Package.root, name);
   const nomad = yield* Nomad;
   // Only application services run the candidate image; a server keeps its own.
@@ -95,13 +90,7 @@ export const stageImage = Effect.fn("queue.stageImage")(function* (
       message: `the staged jobs of '${name}' run ${unique.length} images; expected one`,
     });
   }
-  const image = unique[0];
-  if (expect !== null && !sameImageDigest(expect, image)) {
-    return yield* new JobCommandError({
-      message: `the staged instance of '${name}' runs ${image}, not ${expect}`,
-    });
-  }
-  yield* Console.log(image);
+  yield* Console.log(unique[0]);
 });
 
 /**

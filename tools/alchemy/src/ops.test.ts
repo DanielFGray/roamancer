@@ -165,7 +165,7 @@ describe("secret", () => {
 });
 
 describe("deployStage", () => {
-  const sent = { cartridge: "{}", origin: "o", revision: "r", stagedImage: null };
+  const sent = { cartridge: "{}", revision: "r", stagedImage: null };
 
   it("deploys the plan it showed, naming that plan's job", async () => {
     const { inputs } = await execute(deployStage("giglist", sent, true), {

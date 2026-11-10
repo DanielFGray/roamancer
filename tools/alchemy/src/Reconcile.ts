@@ -1,8 +1,8 @@
 /**
  * Reconcile releases the head of an app's `main` (docs/design/continuous-deployment.md). The
- * `reconcile` job reads `main` in the app's repository on the control host, decides, and either records why it
- * waits or builds and deploys the tree the way `ops release` does, without the prompt: a push
- * to `main` is the approval. A queue job runs it, so it takes turns with deploys.
+ * `reconcile` job reads `main` in the app's repository on the control host, decides, and
+ * either records why it waits or builds and deploys the tree with no prompt: a push to `main`
+ * is the approval. A queue job runs it, so it takes turns with deploys.
  */
 import { Cause, Console, Effect, FileSystem, Option, Schema as S } from "effect";
 import { defaultBuildMemoryMB } from "./BuildLimits.ts";
@@ -67,7 +67,7 @@ export const readHead = Effect.fn("Reconcile.readHead")(function* (repository: s
   return Option.some({ commit, tree: yield* git("rev-parse", `${commit}^{tree}`) });
 });
 
-/** `ops release`'s plan or deploy step failed; `message` is the reason its error gave. */
+/** The release's plan or deploy step failed; `message` is the reason its error gave. */
 export class ReleaseFailed extends S.TaggedError<ReleaseFailed>()("ReleaseFailed", {
   message: S.String,
 }) {}
@@ -83,7 +83,7 @@ export interface ReconcileDeps {
   readonly site: BuildSite;
   /** Whether the job holds a token OpenBao accepts. */
   readonly tokenValid: Effect.Effect<boolean>;
-  /** Plan or deploy `app` as `ops release` does, with `env` added: the pinned cartridge and the commit. */
+  /** Plan or deploy `app` with `env` added: the pinned cartridge and the commit. */
   readonly stage: (
     command: "plan" | "deploy",
     app: string,
@@ -281,7 +281,7 @@ const releaseTree = Effect.fn("Reconcile.releaseTree")(function* (
     pinnedFile,
     pinCartridgeText(yield* fs.readFileString(cartridgeFile), cartridge, pinned),
   );
-  // The repository's root commit names it whatever its remotes are called (release.ts).
+  // The repository's root commit names it whatever its remotes are called.
   const roots = yield* Exec.output("git", [
     "-C",
     source,
@@ -296,7 +296,7 @@ const releaseTree = Effect.fn("Reconcile.releaseTree")(function* (
     SIGNOFF: String(signoffId),
   };
   // A push to main is the approval, but the plan still checks the cartridge and its secrets
-  // before anything deploys, as `ops release` does.
+  // before anything deploys.
   yield* deps.stage("plan", app, env);
   yield* deps.stage("deploy", app, env);
   return pinned;

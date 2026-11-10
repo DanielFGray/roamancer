@@ -34,8 +34,9 @@ A **cartridge** is a versioned JSON file that lists an app's services, images, p
 routes, secret references, and database needs. The platform turns each service into one Nomad job
 and orders the jobs by their dependencies.
 
-`ops release`, `ops stage` and `ops promote` build an app's committed `HEAD` and push it to the
-cluster registry. The build is a Nomad batch job on a worker node: `ops` sends the exported tree
+A release is a push to `main` in the app's repository on the control host, and `ops stage`
+deploys a candidate. Both build the commit's tree and push it to the cluster registry, or reuse
+the image recorded for that tree. The build is a Nomad batch job on a worker node: the tree goes
 to the runner on the control host, which uploads it to the `builds` bucket and runs Buildah in
 the builder user's rootless Podman. The runner records the digest only after the registry
 answers for it. The build uses the repository's `Dockerfile`, even when a `Containerfile` sits
@@ -45,12 +46,13 @@ beside it.
 
 Releases:
 
-- `ops release` builds the app repository's committed `HEAD`, pushes the image to the private
-  registry, pins it by digest, shows the plan, and deploys after you confirm.
+- `ops repo create` makes an app's repository on the control host. A push to its `main` releases
+  the pushed tree once `ops signoff` has recorded that the tree's `scripts/verify` passed. The
+  image is pinned by digest, and the plan runs before the deploy.
 - Each deployment is recorded. `ops rollback <app> <n>` deploys an earlier one again, image and
   job together.
-- `ops stage` runs a candidate at a tailnet-only preview address beside the live release.
-  `ops promote` releases that exact image, and `ops discard` removes it.
+- `ops stage` runs a candidate at a tailnet-only preview address beside the live release, and
+  `ops discard` removes it. A push of the same tree to `main` reuses the staged image.
 - An update waits for the new container's health checks. Nomad is set to revert an update that
   fails them.
 - A service's `migrate` step runs before the service starts, and a failed migration keeps the new
@@ -201,7 +203,7 @@ Set `OPS_HOST` to use a control host other than `cluster.server`.
 3. Apply later host changes with `ops rebuild [host]`.
 4. Deploy the platform cartridges (`platform-data`, `platform-ingress`, and others) with
    `ops deploy --stage <name>`.
-5. In an app repository, run `ops release`.
+5. In an app repository, run `ops repo create` and `ops signoff`, then `git push <host> main`.
 
 Put `tools/alchemy/scripts` on your `PATH` to run `ops`. The full command list, and how cartridges,
 secrets, and staged releases work, is in [tools/alchemy/README.md](tools/alchemy/README.md).

@@ -1,7 +1,7 @@
 /*
- * Workstation-side release commands, run from an app's repository. Build and push happen
- * once here; the control host receives the cartridge with its images pinned, runs Alchemy
- * against its own state, and records what it deployed.
+ * Workstation commands that stage and discard an app's tailnet-only staged instance, run from
+ * the app's repository. A release is a signed-off push to the app's repository on the control
+ * host (Reconcile.ts), never a command here.
  */
 import { Console, Effect, FileSystem, Option } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
@@ -11,9 +11,7 @@ import { OpsError, output } from "./Exec.ts";
 import * as Git from "./Git.ts";
 import { deployStage, destroyStage } from "./Jobs.ts";
 import { Remote } from "./Remote.ts";
-import { imageDigest, pinCartridgeText, repositoriesOf } from "./ReleaseImage.ts";
-import { commands as repoCommands } from "./AppRepository.ts";
-import { commands as signoffCommands } from "./Signoff.ts";
+import { imageDigest, repositoriesOf } from "./ReleaseImage.ts";
 import { defaultBuildMemoryMB } from "./BuildLimits.ts";
 
 const folder = Argument.String("folder").pipe(
@@ -29,17 +27,6 @@ const yes = Flag.Boolean("yes").pipe(
   ),
 );
 
-const release = Command.make(
-  "release",
-  { folder, yes },
-  Effect.fn(function* ({ folder, yes }) {
-    const { tree, archive } = yield* committedTree(folder);
-    const image = yield* buildAndPush(folder, tree, archive);
-    yield* deployPinned(folder, tree, image, yes);
-    yield* Console.log(`Released ${image.pinned}`);
-  }, Effect.scoped),
-).pipe(Command.withDescription("Build, push and deploy an app's current commit"));
-
 const stage = Command.make(
   "stage",
   { folder, yes },
@@ -48,39 +35,16 @@ const stage = Command.make(
     const image = yield* buildAndPush(folder, tree, archive);
     const stageName = `${image.name}-staged`;
     const cartridge = yield* (yield* FileSystem.FileSystem).readFileString(cartridgePath(tree));
-    // A staged deploy is not a release: it sends no origin, so the host records nothing. Its
-    // revision still reaches the tasks as GIT_COMMIT.
+    // A staged deploy is not a release, so the host records nothing. Its revision still
+    // reaches the tasks as GIT_COMMIT.
     yield* deployStage(
       stageName,
-      { cartridge, origin: "", revision: image.commit, stagedImage: image.pinned },
+      { cartridge, revision: image.commit, stagedImage: image.pinned },
       yes,
     );
     yield* Console.log(`Staged ${image.pinned} (commit ${image.commit})`);
   }, Effect.scoped),
 ).pipe(Command.withDescription("Build and deploy a tailnet-only staged instance"));
-
-const promote = Command.make(
-  "promote",
-  { folder, yes },
-  Effect.fn(function* ({ folder, yes }) {
-    const { tree } = yield* committedTree(folder);
-    const image = yield* stagedImage(folder, tree);
-    // The host fails this job unless every staged job is stable and runs this digest.
-    yield* (yield* Remote).run({
-      command: "stage-image",
-      name: image.name,
-      stable: true,
-      expect: image.pinned,
-    });
-    yield* deployPinned(folder, tree, image, yes);
-    yield* destroyStage(`${image.name}-staged`, yes);
-    yield* Console.log(`Promoted ${image.pinned} and discarded ${image.name}-staged`);
-  }, Effect.scoped),
-).pipe(
-  Command.withDescription(
-    "Release the image staged from this commit's files live, then discard its stage",
-  ),
-);
 
 const discard = Command.make(
   "discard",
@@ -91,8 +55,8 @@ const discard = Command.make(
   }),
 ).pipe(Command.withDescription("Destroy a staged instance"));
 
-/** The release commands, to register under `ops`. */
-export const commands = [release, stage, promote, discard, ...signoffCommands, ...repoCommands];
+/** The staged-instance commands, to register under `ops`. */
+export const commands = [stage, discard];
 
 const cartridgePath = (folder: string) => `${folder}/cartridge.json`;
 
@@ -140,21 +104,6 @@ const buildAndPush = Effect.fn("buildAndPush")(function* (
   return pinnedImage(head, digest);
 });
 
-/**
- * The pushed image of HEAD's files, which `ops stage` built or reused. Refused when none
- * exists, because promote releases what was staged and never builds.
- */
-const stagedImage = Effect.fn("stagedImage")(function* (folder: string, tree: string) {
-  const head = yield* headImage(folder, tree);
-  const found = yield* (yield* Remote).findImage(head.image);
-  if (Option.isNone(found)) {
-    return yield* new OpsError({
-      message: `no image has the files of ${head.commit} (tree ${head.image.key.slice(0, 12)}). Run \`ops stage\` first.`,
-    });
-  }
-  return pinnedImage(head, found.value);
-});
-
 /** HEAD's commit, the cartridge's name, and the image HEAD's files are keyed by. */
 const headImage = Effect.fn("headImage")(function* (folder: string, tree: string) {
   const cartridge = yield* Cartridge.decodeFile(cartridgePath(tree), Cartridge.AppCartridge);
@@ -169,31 +118,6 @@ const pinnedImage = (
   head: { readonly name: string; readonly commit: string; readonly image: BuildImage },
   digest: string,
 ) => ({ name: head.name, commit: head.commit, pinned: `${head.image.repository}@${digest}` });
-
-/**
- * Deploy the folder's cartridge with every service image replaced by the pushed digest. The
- * pinned copy goes to the control host, which records it with the repository and commit;
- * the app's repository keeps naming its image without a digest.
- */
-const deployPinned = Effect.fn("deployPinned")(function* (
-  folder: string,
-  tree: string,
-  image: { readonly name: string; readonly commit: string; readonly pinned: string },
-  yes: boolean,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const cartridge = yield* Cartridge.decodeFile(cartridgePath(tree), Cartridge.AppCartridge);
-  const text = yield* fs.readFileString(cartridgePath(tree));
-  const pinnedText = pinCartridgeText(text, cartridge, image.pinned);
-  // The repository's root commit names it whatever its remotes are called.
-  const roots = yield* output("git", ["-C", folder, "rev-list", "--max-parents=0", "HEAD"]);
-  const origin = roots.trim().split("\n").sort()[0];
-  yield* deployStage(
-    image.name,
-    { cartridge: pinnedText, origin, revision: image.commit, stagedImage: null },
-    yes,
-  );
-});
 
 /** The one registry repository the cartridge's images come from, without tag or digest. */
 const oneRepository = (cartridge: Cartridge.Cartridge, path: string) => {

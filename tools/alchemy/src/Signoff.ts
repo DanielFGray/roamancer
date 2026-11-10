@@ -62,7 +62,8 @@ const signoff = Command.make(
       "install",
       { folder },
       Effect.fn(function* ({ folder }) {
-        yield* installHook(folder);
+        const refused = yield* installHook(folder);
+        if (Option.isSome(refused)) return yield* new OpsError({ message: refused.value });
       }),
     ).pipe(
       Command.withDescription(
@@ -229,7 +230,9 @@ exec ops signoff pre-push
 
 /**
  * Write the pre-push hook where git looks for it: `--git-path` follows `core.hooksPath`, and
- * linked worktrees share the main checkout's hooks. Refuse to replace another hook.
+ * linked worktrees share the main checkout's hooks. Another tool's hook, such as a hook
+ * manager's, is left as it is, because that tool rewrites it: the result is then the line to
+ * add to that tool's configuration. None means the hook was written.
  */
 export const installHook = Effect.fn("Signoff.installHook")(function* (folder: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -244,15 +247,16 @@ export const installHook = Effect.fn("Signoff.installHook")(function* (folder: s
   if (yield* fs.exists(path)) {
     const existing = yield* fs.readFileString(path);
     if (!existing.includes(hookMarker)) {
-      return yield* new OpsError({
-        message: `${path} is another pre-push hook; add \`ops signoff pre-push\` to it by hand`,
-      });
+      return Option.some(
+        `${path} is another tool's pre-push hook; add \`ops signoff pre-push\` to that tool's pre-push commands`,
+      );
     }
   }
   yield* fs.makeDirectory(path.slice(0, path.lastIndexOf("/")), { recursive: true });
   yield* fs.writeFileString(path, hook);
   yield* fs.chmod(path, 0o755);
   yield* Console.error(`Wrote ${path}`);
+  return Option.none<string>();
 });
 
 /** CSI / OSC ANSI sequences; stripped before the summary is truncated. */

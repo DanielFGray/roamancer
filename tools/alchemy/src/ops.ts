@@ -12,7 +12,9 @@ import { Builder } from "./Builder.ts";
 import { commands as devCommands } from "./devdb/Commands.ts";
 import { OpsError, route } from "./Exec.ts";
 import { HostName, image, install, rebuild } from "./Nixos.ts";
-import { commands as releaseCommands } from "./release.ts";
+import { commands as repoCommands } from "./AppRepository.ts";
+import { commands as signoffCommands } from "./Signoff.ts";
+import { commands as stageCommands } from "./stage.ts";
 import { commands as jobCommands, forwarded } from "./Jobs.ts";
 import { Remote } from "./Remote.ts";
 import { secret } from "./secrets.ts";
@@ -75,7 +77,9 @@ const imageCommand = Command.make(
 const ops = Command.make("ops").pipe(
   Command.withDescription("Release apps, rebuild hosts, and run Alchemy on the control host"),
   Command.withSubcommands([
-    ...releaseCommands,
+    ...stageCommands,
+    ...signoffCommands,
+    ...repoCommands,
     ...devCommands,
     secret,
     rebuildCommand,

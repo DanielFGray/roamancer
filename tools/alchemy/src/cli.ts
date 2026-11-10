@@ -678,7 +678,7 @@ export const executeQueuedJob: QueueRun.Execute = (job: QueuedJob, env) =>
         case "status":
           return yield* StagelessJobs.status(submit.name);
         case "stage-image":
-          return yield* StagelessJobs.stageImage(submit.name, submit.stable, submit.expect);
+          return yield* StagelessJobs.stageImage(submit.name, submit.stable);
         case "place-queued":
           return yield* StagelessJobs.placeQueued();
         case "build":
@@ -912,7 +912,7 @@ const sentDeployment = Effect.fn("sentDeployment")(function* (
     .filter((image) => !image.includes("@sha256:"));
   if (unpinned.length > 0) {
     return yield* new CliError({
-      message: `${name} names images without a digest: ${unpinned.join(", ")}. Deploy it with \`ops release\`.`,
+      message: `${name} names images without a digest: ${unpinned.join(", ")}. Release it with a signed-off push to its repository's main.`,
     });
   }
   const fs = yield* FileSystem.FileSystem;
@@ -962,7 +962,7 @@ const buildSite = Effect.all({
 
 /**
  * A `reconcile` job: release the head of the app's `main` when Reconcile.decide allows it.
- * It deploys through `planOrDeploy`, as `ops release` does, with the job's `env` plus the
+ * It deploys through `planOrDeploy` with the job's `env` plus the
  * pinned cartridge and the commit.
  */
 const reconcileJob = Effect.fn("reconcileJob")(function* (

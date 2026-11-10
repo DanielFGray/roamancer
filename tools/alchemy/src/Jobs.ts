@@ -44,7 +44,7 @@ export const confirm = Effect.fn("Jobs.confirm")(function* (message: string, yes
   }
 });
 
-const unsent: Sent = { cartridge: null, origin: "", revision: "", stagedImage: null };
+const unsent: Sent = { cartridge: null, revision: "", stagedImage: null };
 
 /** CARTRIDGE names a cartridge file for a stage job; without one the host uses its record. */
 const cartridgeFromEnv = Effect.gen(function* () {
@@ -167,7 +167,7 @@ const stageImage = Command.make(
     ),
   },
   Effect.fn(function* ({ name, stable }) {
-    yield* (yield* Remote).run({ command: "stage-image", name, stable, expect: null });
+    yield* (yield* Remote).run({ command: "stage-image", name, stable });
   }),
 ).pipe(Command.withDescription("The image a staged deploy runs"));
 

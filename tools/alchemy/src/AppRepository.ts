@@ -1,10 +1,11 @@
 /**
  * Workstation `ops repo create`: put an app on push-to-deploy. It makes the app's bare
  * repository on the control host (src/Repositories.ts), adds a remote named after the host
- * that points at it, and installs the signoff pre-push hook. Reconcile watches every
- * repository there, so no host rebuild is needed; the next signed-off push to `main` releases.
+ * that points at it, and installs the signoff pre-push hook unless another tool owns that
+ * hook. Reconcile watches every repository there, so no host rebuild is needed; the next
+ * signed-off push to `main` releases.
  */
-import { Console, Effect } from "effect";
+import { Console, Effect, Option } from "effect";
 import { Argument, Command } from "effect/cli";
 import * as Cartridge from "./Cartridge.ts";
 import { OpsError, output, run } from "./Exec.ts";
@@ -28,7 +29,10 @@ const create = Command.make(
     const remoteName = yield* (yield* Site).host;
     const repository = yield* (yield* Remote).createRepository(cartridge.name);
     yield* addRemote(folder, remoteName, repository.url);
-    yield* installHook(folder);
+    // The repository and remote are made either way: the hook only refuses an unsigned push
+    // early, and reconcile waits for a signoff without it.
+    const refused = yield* installHook(folder);
+    if (Option.isSome(refused)) yield* Console.error(refused.value);
     yield* Console.log(
       `${cartridge.name}: ${repository.created ? "made" : "already had"} ${repository.url}. ` +
         `Run \`ops signoff\`, then \`git push ${remoteName} main\` releases it.`,

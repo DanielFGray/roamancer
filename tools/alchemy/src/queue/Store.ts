@@ -465,7 +465,6 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
                 command: "plan",
                 stage,
                 cartridge: null,
-                origin: "",
                 revision: "",
                 stagedImage: null,
               }),
@@ -578,9 +577,7 @@ export class Store extends Context.Service<Store>()("alchemy/queue/Store", {
       if (plan.submit.cartridge !== deploy.cartridge) return yield* stale("another cartridge");
       if (plan.submit.stagedImage !== deploy.stagedImage)
         return yield* stale("another staged image");
-      if (plan.submit.origin !== deploy.origin || plan.submit.revision !== deploy.revision) {
-        return yield* stale("another release commit");
-      }
+      if (plan.submit.revision !== deploy.revision) return yield* stale("another commit");
       if (plan.runnerRevision !== runnerRevision) return yield* stale("another runner revision");
       // Only a job that changes resources outdates a plan; reads and plans in between do not.
       const later = yield* sql<{ id: number }>`

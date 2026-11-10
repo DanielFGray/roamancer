@@ -6,13 +6,6 @@ export const imageDigest = (image: string): Option.Option<string> =>
     /^sha256:[0-9a-f]{64}$/.test(digest),
   );
 
-/** Promotion is safe only when both references name the same immutable image bytes. */
-export const sameImageDigest = (left: string, right: string) =>
-  Option.match(imageDigest(left), {
-    onNone: () => false,
-    onSome: (digest) => imageDigest(right).pipe(Option.contains(digest)),
-  });
-
 /** The reference every service of a cartridge runs, with duplicates kept out. */
 export const serviceImages = (cartridge: {
   readonly services: ReadonlyArray<{ readonly image: string }>;

@@ -65,7 +65,7 @@ By default, `live` follows the tree of `main`. When `main` changes, reconcile re
 
 Either way, reconcile releases `main`'s tree only when it has a signoff (`continuous-deployment.md`). A merged tree that nobody tested gets none until someone runs `ops signoff` on it.
 
-An app with no repository on the control host is not watched. A merge then deploys nothing, and `live` changes only when you run `ops release`. The image of `main`'s tree stays, so that release builds nothing when a preview ran the same tree.
+An app with no repository on the control host is not watched, and nothing releases it. A push to `main` is the only release; when a preview ran the same tree, that release reuses its image and builds nothing.
 
 A merge into `main` is your approval, as `staged-releases.md` says. A release still waits for the new container's health checks, and Nomad reverts a release that fails them.
 

@@ -126,7 +126,6 @@ describe("queue store", () => {
             command: "plan",
             stage: "shop",
             cartridge: "{}",
-            origin: "o",
             revision: "r",
             stagedImage: null,
           });
@@ -159,7 +158,6 @@ describe("queue store", () => {
             command: "plan",
             stage: "shop",
             cartridge: null,
-            origin: "",
             revision: "",
             stagedImage: null,
           });
@@ -378,7 +376,6 @@ describe("queue starter", () => {
             command: "plan",
             stage: "a",
             cartridge: null,
-            origin: "",
             revision: "",
             stagedImage: null,
           });
@@ -386,7 +383,6 @@ describe("queue starter", () => {
             command: "plan",
             stage: "b",
             cartridge: null,
-            origin: "",
             revision: "",
             stagedImage: null,
           });
@@ -416,7 +412,6 @@ describe("queue starter", () => {
             command: "plan",
             stage: "a",
             cartridge: null,
-            origin: "",
             revision: "",
             stagedImage: null,
           });
@@ -424,7 +419,6 @@ describe("queue starter", () => {
             command: "plan",
             stage: "b",
             cartridge: null,
-            origin: "",
             revision: "",
             stagedImage: null,
           });
@@ -455,7 +449,6 @@ describe("queue crash recovery", () => {
             command: "plan",
             stage: "shop",
             cartridge: "{}",
-            origin: "o",
             revision: "r",
             stagedImage: null,
           });
@@ -485,7 +478,6 @@ describe("queue crash recovery", () => {
             command: "plan",
             stage: "shop",
             cartridge: "{}",
-            origin: "o",
             revision: "r",
             stagedImage: null,
           });
@@ -521,7 +513,6 @@ describe("queue cancel race", () => {
             command: "plan",
             stage: "shop",
             cartridge: "{}",
-            origin: "o",
             revision: "r",
             stagedImage: null,
           });
@@ -767,7 +758,6 @@ describe("queue stop hook", () => {
             command: "plan",
             stage: "shop",
             cartridge: null,
-            origin: "",
             revision: "",
             stagedImage: null,
           });
@@ -876,7 +866,6 @@ describe("queue migration", () => {
             command: "plan",
             stage: "shop",
             cartridge: null,
-            origin: "",
             revision: "",
             stagedImage: null,
           });
@@ -911,7 +900,6 @@ describe("queue plan gate", () => {
         command: "plan",
         stage: "shop",
         cartridge,
-        origin: "o",
         revision: "r",
         stagedImage: null,
       });
@@ -951,7 +939,6 @@ describe("queue plan gate", () => {
             command: "plan",
             stage: "shop",
             cartridge: "{}",
-            origin: "o",
             revision: "r",
             stagedImage: null,
           });
@@ -980,7 +967,6 @@ describe("queue plan gate", () => {
             command: "drift",
             stage: "shop",
             cartridge: "{}",
-            origin: "o",
             revision: "r",
             stagedImage: null,
           });
@@ -1039,7 +1025,7 @@ describe("queue plan gate", () => {
     }
   });
 
-  it("refuses when the released commit differs", async () => {
+  it("refuses when the commit differs", async () => {
     const { root, paths } = tempRoot();
     try {
       await withStore(
@@ -1052,7 +1038,7 @@ describe("queue plan gate", () => {
             store.requireFreshPlan({ ...deployOf(id, "{}"), revision: "other" }, "rev"),
           );
           assert.equal(error._tag, "PlanStale");
-          assert.match(error.message, /another release commit/);
+          assert.match(error.message, /another commit/);
         }),
       );
     } finally {
@@ -1113,7 +1099,7 @@ describe("queue plan gate", () => {
           const id = yield* succeedPlan("rev", "{}");
           for (const submit of [
             { command: "status" as const, name: "shop" },
-            { command: "stage-image" as const, name: "shop", stable: true, expect: null },
+            { command: "stage-image" as const, name: "shop", stable: true },
             {
               command: "drift" as const,
               stage: "shop",

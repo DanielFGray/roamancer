@@ -11,9 +11,8 @@ import { ChildProcess } from "effect/process";
 import * as Spawner from "effect/process/ChildProcessSpawner";
 import { TestConsole } from "effect/testing";
 import { Builder, type BuildImage } from "./Builder.ts";
-import { OpsError } from "./Exec.ts";
 import * as Git from "./Git.ts";
-import { commands } from "./release.ts";
+import { commands } from "./stage.ts";
 import { Remote } from "./Remote.ts";
 import { Site } from "./Site.ts";
 
@@ -26,7 +25,7 @@ const repositoryName = (
   .replace(/@.*$/, "")
   .replace(/:[^/:]+$/, "");
 
-describe("release commands and the image key", () => {
+describe("stage and the image key", () => {
   it("stage reuses the image the host recorded for HEAD's tree, by digest alone", async () => {
     const { builds, lookups, records, submitted, tree } = await runOps("stage", {
       recorded: Option.some(digest),
@@ -43,14 +42,6 @@ describe("release commands and the image key", () => {
     const { builds, records, tree } = await runOps("stage", { recorded: Option.none() });
     assert.deepEqual(builds, [{ repository: repositoryName, key: tree }]);
     assert.deepEqual(records, []);
-  });
-
-  it("promote refuses and builds nothing when no image has HEAD's tree", async () => {
-    const { builds, submitted, error } = await runOps("promote", { recorded: Option.none() });
-    assert.ok(error instanceof OpsError);
-    assert.match(error.message, /Run `ops stage` first/);
-    assert.deepEqual(builds, []);
-    assert.deepEqual(submitted, []);
   });
 });
 

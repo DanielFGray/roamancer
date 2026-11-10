@@ -9,14 +9,13 @@ import { JobState } from "./Kinds.ts";
 
 /**
  * plan | destroy | drift: one stage, the cartridge `ops` sent (null: the recorded one), the
- * app repository's root commit and released commit ("" when none was sent), and the image a
+ * commit it was built from ("" when none was sent), and the image a
  * `-staged` stage runs.
  */
 export const StageSubmit = S.Struct({
   command: S.Literals(["plan", "destroy", "drift"]),
   stage: S.NonEmptyString,
   cartridge: S.NullOr(S.String),
-  origin: S.String,
   revision: S.String,
   stagedImage: S.NullOr(S.NonEmptyString),
 });
@@ -70,13 +69,12 @@ export const StatusSubmit = S.Struct({
 
 /**
  * stage-image: the image a staged instance runs. `stable` fails unless every staged job is
- * deployed; `expect` fails unless the staged image has that image's digest.
+ * deployed.
  */
 export const StageImageSubmit = S.Struct({
   command: S.Literals(["stage-image"]),
   name: S.NonEmptyString,
   stable: S.Boolean,
-  expect: S.NullOr(S.NonEmptyString),
 });
 
 /** place-queued: ask Nomad to place every job with queued allocations again. */
