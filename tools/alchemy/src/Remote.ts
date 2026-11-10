@@ -2,12 +2,13 @@
  * The control host's job queue, seen from the workstation. Every Alchemy and Nomad command
  * that needs the host's state or tokens is a job: `ops` sends one JSON request to
  * `alchemy-runner submit` over ssh, then follows the job with `alchemy-runner wait`. The host
- * runs only the runner its last `ops rebuild` installed, so before the first job `ops`
- * refuses when this checkout's tools/alchemy differs from the runner's revision. A job
- * answers with its exit code: its output is for the operator to read, because the journal
- * holds the job's stdout and stderr as one stream.
+ * runs only the runner its last `ops rebuild` installed. That runner refuses a request with a
+ * key it does not know (queue/Protocol.ts), so a checkout newer than the runner cannot send a
+ * request it would misread; before the first job, `ops` only notes that runner code here is
+ * not live. A job answers with its exit code: its output is for the operator to read, because
+ * the journal holds the job's stdout and stderr as one stream.
  */
-import { Context, Effect, Layer, Option, Schema as S, Stdio, type Stream } from "effect";
+import { Console, Context, Effect, Layer, Option, Schema as S, Stdio, type Stream } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as Exec from "./Exec.ts";
 import * as Git from "./Git.ts";
@@ -30,22 +31,15 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
   make: Effect.gen(function* () {
     const site = yield* Site;
     const stdio = yield* Stdio.Stdio;
-    const sameRevision = yield* Effect.cached(
+    const noteRevision = yield* Effect.cached(
       Effect.gen(function* () {
-        yield* checkRevision(yield* site.host);
+        yield* noteRunnerRevision(yield* site.host);
       }),
     );
 
-    /**
-     * Queue `job` on the host and return its id. A job whose request holds no file or
-     * cartridge from this checkout may pass `sameRevision: false`: the runner reads only what
-     * it was built to read, so a platform commit here need not stop it.
-     */
-    const submit = Effect.fn("Remote.submit")(function* (
-      job: JobSubmit,
-      options: { readonly sameRevision: boolean } = { sameRevision: true },
-    ) {
-      if (options.sameRevision) yield* sameRevision;
+    /** Queue `job` on the host and return its id. */
+    const submit = Effect.fn("Remote.submit")(function* (job: JobSubmit) {
+      yield* noteRevision;
       const host = yield* site.host;
       const printed = yield* Exec.output(
         "ssh",
@@ -61,12 +55,12 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
 
     /**
      * Queue a build: `request` is one build request line and then the tar it counts (see
-     * `Builder`). Returns the build job's id. Like submit, it needs the runner's revision.
+     * `Builder`). Returns the build job's id.
      */
     const build = Effect.fn("Remote.build")(function* (
       request: Stream.Stream<Uint8Array, PlatformError>,
     ) {
-      yield* sameRevision;
+      yield* noteRevision;
       const printed = yield* Exec.output("ssh", [yield* site.host, `${runner} build`], request);
       return yield* S.decodeUnknownEffect(S.NumberFromString)(printed.trim()).pipe(
         Effect.mapError(
@@ -75,12 +69,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       );
     });
 
-    /**
-     * Record a signoff on the host (not a job) and return its id. It skips the runner revision
-     * check that submit makes: the runner executes a job's plan, but only stores a signoff, and
-     * its protocol schema refuses a record it cannot read. With the check, a platform commit
-     * here would stop every app's push to main until the next rebuild.
-     */
+    /** Record a signoff on the host (not a job) and return its id. */
     const signoff = Effect.fn("Remote.signoff")(function* (record: SignoffSend) {
       const host = yield* site.host;
       const printed = yield* Exec.output(
@@ -93,7 +82,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       );
     });
 
-    /** The app's signoffs on the host, newest first. Like signoff, it skips the revision check. */
+    /** The app's signoffs on the host, newest first. */
     const listSignoffs = Effect.fn("Remote.listSignoffs")(function* (app: string) {
       const host = yield* site.host;
       const printed = yield* Exec.output("ssh", [host, `${runner} signoffs`, app]);
@@ -109,8 +98,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
 
     /**
      * Make `app`'s bare repository on the host unless it has one, as the operator over ssh,
-     * and return the URL to push to. Like signoff, it skips the revision check: the host only
-     * runs git init in its repositories folder.
+     * and return the URL to push to.
      */
     const createRepository = Effect.fn("Remote.createRepository")(function* (app: string) {
       const host = yield* site.host;
@@ -152,7 +140,7 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
       readonly repository: string;
       readonly key: string;
     }) {
-      yield* sameRevision;
+      yield* noteRevision;
       const printed = (yield* Exec.output("ssh", [
         yield* site.host,
         [runner, "image", "find", image.repository, image.key].map(Exec.quote).join(" "),
@@ -168,17 +156,10 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
 
     /**
      * Queue a retry reconcile job for `stage`, which deploys its branch's tree even when
-     * reconcile already tried it, and stream its output. Reconcile receives nothing from this checkout
-     * (it reads the app's repository on the host), so it skips the revision check, as the
-     * timer's jobs do.
+     * reconcile already tried it, and stream its output.
      */
     const reconcile = Effect.fn("Remote.reconcile")(function* (stage: string) {
-      const id = yield* submit(
-        { command: "reconcile", stage, retry: true },
-        { sameRevision: false },
-      );
-      yield* direct(["wait", `${id}`]);
-      return id;
+      return yield* run({ command: "reconcile", stage, retry: true });
     });
 
     return {
@@ -198,36 +179,46 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
 }
 
 /**
- * Fail unless tools/alchemy in this checkout, uncommitted changes included, is the tree the
- * host's runner was built from. The job requests and the cartridges they name come from
- * this checkout, so a different runner could read them differently.
+ * Tell the operator, on stderr, when the host's runner was not built from tools/alchemy here
+ * (uncommitted changes included, tests and docs left out): jobs run the runner's code, so a
+ * change here to code the runner runs is not live until `ops rebuild`. It never fails, even
+ * when the runner has no revision to print: the runner refuses a request it cannot read.
  */
-const checkRevision = Effect.fn("Remote.checkRevision")(function* (host: string) {
-  const revision = (yield* Exec.output("ssh", [host, `${runner} version`])).trim();
-  const known = yield* Exec.succeeds("git", [
-    "-C",
-    Git.repository,
-    "cat-file",
-    "-e",
-    `${revision}^{commit}`,
-  ]);
-  if (!known) {
-    return yield* new Exec.OpsError({
-      message: `${host} runs server-ansible ${revision.slice(0, 12)}, which this checkout does not have. Fetch it, or run \`ops rebuild\` for that host from here.`,
-    });
-  }
-  const same = yield* Exec.succeeds("git", [
-    "-C",
-    Git.repository,
-    "diff",
-    "--quiet",
-    revision,
-    "--",
-    "tools/alchemy",
-  ]);
-  if (!same) {
-    return yield* new Exec.OpsError({
-      message: `${host} runs server-ansible ${revision.slice(0, 12)}, and tools/alchemy here differs from it. Commit, then run \`ops rebuild\` for that host.`,
-    });
-  }
-});
+const noteRunnerRevision = Effect.fn("Remote.noteRunnerRevision")(
+  function* (host: string) {
+    const revision = (yield* Exec.output("ssh", [host, `${runner} version`])).trim();
+    const short = revision.slice(0, 12);
+    const known = yield* Exec.succeeds("git", [
+      "-C",
+      Git.repository,
+      "cat-file",
+      "-e",
+      `${revision}^{commit}`,
+    ]);
+    if (!known) {
+      return yield* Console.error(
+        `Note: ${host} runs server-ansible ${short}, which this checkout does not have.`,
+      );
+    }
+    const same = yield* Exec.succeeds("git", [
+      "-C",
+      Git.repository,
+      "diff",
+      "--quiet",
+      revision,
+      "--",
+      "tools/alchemy",
+      ":!*.test.ts",
+      ":!*.md",
+    ]);
+    if (!same) {
+      yield* Console.error(
+        `Note: ${host} runs server-ansible ${short}, and tools/alchemy here differs from it. A change to code the runner runs is not live until \`ops rebuild\`.`,
+      );
+    }
+  },
+  (effect, host) =>
+    Effect.catch(effect, (error) =>
+      Console.error(`Note: could not read the runner's revision on ${host}: ${error.message}`),
+    ),
+);

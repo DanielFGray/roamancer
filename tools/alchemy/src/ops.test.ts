@@ -78,7 +78,7 @@ describe("Remote", () => {
     assert.deepEqual(log, [
       "ssh ctl alchemy-runner version",
       `git -C ${Git.repository} cat-file -e abc123^{commit}`,
-      `git -C ${Git.repository} diff --quiet abc123 -- tools/alchemy`,
+      `git -C ${Git.repository} diff --quiet abc123 -- tools/alchemy :!*.test.ts :!*.md`,
       "ssh ctl alchemy-runner submit",
       "ssh ctl 'alchemy-runner' 'wait' '7'",
       "ssh ctl alchemy-runner submit",
@@ -93,23 +93,33 @@ describe("Remote", () => {
     );
   });
 
-  it("refuses every job when tools/alchemy differs from the runner's revision", async () => {
-    const { log, error } = await execute(
+  it("notes runner code here that is not live, and still submits the job", async () => {
+    const { log, error, messages } = await execute(
       Effect.flatMap(Remote, (remote) => remote.run({ command: "place-queued" })),
       { output: host, reply: (line) => (line.includes(" diff ") ? 1 : 0) },
     );
-    assert.ok(error instanceof OpsError);
-    assert.match(error.message, /ctl runs server-ansible abc123, .* run `ops rebuild`/);
-    assert.ok(!log.some((line) => line.includes("submit")));
+    assert.equal(error, undefined);
+    assert.match(messages.join("\n"), /ctl runs server-ansible abc123, .* `ops rebuild`/);
+    assert.ok(log.includes("ssh ctl alchemy-runner submit"));
+  });
+
+  it("still submits the job when the runner prints no revision", async () => {
+    const { log, error, messages } = await execute(
+      Effect.flatMap(Remote, (remote) => remote.run({ command: "place-queued" })),
+      { output: host, reply: (line) => (line.endsWith("alchemy-runner version") ? 1 : 0) },
+    );
+    assert.equal(error, undefined);
+    assert.match(messages.join("\n"), /could not read the runner's revision on ctl/);
+    assert.ok(log.includes("ssh ctl alchemy-runner submit"));
   });
 
   it("names a runner revision this checkout lacks, rather than calling it a difference", async () => {
-    const { error } = await execute(
+    const { error, messages } = await execute(
       Effect.flatMap(Remote, (remote) => remote.run({ command: "place-queued" })),
       { output: host, reply: (line) => (line.includes(" cat-file ") ? 1 : 0) },
     );
-    assert.ok(error instanceof OpsError);
-    assert.match(error.message, /abc123, which this checkout does not have/);
+    assert.equal(error, undefined);
+    assert.match(messages.join("\n"), /abc123, which this checkout does not have/);
   });
 
   it("asks for a terminal only when stdin is one", async () => {
