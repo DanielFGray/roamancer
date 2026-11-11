@@ -1,11 +1,8 @@
 import { after, before, describe, it } from "node:test";
-import { waitReady } from "./testing/waitReady.ts";
 import * as assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
-import { ConfigProvider, Effect, Layer, Option, Redacted } from "effect";
-import { FetchHttpClient } from "effect/http";
+import { Effect, Option, Redacted } from "effect";
 import { databaseCreationStatements, databaseRevocationStatements, OpenBao } from "./OpenBao.ts";
+import { devOpenBao } from "./testing/devOpenBao.ts";
 
 describe("PostgreSQL credential statements", () => {
   it("creates the API login without inherited rights, as a member of the visitor role", () => {
@@ -52,81 +49,23 @@ describe("PostgreSQL credential statements", () => {
   });
 });
 
-const freePort = () =>
-  new Promise<number>((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        server.close();
-        reject(new Error("no port"));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => (error ? reject(error) : resolve(port)));
-    });
-  });
-
 describe("writeKvKey against OpenBao", () => {
   const token = "test-root";
-  let address = "";
-  let child: ChildProcess | undefined;
-
-  const layer = () =>
-    Layer.fresh(OpenBao.layer).pipe(
-      Layer.provide(FetchHttpClient.layer),
-      Layer.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromEnvRecord({
-            OPENBAO_ADDR: address,
-            OPENBAO_TOKEN: token,
-          }),
-        ),
-      ),
-    );
+  const bao = devOpenBao(token);
 
   const run = <A, E>(effect: Effect.Effect<A, E, OpenBao>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer())));
+    Effect.runPromise(effect.pipe(Effect.provide(bao.layer())));
 
   const softDelete = async (path: string) => {
-    const response = await fetch(`${address}/v1/${path}`, {
+    const response = await fetch(`${bao.address()}/v1/${path}`, {
       method: "DELETE",
       headers: { "X-Vault-Token": token },
     });
     assert.equal(response.status, 204, await response.text());
   };
 
-  before(async () => {
-    const port = await freePort();
-    address = `http://127.0.0.1:${port}`;
-    const server = spawn(
-      "bao",
-      ["server", "-dev", `-dev-root-token-id=${token}`, `-dev-listen-address=127.0.0.1:${port}`],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
-    child = server;
-    const log: Array<string> = [];
-    server.stdout.on("data", (chunk: Buffer) => log.push(chunk.toString()));
-    server.stderr.on("data", (chunk: Buffer) => log.push(chunk.toString()));
-    try {
-      await waitReady("bao -dev", async () => {
-        try {
-          const response = await fetch(`${address}/v1/sys/health`);
-          return response.ok || response.status === 429 || response.status === 472;
-        } catch {
-          return false; // not listening yet
-        }
-      });
-    } catch (error) {
-      server.kill("SIGTERM");
-      assert.fail(`${String(error)}:\n${log.join("")}`);
-    }
-  });
-
-  after(() => {
-    child?.kill("SIGTERM");
-  });
+  before(bao.start);
+  after(bao.stop);
 
   it("writes a key again after a soft delete of its path", async () => {
     const path = "secret/data/alchemy/write-kv-key-soft-delete";

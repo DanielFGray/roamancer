@@ -1,7 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import * as assert from "node:assert/strict";
-import { waitReady } from "../testing/waitReady.ts";
-import { spawnSync } from "node:child_process";
+import { postgresContainer } from "../testing/postgresContainer.ts";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as S from "effect/Schema";
@@ -14,8 +13,8 @@ import { runDevDbAction, runDevDbClusterAction } from "./Host.ts";
 import { scramVerifier } from "./Scram.ts";
 
 const PORT = 55418;
-const CONTAINER = "alchemy-ops-devdb-test";
 const ADMIN = "devdb-test-admin";
+const container = postgresContainer("alchemy-ops-devdb-test", PORT, ADMIN);
 
 const clientLayer = (username: string, password: string, database: string) =>
   PgClient.layerFrom(
@@ -71,38 +70,8 @@ const ownerOf = async (database: string) =>
 const migration = "alchemy_giglist_dev_migration";
 
 describe("ops dev db host job", () => {
-  before(async () => {
-    spawnSync("docker", ["rm", "-f", CONTAINER], { encoding: "utf8" });
-    const started = spawnSync(
-      "docker",
-      [
-        "run",
-        "-d",
-        "--name",
-        CONTAINER,
-        "-e",
-        `POSTGRES_PASSWORD=${ADMIN}`,
-        "-p",
-        `127.0.0.1:${PORT}:5432`,
-        "postgres:17-alpine",
-      ],
-      { encoding: "utf8" },
-    );
-    assert.equal(started.status, 0, started.stderr);
-    await waitReady(
-      "test postgres",
-      () =>
-        spawnSync(
-          "docker",
-          ["exec", CONTAINER, "pg_isready", "-U", "postgres", "-h", "127.0.0.1"],
-          { encoding: "utf8" },
-        ).status === 0,
-    );
-  });
-
-  after(() => {
-    spawnSync("docker", ["rm", "-f", CONTAINER], { encoding: "utf8" });
-  });
+  before(container.start);
+  after(container.remove);
 
   it("provisions the dev databases and its logins sign in with the workstation passwords", async () => {
     await run(await request({ api: "api-one", migration: "migration-one" }), { _tag: "Up" });

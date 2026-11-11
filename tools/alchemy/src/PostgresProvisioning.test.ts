@@ -1,6 +1,5 @@
 import { describe, it, before, after } from "node:test";
 import * as assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -11,11 +10,11 @@ import {
   type PostgresDatabaseDeclaration,
 } from "./PostgresProvisioning.ts";
 import { databaseCreationStatements } from "./OpenBao.ts";
-import { waitReady } from "./testing/waitReady.ts";
+import { postgresContainer } from "./testing/postgresContainer.ts";
 
 const PORT = 55417;
-const CONTAINER = "alchemy-postgres-provisioning-test";
 const PASSWORD = "provision-test";
+const container = postgresContainer("alchemy-postgres-provisioning-test", PORT, PASSWORD);
 
 const adminLayer = (database: string) =>
   PgClient.layerFrom(
@@ -91,15 +90,6 @@ const loginState = (names: ReadonlyArray<string>) =>
     }),
   );
 
-const postgresReady = () =>
-  waitReady(
-    "postgres container",
-    () =>
-      spawnSync("docker", ["exec", CONTAINER, "pg_isready", "-U", "postgres", "-h", "127.0.0.1"], {
-        encoding: "utf8",
-      }).status === 0,
-  );
-
 describe("loginRolePolicy", () => {
   it("is the single source OpenBao creation statements use for options and session role", () => {
     const api = loginRolePolicy(false);
@@ -128,30 +118,8 @@ describe("loginRolePolicy", () => {
 });
 
 describe("provisionPostgresDatabase", () => {
-  before(async () => {
-    spawnSync("docker", ["rm", "-f", CONTAINER], { encoding: "utf8" });
-    const started = spawnSync(
-      "docker",
-      [
-        "run",
-        "-d",
-        "--name",
-        CONTAINER,
-        "-e",
-        `POSTGRES_PASSWORD=${PASSWORD}`,
-        "-p",
-        `127.0.0.1:${PORT}:5432`,
-        "postgres:17-alpine",
-      ],
-      { encoding: "utf8" },
-    );
-    assert.equal(started.status, 0, started.stderr);
-    await postgresReady();
-  });
-
-  after(() => {
-    spawnSync("docker", ["rm", "-f", CONTAINER], { encoding: "utf8" });
-  });
+  before(container.start);
+  after(container.remove);
 
   it("makes the cluster match the declaration, and a repeat run is a no-op", async () => {
     const names = ["alchemy_app_needs_api", "alchemy_app_needs_migration"] as const;
