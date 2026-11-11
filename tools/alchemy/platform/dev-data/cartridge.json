@@ -13,7 +13,7 @@
           "type": "tcp"
         },
         "cpu": 500,
-        "memoryMB": 512,
+        "memoryMB": 1536,
         "networkMode": "bridge",
         "storage": {
           "volume": "postgres-dev-data",

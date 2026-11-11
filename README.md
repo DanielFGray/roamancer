@@ -141,7 +141,7 @@ the minimum:
 | Ingress host | Traefik 256, OpenObserve 768, collector 256: 1280 MB | 512 MB (Nomad, journald, Caddy, Tailscale) | 2 GB plus the apps' `memoryMB` |
 
 The two-host layout therefore needs about 4 GB before any app; one host that runs everything needs
-about 3 GB. When you use `ops dev db`, the dev Postgres server (`platform-dev-data`, 512 MB) adds
+about 3 GB. When you use `ops dev db`, the dev Postgres server (`platform-dev-data`, 1536 MB) adds
 to the host that `[devdb] node` names, the control host by default. Valkey stops accepting writes
 at 48 MB (`maxmemory`, `noeviction`), so a log rewrite, which can briefly double its data, stays
 under its 128 MB limit. Measured on 2026-11-01.
