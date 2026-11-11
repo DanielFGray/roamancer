@@ -15,6 +15,7 @@ import { Console, Effect, FileSystem, Option, Stdio, Stream } from "effect";
 import { Argument, Command } from "effect/cli";
 import { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
+import * as S from "effect/Schema";
 import * as Cartridge from "./Cartridge.ts";
 import { OpsError, output } from "./Exec.ts";
 import * as Git from "./Git.ts";
@@ -169,6 +170,7 @@ const verify = Effect.fn("Signoff.verify")(function* (folder: string, commit: st
   if (yield* fs.exists(`${exported}/scripts/worktree-setup`)) {
     yield* script(exported, "scripts/worktree-setup");
   }
+  yield* scanDependencies(exported);
   const log = yield* script(exported, "scripts/verify");
   return {
     app: cartridge.name,
@@ -178,6 +180,86 @@ const verify = Effect.fn("Signoff.verify")(function* (folder: string, commit: st
     logSha256: createHash("sha256").update(log, "utf8").digest("hex"),
   };
 }, Effect.scoped);
+
+const TrivyVulnerability = S.Struct({
+  PkgName: S.String,
+  InstalledVersion: S.String,
+  Severity: S.String,
+  VulnerabilityID: S.String,
+  FixedVersion: S.optionalKey(S.String),
+});
+const TrivyResult = S.Struct({
+  Vulnerabilities: S.optionalKey(S.NullOr(S.Array(TrivyVulnerability))),
+});
+const TrivyReport = S.Struct({ Results: S.optionalKey(S.NullOr(S.Array(TrivyResult))) });
+
+/** Scan the exported dependency lockfiles before their checks can receive a signoff. */
+const scanDependencies = Effect.fn("Signoff.scanDependencies")(function* (directory: string) {
+  const spawner = yield* ChildProcessSpawner;
+  const path = yield* FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.realPath(directory)));
+  const command = ChildProcess.make(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--volume",
+      `${path}:/work:ro`,
+      // The vulnerability database is about 1 GB; the named volume keeps it between scans.
+      "--volume",
+      "trivy-cache:/root/.cache/trivy",
+      // Pinned: a new scanner release changes what the signoff gate refuses.
+      "aquasec/trivy:0.76.2",
+      "fs",
+      "--scanners",
+      "vuln",
+      "--format",
+      "json",
+      "/work",
+    ],
+    { stdin: "ignore", stdout: "pipe", stderr: "inherit" },
+  );
+  const handle = yield* spawner
+    .spawn(command)
+    .pipe(
+      Effect.mapError(
+        (error) =>
+          new OpsError({ message: `Trivy dependency scan could not run: ${error.message}` }),
+      ),
+    );
+  const text = yield* Stream.mkString(Stream.decodeText(handle.stdout)).pipe(
+    Effect.mapError(
+      (error) => new OpsError({ message: `Trivy dependency scan failed: ${error.message}` }),
+    ),
+  );
+  const code = yield* handle.exitCode.pipe(
+    Effect.mapError(
+      (error) => new OpsError({ message: `Trivy dependency scan failed: ${error.message}` }),
+    ),
+  );
+  if (code !== 0)
+    return yield* new OpsError({
+      message: `Trivy dependency scan exited ${code}; nothing was signed off`,
+    });
+  const report = yield* S.decodeUnknownEffect(S.fromJsonString(TrivyReport))(text).pipe(
+    Effect.mapError(
+      () =>
+        new OpsError({
+          message: "Trivy returned an invalid vulnerability report; nothing was signed off",
+        }),
+    ),
+  );
+  const vulnerabilities = (report.Results ?? []).flatMap((result) => result.Vulnerabilities ?? []);
+  const highs = vulnerabilities.filter(({ Severity }) => Severity === "HIGH").length;
+  yield* Console.error(`Trivy dependency scan: ${highs} HIGH vulnerabilities`);
+  const criticals = vulnerabilities.filter(
+    ({ Severity, FixedVersion }) => Severity === "CRITICAL" && FixedVersion !== undefined,
+  );
+  if (criticals.length > 0) {
+    return yield* new OpsError({
+      message: `Trivy found ${criticals.length} fixable CRITICAL vulnerabilities; nothing was signed off:\n${criticals.map(({ PkgName, InstalledVersion, FixedVersion, VulnerabilityID }) => `  ${PkgName} ${InstalledVersion} -> ${FixedVersion} (${VulnerabilityID})`).join("\n")}`,
+    });
+  }
+});
 
 /** Store `record` on the control host. */
 const send = Effect.fn("Signoff.send")(function* (record: SignoffSend) {

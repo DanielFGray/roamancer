@@ -1,6 +1,14 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -87,7 +95,7 @@ describe("ops signoff", () => {
     const repo = gitFixture('#!/bin/sh\ngrep -qx ok status.txt && echo "12 pass"\n');
     try {
       writeFileSync(join(repo, "status.txt"), "edited\n");
-      const { error, log, inputs } = await execute(run(repo));
+      const { error, log, inputs, consoleErrors } = await execute(run(repo));
       assert.equal(error, undefined);
       assert.ok(!log.some((line) => line.endsWith("alchemy-runner version")));
       const record = JSON.parse(inputs.at(-1)!);
@@ -95,6 +103,11 @@ describe("ops signoff", () => {
       assert.equal(record.tree, git(repo, "rev-parse", "HEAD^{tree}").trim());
       assert.equal(record.commit, git(repo, "rev-parse", "HEAD").trim());
       assert.equal(record.summary.trim(), "12 pass");
+      assert.ok(
+        consoleErrors.some((line) =>
+          String(line).includes("Trivy dependency scan: 0 HIGH vulnerabilities"),
+        ),
+      );
     } finally {
       rmSync(join(repo, ".."), { recursive: true, force: true });
     }
@@ -109,6 +122,43 @@ describe("ops signoff", () => {
       assert.ok(!sent(log));
     } finally {
       rmSync(join(repo, ".."), { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a fixable CRITICAL from the exported lockfile", async () => {
+    const repo = gitFixture("#!/bin/sh\necho should-not-run\n", "vulnerable-fixture\n");
+    try {
+      const { error, log, consoleErrors } = await execute(run(repo));
+      assert.ok(error instanceof OpsError);
+      assert.match(error.message, /left-pad 1\.0\.0 -> 1\.1\.0 \(CVE-2099-1234\)/);
+      assert.ok(log.some((line) => line.includes("aquasec/trivy")));
+      assert.ok(
+        consoleErrors.some((line) =>
+          String(line).includes("Trivy dependency scan: 1 HIGH vulnerabilities"),
+        ),
+      );
+      assert.ok(!sent(log));
+    } finally {
+      rmSync(join(repo, ".."), { recursive: true, force: true });
+    }
+  });
+
+  it("accepts absent and null Trivy finding lists", async () => {
+    for (const marker of ["null-results-fixture", "null-vulnerabilities-fixture"]) {
+      const repo = gitFixture("#!/bin/sh\necho pass\n", `${marker}\n`);
+      try {
+        const { error, log, consoleErrors } = await execute(run(repo));
+        assert.equal(error, undefined, marker);
+        assert.ok(sent(log), marker);
+        assert.ok(
+          consoleErrors.some((line) =>
+            String(line).includes("Trivy dependency scan: 0 HIGH vulnerabilities"),
+          ),
+          marker,
+        );
+      } finally {
+        rmSync(join(repo, ".."), { recursive: true, force: true });
+      }
     }
   });
 
@@ -240,13 +290,14 @@ const cartridgeJson = JSON.stringify(
  * A real git repo with one commit: the cartridge, status.txt = "ok", and `verify` as an
  * executable scripts/verify when given. The caller removes its parent folder.
  */
-const gitFixture = (verify: string | undefined): string => {
+const gitFixture = (verify: string | undefined, lockfile?: string): string => {
   const root = mkdtempSync(join(tmpdir(), "ops-signoff-"));
   const repo = join(root, "app");
   mkdirSync(join(repo, "scripts"), { recursive: true });
   git(repo, "init", "-q", "-b", "main");
   writeFileSync(join(repo, "cartridge.json"), `${cartridgeJson}\n`);
   writeFileSync(join(repo, "status.txt"), "ok\n");
+  if (lockfile !== undefined) writeFileSync(join(repo, "bun.lock"), lockfile);
   if (verify !== undefined) writeFileSync(join(repo, "scripts/verify"), verify, { mode: 0o755 });
   git(repo, "add", ".");
   git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
@@ -299,7 +350,12 @@ const execute = <A, E, R>(
         Remote.layer.pipe(Layer.provideMerge(Site.layer), Layer.provideMerge(environment)),
       ),
     );
-    return { log, inputs, error: Option.getOrUndefined(error) };
+    return {
+      log,
+      inputs,
+      error: Option.getOrUndefined(error),
+      consoleErrors: yield* TestConsole.errorLines,
+    };
   }).pipe(
     Effect.scoped,
     Effect.provide(TestConsole.layer),
@@ -344,6 +400,11 @@ const recordingSpawner = (
         if (line.includes("alchemy-runner signoffs")) {
           return signoffs === undefined ? handle(255, "") : handle(0, signoffs);
         }
+        if (command.command === "docker" && line.includes("aquasec/trivy")) {
+          const volume = command.args[command.args.indexOf("--volume") + 1]!;
+          const scanRoot = volume.slice(0, volume.lastIndexOf(":/work:ro"));
+          return handle(0, trivyFixtureReport(scanRoot));
+        }
         const result = spawnSync(command.command, [...command.args], {
           cwd: command.options.cwd,
           encoding: "utf8",
@@ -356,3 +417,37 @@ const recordingSpawner = (
       }),
     ),
   );
+
+const trivyFixtureReport = (directory: string) => {
+  const lockfile = `${directory}/bun.lock`;
+  const contents = existsSync(lockfile) ? readFileSync(lockfile, "utf8") : "";
+  if (contents.includes("null-results-fixture")) return JSON.stringify({ Results: null });
+  if (contents.includes("null-vulnerabilities-fixture")) {
+    return JSON.stringify({ Results: [{ Vulnerabilities: null }] });
+  }
+  if (!contents.includes("vulnerable-fixture")) {
+    return readFileSync(new URL("./fixtures/trivy-fs-no-results.json", import.meta.url), "utf8");
+  }
+  return JSON.stringify({
+    Results: [
+      {
+        Vulnerabilities: [
+          {
+            PkgName: "left-pad",
+            InstalledVersion: "1.0.0",
+            FixedVersion: "1.1.0",
+            Severity: "CRITICAL",
+            VulnerabilityID: "CVE-2099-1234",
+          },
+          {
+            PkgName: "high-risk",
+            InstalledVersion: "2.0.0",
+            FixedVersion: "2.1.0",
+            Severity: "HIGH",
+            VulnerabilityID: "CVE-2099-4321",
+          },
+        ],
+      },
+    ],
+  });
+};
