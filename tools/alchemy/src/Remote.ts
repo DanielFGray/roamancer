@@ -181,7 +181,9 @@ export class Remote extends Context.Service<Remote>()("ops/Remote", {
 /**
  * Tell the operator, on stderr, when the host's runner was not built from tools/alchemy here
  * (uncommitted changes included, tests and docs left out): jobs run the runner's code, so a
- * change here to code the runner runs is not live until `ops rebuild`. It never fails, even
+ * change here to code the runner runs is not live until `ops rebuild`. A second note names
+ * each platform cartridge that differs, since a plan of its stage reads the runner's copy.
+ * It never fails, even
  * when the runner has no revision to print: the runner refuses a request it cannot read.
  */
 const noteRunnerRevision = Effect.fn("Remote.noteRunnerRevision")(
@@ -211,9 +213,27 @@ const noteRunnerRevision = Effect.fn("Remote.noteRunnerRevision")(
       ":!*.test.ts",
       ":!*.md",
     ]);
-    if (!same) {
+    if (same) return;
+    yield* Console.error(
+      `Note: ${host} runs server-ansible ${short}, and tools/alchemy here differs from it. A change to code the runner runs is not live until \`ops rebuild\`.`,
+    );
+    // A platform stage's cartridge is read from the runner's own tree, and ops sends none
+    // (Cartridge.resolve), so a plan or deploy of an edited one applies the old copy and
+    // can report success while it changes nothing. Name each such file.
+    const platform = (yield* Exec.output("git", [
+      "-C",
+      Git.repository,
+      "diff",
+      "--name-only",
+      revision,
+      "--",
+      "tools/alchemy/platform/*/cartridge.json",
+    ]))
+      .split("\n")
+      .filter((path) => path !== "");
+    if (platform.length > 0) {
       yield* Console.error(
-        `Note: ${host} runs server-ansible ${short}, and tools/alchemy here differs from it. A change to code the runner runs is not live until \`ops rebuild\`.`,
+        `Note: the runner plans and deploys each platform stage from its own copy of the cartridge, and these differ here: ${platform.join(", ")}. A plan or deploy of those stages applies the runner's copy until \`ops rebuild\`.`,
       );
     }
   },
