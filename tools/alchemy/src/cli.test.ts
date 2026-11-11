@@ -261,6 +261,7 @@ const record = (options: {
         readKvData: unused,
         writeKvData: unused,
         createToken: () => Effect.succeed(Redacted.make("x")),
+        postgresLogin: unused,
         readKv: unused,
         readValkeyCredentials: unused,
         writeValkeyCredentials: unused,

@@ -63,6 +63,7 @@ import * as QueueServe from "./queue/Serve.ts";
 import { pipedValue, SecretWriter } from "./queue/Secrets.ts";
 import * as StagelessJobs from "./queue/StagelessJobs.ts";
 import * as DevDbHost from "./devdb/Host.ts";
+import * as DbQuery from "./DbQuery.ts";
 import { layer as queueStoreLayer } from "./queue/Store.ts";
 import * as QueueSubmit from "./queue/Submit.ts";
 import * as QueueUpload from "./queue/Upload.ts";
@@ -687,6 +688,8 @@ export const executeQueuedJob: QueueRun.Execute = (job: QueuedJob, env) =>
           return yield* DevDbHost.devDbJob(submit);
         case "dev-db-cluster":
           return yield* DevDbHost.devDbClusterJob(submit);
+        case "db-query":
+          return yield* DbQuery.dbQueryJob(submit);
         default:
           return submit satisfies never;
       }

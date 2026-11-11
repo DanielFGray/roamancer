@@ -1,4 +1,4 @@
-import { Config, Context, Effect, Layer, Option, Redacted, Schema as S } from "effect";
+import { Config, Context, Effect, Layer, Option, Redacted, Schema as S, Scope } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { loginRolePolicy } from "./PostgresProvisioning.ts";
 
@@ -15,6 +15,10 @@ const KvMetadata = S.Struct({
   }),
 });
 const CreatedToken = S.Struct({ auth: S.Struct({ client_token: S.String }) });
+const PostgresLease = S.Struct({
+  lease_id: S.String,
+  data: S.Struct({ username: S.String, password: S.String }),
+});
 const DatabaseConfig = S.Struct({
   data: S.Struct({
     connection_details: S.Struct({ connection_url: S.String }),
@@ -113,6 +117,7 @@ type WriteBody =
       readonly max_ttl: string;
     }
   | { readonly policy: string }
+  | { readonly lease_id: string }
   | { readonly data: Readonly<Record<string, string>> }
   // A KV v2 write that fails unless the secret is still at version `cas` (0: not yet written).
   | { readonly options: { readonly cas: number }; readonly data: Readonly<Record<string, string>> }
@@ -155,6 +160,17 @@ export class OpenBao extends Context.Service<
     readonly readPostgresConnectionUrl: (
       name: string,
     ) => Effect.Effect<Option.Option<string>, OpenBaoError>;
+    /**
+     * A new login from the database engine at `path` (database/creds/<role>). Closing the
+     * scope revokes its lease, which drops the login; otherwise it lives until its TTL ends.
+     */
+    readonly postgresLogin: (
+      path: string,
+    ) => Effect.Effect<
+      { readonly username: string; readonly password: Redacted.Redacted<string> },
+      OpenBaoError,
+      Scope.Scope
+    >;
     readonly configurePostgres: (
       connection: DatabaseConnection,
       roles: ReadonlyArray<DatabaseRole>,
@@ -282,6 +298,23 @@ export class OpenBao extends Context.Service<
           ),
         );
         return Option.some(value.data.connection_details.connection_url);
+      });
+
+      const postgresLogin = Effect.fn("OpenBao.postgresLogin")(function* (path: string) {
+        const lease = yield* Effect.acquireRelease(
+          request("mint PostgreSQL login", path, "GET", path).pipe(
+            Effect.flatMap(HttpClientResponse.schemaBodyJson(PostgresLease)),
+            Effect.mapError(
+              () => new OpenBaoError({ operation: "mint PostgreSQL login", target: path }),
+            ),
+          ),
+          // A failed revoke leaves the login until its TTL ends; the result is already out.
+          (lease) =>
+            request("revoke PostgreSQL login", path, "PUT", "sys/leases/revoke", {
+              lease_id: lease.lease_id,
+            }).pipe(Effect.ignore),
+        );
+        return { username: lease.data.username, password: Redacted.make(lease.data.password) };
       });
 
       const readValkeyCredentials = Effect.fn("OpenBao.readValkeyCredentials")(function* (
@@ -519,6 +552,7 @@ export class OpenBao extends Context.Service<
         writeValkeyCredentials,
         readAdminCredential,
         readPostgresConnectionUrl,
+        postgresLogin,
         configurePostgres,
         configureWorkloadRole,
       });

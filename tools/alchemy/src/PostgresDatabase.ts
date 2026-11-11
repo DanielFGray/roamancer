@@ -103,6 +103,9 @@ export class PostgresDatabaseError extends S.TaggedError<PostgresDatabaseError>(
   }
 }
 
+/** Where OpenBao mints a new login of a database credential role. */
+export const loginCredentialPath = (role: string) => `database/creds/${role}`;
+
 const attributes = (id: string, props: PostgresDatabaseProps, copy: boolean) => ({
   id,
   copy,
@@ -112,9 +115,9 @@ const attributes = (id: string, props: PostgresDatabaseProps, copy: boolean) => 
   visitorRole: props.visitorRole,
   connectionName: props.connectionName,
   credentialRole: props.credentialRole,
-  credentialPath: `database/creds/${props.credentialRole}`,
+  credentialPath: loginCredentialPath(props.credentialRole),
   migrationCredentialRole: props.migrationCredentialRole,
-  migrationCredentialPath: `database/creds/${props.migrationCredentialRole}`,
+  migrationCredentialPath: loginCredentialPath(props.migrationCredentialRole),
 });
 
 const provisioningError = (error: PostgresProvisioningError) =>
@@ -380,20 +383,7 @@ export const adminConnection = Effect.fn("PostgresDatabase.adminConnection")(fun
   readonly openBao: typeof OpenBao.Service;
   readonly nomad: typeof Nomad.Service;
 }) {
-  const location = yield* firstServiceLocation(
-    input.props.server,
-    input.nomad.service(input.props.server),
-    dependencyRegistrationRetry,
-  ).pipe(
-    Effect.catchTag("ServiceNotRegistered", () =>
-      Effect.fail(
-        new PostgresDatabaseError({
-          operation: "find PostgreSQL service",
-          target: input.props.server,
-        }),
-      ),
-    ),
-  );
+  const location = yield* serverLocation(input.props.server, input.nomad);
   const password = yield* input.openBao.readKv(
     input.props.adminCredential.path,
     input.props.adminCredential.key,
@@ -411,6 +401,16 @@ export const adminConnection = Effect.fn("PostgresDatabase.adminConnection")(fun
     );
   return { location, password, adminLayer };
 });
+
+/** Where the Nomad service `server` listens, waiting a bounded time for it to register. */
+export const serverLocation = (server: string, nomad: typeof Nomad.Service) =>
+  firstServiceLocation(server, nomad.service(server), dependencyRegistrationRetry).pipe(
+    Effect.catchTag("ServiceNotRegistered", () =>
+      Effect.fail(
+        new PostgresDatabaseError({ operation: "find PostgreSQL service", target: server }),
+      ),
+    ),
+  );
 
 const reconcile = Effect.fn("PostgresDatabase.reconcile")(function* (input: {
   readonly id: string;

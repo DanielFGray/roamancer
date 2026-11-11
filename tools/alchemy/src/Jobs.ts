@@ -171,6 +171,39 @@ const stageImage = Command.make(
   }),
 ).pipe(Command.withDescription("The image a staged deploy runs"));
 
+const db = Command.make("db").pipe(
+  Command.withDescription("A deployed stage's databases"),
+  Command.withSubcommands([
+    Command.make(
+      "query",
+      {
+        stage: Argument.String("stage").pipe(
+          Argument.withDescription("The stage, such as giglist or giglist-staged"),
+        ),
+        file: Flag.FileText("file").pipe(
+          Flag.withDescription("A file of one SQL statement; Postgres refuses more than one"),
+        ),
+        database: Flag.String("database").pipe(
+          Flag.optional,
+          Flag.withDescription("Which database, when the stage declares more than one"),
+        ),
+      },
+      Effect.fn(function* ({ stage, file, database }) {
+        yield* (yield* Remote).run({
+          command: "db-query",
+          stage,
+          database: Option.getOrNull(database),
+          sql: file,
+        });
+      }),
+    ).pipe(
+      Command.withDescription(
+        "Run one SQL statement read-only as the database's owner, then roll back. Each row prints as one JSON line, and the host's job journal keeps them",
+      ),
+    ),
+  ]),
+);
+
 const dash = Command.make(
   "dash",
   {},
@@ -245,6 +278,7 @@ export const commands = [
   deployment,
   status,
   stageImage,
+  db,
   dash,
   placeQueued,
   reconcile,

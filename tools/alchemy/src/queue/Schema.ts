@@ -82,6 +82,21 @@ export const PlaceQueuedSubmit = S.Struct({
   command: S.Literals(["place-queued"]),
 });
 
+/** The most bytes of SQL one db-query job carries; the job row stores it. */
+export const maxQueryBytes = 64 * 1024;
+
+/**
+ * db-query: one SQL statement against a database of a deployed stage, read-only
+ * (src/DbQuery.ts). `database` is null when the stage declares exactly one.
+ */
+export const DbQuerySubmit = S.Struct({
+  command: S.Literals(["db-query"]),
+  stage: S.NonEmptyString,
+  database: S.NullOr(S.NonEmptyString),
+  sql: S.NonEmptyString.check(S.isMaxLength(maxQueryBytes)),
+});
+export type DbQuerySubmit = typeof DbQuerySubmit.Type;
+
 /** The most bytes of one exported tree the front end accepts. */
 export const maxBuildBytes = 1024 * 1024 * 1024;
 
@@ -126,6 +141,7 @@ export const StagelessSubmit = S.Union([
   ReconcileSubmit,
   DevDbSubmit,
   DevDbClusterSubmit,
+  DbQuerySubmit,
 ]);
 export type StagelessSubmit = typeof StagelessSubmit.Type;
 
@@ -168,6 +184,7 @@ export const subject = (submit: JobSubmit): string | null => {
     case "state":
       return submit.path;
     case "reconcile":
+    case "db-query":
       return submit.stage;
     case "build":
       return submit.repository;

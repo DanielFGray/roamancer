@@ -33,6 +33,7 @@ describe("Generated.Secret", () => {
         configureWorkloadRole: unused,
         checkToken: unused,
         createToken: unused,
+        postgresLogin: unused,
       }),
     );
     const journal = Layer.succeed(
